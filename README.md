@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/31312982/README.md)
 # AION EMS Zeus
 
 ## Energy Management & Intelligence for Home Assistant
@@ -74,6 +75,58 @@ This creates a reusable device-information layer that can be used by Zeus dashbo
 
 ---
 
+## ♨️ Heat Pump Intelligence & Statistics
+
+Heat pumps registered through the Zeus Device Manager receive dedicated energy and operating statistics when suitable Home Assistant measurements are available.
+
+Zeus uses the real entities mapped to the registered Heat Pump together with Home Assistant Recorder history.
+
+### Heat Pump Energy History
+
+The Heat Pump statistics view can provide:
+
+- Today
+- This week
+- This month
+- This year
+
+These values represent measured Heat Pump electrical energy consumption from the configured Home Assistant energy entity and available Recorder history.
+
+### Operating Evidence
+
+Where suitable measurements are available, Zeus can also report:
+
+- Current operating status
+- Current electrical power
+- Runtime today
+- Peak electrical power today
+
+These values are based on the registered Heat Pump's available Home Assistant measurements.
+
+### Cost & Comparison
+
+When an electricity import tariff is configured, Zeus can analyse Heat Pump electricity consumption and provide information such as:
+
+- Today's Heat Pump electricity cost
+- This week's Heat Pump electricity cost
+- Comparison with recent completed-day Heat Pump consumption
+
+Cost calculations depend on the configured tariff and measured Heat Pump electrical consumption.
+
+### Evidence-First Heat Pump Analysis
+
+Zeus does not infer Heat Pump thermal output or COP when the required measurements are unavailable.
+
+Electrical consumption alone is not treated as evidence of thermal output.
+
+If Zeus does not have the required measurement, the corresponding information remains unavailable rather than being invented.
+
+This follows the core Zeus principle:
+
+> **If the data isn't known, Zeus should say it isn't known.**
+
+---
+
 ## 🚿 DHW / Water Heating
 
 Domestic Hot Water systems can be registered and monitored through Zeus.
@@ -113,6 +166,7 @@ Statistics can include:
 - Grid export
 - Battery energy
 - DHW consumption
+- Heat Pump consumption
 
 ---
 
@@ -313,101 +367,79 @@ The kiosk uses the same underlying Zeus/Home Assistant data sources as the main 
 
 # Installation
 
-## 1. Download Zeus
+## Recommended Installation — HACS
 
-For normal Home Assistant installation, download the prepared Zeus installation package from the **latest GitHub Release**.
+The recommended way to install and update **AION EMS Zeus** is through the **Home Assistant Community Store (HACS)**.
 
-Go to **Releases → Latest** and download the asset whose filename ends with:
-
-`_GITHUB_RELEASE.zip`
-
-> **Do not use GitHub's automatically generated `Source code (zip)` or `Source code (tar.gz)` archives for installation.**
->
-> Always use the prepared AION EMS Zeus `_GITHUB_RELEASE.zip` package listed under **Assets**.
+AION EMS Zeus is currently distributed as a **custom HACS repository** while the project remains in alpha development.
 
 Creating a Home Assistant backup before installing or updating a custom integration is recommended.
 
----
+### 1. Add the Zeus Repository to HACS
 
-## 2. Extract the Package
+Open:
 
-Extract the downloaded ZIP.
+**HACS → Integrations**
 
-The important directories are:
+Open the HACS menu and select:
 
-```text
-custom_components/aion_ems_zeus
-```
+**Custom repositories**
 
-and:
+Add this repository:
 
 ```text
-www/aion_ems_zeus
+https://github.com/showupch/AION-EMS-Zeus
 ```
 
----
+Select:
 
-## 3. Install the Custom Integration
+**Type → Integration**
 
-Copy:
+Then click:
 
-```text
-custom_components/aion_ems_zeus
-```
+**Add**
 
-to:
+### 2. Find AION EMS Zeus
+
+Return to the HACS integrations page and search for:
+
+**AION EMS Zeus**
+
+Open the AION EMS Zeus repository page.
+
+### 3. Download Zeus
+
+Click:
+
+**Download**
+
+HACS displays the Zeus version that will be installed.
+
+Confirm the expected version and click:
+
+**Download**
+
+HACS installs the integration into:
 
 ```text
 /config/custom_components/aion_ems_zeus
 ```
 
-The resulting installation should include:
-
-```text
-/config/custom_components/aion_ems_zeus/manifest.json
-```
-
 Do not rename the integration directory or its files.
 
----
+### 4. Restart Home Assistant
 
-## 4. Install the Frontend
+After the HACS download completes, restart Home Assistant when prompted.
 
-Copy the contents of:
-
-```text
-www/aion_ems_zeus
-```
-
-to:
-
-```text
-/config/www/aion_ems_zeus
-```
-
-The resulting directory should be:
-
-```text
-/config/www/aion_ems_zeus/
-```
-
-Do not rename the Zeus frontend directory or files.
-
----
-
-## 5. Restart Home Assistant
-
-Perform a full Home Assistant restart:
+You can also restart manually from:
 
 **Settings → System → Restart Home Assistant**
 
-A browser refresh alone is not sufficient for the initial custom-integration installation.
+A browser refresh alone is not sufficient after the initial custom-integration installation.
 
 Wait for Home Assistant to finish starting before continuing.
 
----
-
-## 6. Add AION EMS Zeus
+### 5. Add AION EMS Zeus
 
 After Home Assistant has restarted, go to:
 
@@ -423,9 +455,69 @@ After Zeus has been added successfully, open the Zeus interface.
 
 ---
 
+## Manual Installation
+
+HACS is the recommended installation method.
+
+Manual installation remains available for users who do not use HACS.
+
+Download the prepared Zeus installation package from the **latest GitHub Release**:
+
+```text
+https://github.com/showupch/AION-EMS-Zeus/releases
+```
+
+Under **Assets**, download the prepared AION EMS Zeus package supplied for that release.
+
+> **Do not use GitHub's automatically generated `Source code (zip)` or `Source code (tar.gz)` archives as Home Assistant installation packages.**
+
+Extract the package.
+
+Copy:
+
+```text
+custom_components/aion_ems_zeus
+```
+
+to:
+
+```text
+/config/custom_components/aion_ems_zeus
+```
+
+For release packages that also provide the legacy/manual frontend tree, copy:
+
+```text
+www/aion_ems_zeus
+```
+
+to:
+
+```text
+/config/www/aion_ems_zeus
+```
+
+Preserve the supplied directory structure and do not mix files from different Zeus releases.
+
+Then perform a full Home Assistant restart:
+
+**Settings → System → Restart Home Assistant**
+
+After Home Assistant restarts, go to:
+
+**Settings → Devices & services → Add Integration**
+
+Search for:
+
+**AION EMS Zeus**
+
+and complete the initial setup.
+
+---
+
 # Initial Configuration
 
-## 7. Run the Setup Wizard
+## 6. Run the Setup Wizard
 
 Open Zeus and go to:
 
@@ -441,7 +533,7 @@ It guides you through the important data sources and configuration required by Z
 
 ---
 
-## 8. Scan the Home Assistant Energy Configuration
+## 6. Scan the Home Assistant Energy Configuration
 
 During the Setup Wizard, open:
 
@@ -477,7 +569,7 @@ After the scan completes, review the detected sources and confirm that the propo
 
 ---
 
-## 9. Configure Additional Zeus Inputs
+## 6. Configure Additional Zeus Inputs
 
 The Home Assistant Energy scan provides a starting point.
 
@@ -504,7 +596,7 @@ Correct entity mapping is important because Zeus treats Home Assistant measureme
 
 ---
 
-## 10. Register Devices and Important Loads
+## 6. Register Devices and Important Loads
 
 Open:
 
@@ -531,7 +623,7 @@ Use the real Home Assistant entities associated with the physical device wheneve
 
 ---
 
-## 11. Configure DHW / Water Heating
+## 6. Configure DHW / Water Heating
 
 Domestic Hot Water equipment can be registered as a device in Zeus.
 
@@ -553,7 +645,7 @@ If no real temperature sensor is configured or available, Zeus reports the tempe
 
 ---
 
-## 12. DHW Energy Statistics
+## 6. DHW Energy Statistics
 
 When a registered DHW device has suitable Home Assistant Recorder-backed energy data, Zeus provides DHW historical statistics under:
 
@@ -587,6 +679,7 @@ Recorder-backed information is used for functionality such as:
 - Grid export history
 - Consumption history
 - DHW energy history
+- Heat Pump energy history
 - Historical Energy Explorer
 - Historical learning
 - Forecast validation
@@ -796,6 +889,11 @@ Before considering the installation complete, verify:
 - [ ] Registered and unknown load accounting is correct.
 - [ ] DHW energy is mapped if applicable.
 - [ ] DHW temperature uses a real Home Assistant sensor if available.
+- [ ] Registered Heat Pumps display the correct live power.
+- [ ] Heat Pump Today / Week / Month / Year energy statistics match the available Home Assistant data.
+- [ ] Heat Pump runtime and peak power statistics are plausible where supported.
+- [ ] Heat Pump electricity-cost calculations use the configured tariff.
+- [ ] Heat Pump COP or thermal output is not shown as measured data unless suitable measurements actually exist.
 - [ ] Recorder-backed statistics are available where required.
 - [ ] Today / Week / Month / Year statistics match Home Assistant data.
 - [ ] Forecast sources are configured if used.
@@ -807,11 +905,37 @@ Before considering the installation complete, verify:
 
 # Updating AION EMS Zeus
 
-Before updating Zeus, create a Home Assistant backup.
+## Updating Through HACS
 
-Download the new Zeus release and extract it.
+If AION EMS Zeus was installed through HACS, HACS is the recommended way to install future updates.
 
-Replace the existing Zeus integration and frontend files with the files supplied in the new release while preserving the directory structure:
+Before updating Zeus, creating a Home Assistant backup is recommended.
+
+When a new Zeus release is available:
+
+1. Open **HACS**.
+2. Open **AION EMS Zeus**.
+3. Review the available version.
+4. Select **Download** or the available update action.
+5. Confirm the version to install.
+6. Allow HACS to complete the download.
+7. Restart Home Assistant when requested.
+
+After Home Assistant restarts, open Zeus and verify that the integration and interface load normally.
+
+Existing Zeus configuration should remain in place during a normal HACS update.
+
+Browsers and the Home Assistant Companion App can cache frontend resources. If an older Zeus interface is still displayed after an update, perform a full refresh or reload of the Home Assistant frontend/app.
+
+---
+
+## Manual Updates
+
+For installations maintained manually, download the prepared installation package from the corresponding GitHub Release.
+
+Replace the existing Zeus files with the files supplied by that release while preserving the required directory structure.
+
+For legacy/manual packages this can include:
 
 ```text
 /config/custom_components/aion_ems_zeus
@@ -827,11 +951,9 @@ Then perform a **full Home Assistant restart**:
 
 **Settings → System → Restart Home Assistant**
 
-After Home Assistant restarts, reload Zeus.
+Do not mix integration or frontend files from different Zeus releases.
 
-Browsers and the Home Assistant Companion App can cache frontend resources. If the previous Zeus interface is still displayed after an update, perform a full refresh or reload of the Home Assistant frontend/app.
-
-**Do not mix integration or frontend files from different Zeus releases.**
+Using HACS is recommended because it provides a simpler and more consistent installation and update process.
 
 ---
 
