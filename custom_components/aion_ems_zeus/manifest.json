@@ -1,0 +1,11 @@
+{
+  "domain": "aion_ems_zeus",
+  "name": "AION EMS",
+  "codeowners": [],
+  "config_flow": true,
+  "documentation": "https://example.local/aion-ems",
+  "iot_class": "local_push",
+  "issue_tracker": "https://example.local/aion-ems/issues",
+  "requirements": [],
+  "version": "14.0.0-alpha.22.18.1.62"
+}

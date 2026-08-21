@@ -1,0 +1,511 @@
+refresh_capability_report:
+  name: Refresh Capability Report
+  description: Refresh the AION EMS capability report.
+
+refresh_entity_discovery:
+  name: Refresh Entity Discovery
+  description: Scan Home Assistant entities.
+
+refresh_integration_hub:
+  name: Refresh Integration Hub
+  description: Refresh Integration Hub.
+
+refresh_data_bus:
+  name: Refresh Data Bus
+  description: Refresh Data Bus.
+
+capture_data_lake_snapshot:
+  name: Capture Data Lake Snapshot
+  description: Capture one compact Data Lake snapshot.
+
+import_discovery_candidate:
+  name: Import Discovery Candidate
+  description: Import one device into AION EMS Registry.
+  fields:
+    device_id:
+      name: Device ID
+      required: true
+      selector: {text: null}
+    name:
+      name: Name
+      required: true
+      selector: {text: null}
+    power_entity:
+      name: Power Entity
+      required: true
+      selector:
+        entity:
+          domain: sensor
+    device_type:
+      name: Device Type
+      required: false
+      default: custom
+      selector:
+        select:
+          options:
+            - custom
+            - dishwasher
+            - washing_machine
+            - dryer
+            - ev_charger
+            - heat_pump
+            - water_heater
+            - battery
+            - solar_inverter
+
+import_recommended_devices:
+  name: Import Recommended Devices
+  description: Import best discovery candidates. Dry run by default.
+  fields:
+    dry_run:
+      name: Dry Run
+      required: false
+      default: true
+      selector: {boolean: null}
+    include_system_devices:
+      name: Include System Devices
+      required: false
+      default: true
+      selector: {boolean: null}
+    include_appliances:
+      name: Include Appliances
+      required: false
+      default: true
+      selector: {boolean: null}
+    overwrite_existing:
+      name: Overwrite Existing
+      required: false
+      default: false
+      selector: {boolean: null}
+
+remove_auto_imported_devices:
+  name: Remove Auto Imported Devices
+  description: Remove only auto_* devices. Dry run by default.
+  fields:
+    dry_run:
+      name: Dry Run
+      required: false
+      default: true
+      selector: {boolean: null}
+
+backup_registry:
+  name: Backup Registry
+  description: Create a registry backup.
+
+refresh_energy_mapping:
+  name: Refresh Energy Mapping
+  description: Refresh semantic EMS energy mapping for solar, battery, grid, house, EV, heat pump, and water heater.
+
+refresh_device_import_review:
+  name: Refresh Device Import Review
+  description: Build a review of discovered devices with room, group, category, priority, and validation.
+  fields:
+    include_system_devices:
+      name: Include System Devices
+      required: false
+      default: true
+      selector: {boolean: null}
+    include_appliances:
+      name: Include Appliances
+      required: false
+      default: true
+      selector: {boolean: null}
+    overwrite_existing:
+      name: Overwrite Existing
+      required: false
+      default: false
+      selector: {boolean: null}
+
+import_reviewed_devices:
+  name: Import Reviewed Devices
+  description: Import devices from the Device Import Wizard review. Dry run is enabled by default.
+  fields:
+    dry_run:
+      name: Dry Run
+      required: false
+      default: true
+      selector: {boolean: null}
+    include_system_devices:
+      name: Include System Devices
+      required: false
+      default: true
+      selector: {boolean: null}
+    include_appliances:
+      name: Include Appliances
+      required: false
+      default: true
+      selector: {boolean: null}
+    overwrite_existing:
+      name: Overwrite Existing
+      required: false
+      default: false
+      selector: {boolean: null}
+
+refresh_energy_flow:
+  name: Refresh Energy Flow
+  description: Refresh the read-only AION EMS Energy Flow snapshot.
+
+device_manager_build_review:
+  name: Device Manager Build Review
+  description: Build an import review for the Device Manager panel.
+  fields:
+    include_system_devices:
+      name: Include System Devices
+      required: false
+      default: true
+      selector: {boolean: null}
+    include_appliances:
+      name: Include Appliances
+      required: false
+      default: false
+      selector: {boolean: null}
+    overwrite_existing:
+      name: Overwrite Existing
+      required: false
+      default: false
+      selector: {boolean: null}
+
+device_manager_import_ready:
+  name: Device Manager Import Ready
+  description: Import ready devices from the Device Manager review. Dry run by default.
+  fields:
+    dry_run:
+      name: Dry Run
+      required: false
+      default: true
+      selector: {boolean: null}
+    include_system_devices:
+      name: Include System Devices
+      required: false
+      default: true
+      selector: {boolean: null}
+    include_appliances:
+      name: Include Appliances
+      required: false
+      default: false
+      selector: {boolean: null}
+    overwrite_existing:
+      name: Overwrite Existing
+      required: false
+      default: false
+      selector: {boolean: null}
+
+device_manager_remove_device:
+  name: Device Manager Remove Device
+  description: Remove a single device from the Zeus Registry.
+  fields:
+    device_id:
+      name: Device ID
+      required: true
+      selector: {text: null}
+
+lifecycle_status:
+  name: Lifecycle Status
+  description: Publish a non-destructive report of artifacts managed by AION EMS.
+
+
+test_entity_mapping:
+  name: Test entity mapping
+  description: Validate a manual mapping without saving it.
+  fields:
+    field: {required: true, selector: {text: {}}}
+    entity_id: {required: true, selector: {entity: {}}}
+    grid_mode: {required: false, selector: {select: {options: [bidirectional, separate]}}}
+    sign_convention: {required: false, selector: {select: {options: [positive_import, positive_export]}}}
+save_entity_mapping:
+  name: Save entity mapping
+  description: Validate and save a manual mapping in the Zeus Registry.
+  fields:
+    field: {required: true, selector: {text: {}}}
+    entity_id: {required: true, selector: {entity: {}}}
+    grid_mode: {required: false, selector: {select: {options: [bidirectional, separate]}}}
+    sign_convention: {required: false, selector: {select: {options: [positive_import, positive_export]}}}
+clear_entity_mapping:
+  name: Clear entity mapping
+  description: Remove a manual mapping from the Zeus Registry.
+  fields:
+    field: {required: true, selector: {text: {}}}
+
+save_weather_source:
+  name: Save weather source
+  description: Save the preferred local Home Assistant weather entity for Zeus forecasting.
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          domain: weather
+
+clear_weather_source:
+  name: Clear weather source
+  description: Clear the preferred weather source. Zeus will fall back to safe auto-discovery.
+
+save_tariff_settings:
+  name: Save tariff settings
+  description: Save fixed import/export tariffs and finance preferences.
+  fields:
+    currency:
+      required: true
+      example: CHF
+    import_tariff:
+      required: true
+      example: 0.29
+    export_tariff:
+      required: true
+      example: 0.08
+    standing_charge:
+      required: false
+      example: 0.0
+    vat_included:
+      required: false
+      example: true
+clear_tariff_settings:
+  name: Clear tariff settings
+  description: Disable Finance calculations and clear active fixed tariffs.
+
+
+
+save_battery_capacity:
+  name: Save battery capacity
+  description: Persist usable battery capacity across Home Assistant restarts.
+  fields:
+    capacity_kwh:
+      required: true
+      selector:
+        number:
+          min: 0.1
+          max: 10000
+          step: 0.1
+          unit_of_measurement: kWh
+          mode: box
+
+clear_battery_capacity:
+  name: Clear battery capacity
+  description: Remove the persisted usable battery capacity.
+
+save_notification_settings:
+  name: Save Notification Settings
+  description: Save master, channel, phone, quiet-hour and alert-category settings.
+  fields:
+    enabled: {selector: {boolean: null}}
+    persistent_enabled: {selector: {boolean: null}}
+    mobile_enabled: {selector: {boolean: null}}
+    mobile_targets: {selector: {object: null}}
+    quiet_hours_enabled: {selector: {boolean: null}}
+    quiet_start: {selector: {time: null}}
+    quiet_end: {selector: {time: null}}
+    confidence_threshold: {selector: {number: {min: 0, max: 100, mode: slider}}}
+    cooldown_minutes: {selector: {number: {min: 1, max: 1440, mode: box}}}
+
+test_notification:
+  name: Test Notification
+  description: Send a safe test to Home Assistant and selected mobile phones.
+
+
+save_plugin_settings:
+  name: Save Plugin Settings
+  description: Save read-only Integration Hub plugin settings.
+  fields:
+    plugin_id:
+      required: true
+      selector: {text: {}}
+    enabled:
+      selector: {boolean: {}}
+    service:
+      selector: {text: {}}
+    path:
+      selector: {text: {}}
+    retention:
+      selector: {number: {min: 1, max: 100, mode: box}}
+
+test_plugin:
+  name: Test Plugin
+  description: Test Email, Pushover, discovery, or NAS backup without device control.
+  fields:
+    plugin_id:
+      required: true
+      selector: {text: {}}
+
+create_nas_backup:
+  name: Create NAS Backup
+  description: Write a Zeus JSON backup to the configured mounted NAS folder.
+
+refresh_plugin_discovery:
+  name: Refresh Plugin Discovery
+  description: Refresh one Integration Hub plugin, or all plugins when plugin_id is omitted.
+  fields:
+    plugin_id:
+      required: false
+      selector:
+        select:
+          options:
+            - email
+            - pushover
+            - shelly
+            - zigbee
+            - mqtt
+            - nas_backup
+            - inverter_adapters
+
+run_qa_health_check:
+  name: Run Zeus Health Check
+  description: Run read-only QA checks for core services, registry, mappings, Recorder safety, plugins, backups, notifications, and dashboard integrity.
+
+save_home_profile:
+  name: Save Home Profile
+  description: Save the homeowner name and Zeus story personalization preferences.
+  fields:
+    owner_name:
+      required: false
+      selector: {text: {}}
+    home_name:
+      required: false
+      selector: {text: {}}
+    use_owner_name:
+      selector: {boolean: {}}
+    story_style:
+      selector:
+        select:
+          options: [professional, friendly, technical, concise]
+    briefing_length:
+      selector:
+        select:
+          options: [short, normal, detailed]
+
+
+
+set_data_epoch:
+  name: Set Zeus data start
+  description: Start trusted Zeus accounting from today or a selected local date. Home Assistant Recorder history is not deleted.
+  fields:
+    mode:
+      name: Mode
+      selector:
+        select:
+          options:
+            - today
+            - date
+    date:
+      name: Start date
+      description: Required when mode is date. YYYY-MM-DD.
+      selector:
+        text:
+
+clear_data_epoch:
+  name: Restore full Zeus history
+  description: Remove the Zeus accounting start boundary and use all available Home Assistant history again.
+
+register_battery_profile:
+  name: Register canonical battery profile
+  description: Explicitly register recommendation-only battery metadata for Predictive Battery and Battery + Load Coordination.
+  fields:
+    device_id:
+      name: Device ID
+      required: false
+      example: canonical_battery
+      selector:
+        text:
+    device_name:
+      name: Device name
+      required: false
+      example: BYD Battery
+      selector:
+        text:
+    soc_entity:
+      name: SOC entity
+      required: false
+      selector:
+        entity:
+          domain: sensor
+    capacity_kwh:
+      name: Capacity
+      required: true
+      selector:
+        number:
+          min: 0.1
+          max: 500
+          step: 0.1
+          unit_of_measurement: kWh
+    minimum_soc_percent:
+      name: Minimum SOC
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 99
+          step: 1
+          unit_of_measurement: "%"
+    emergency_reserve_percent:
+      name: Emergency reserve
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 99
+          step: 1
+          unit_of_measurement: "%"
+    maximum_soc_percent:
+      name: Maximum SOC
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+    max_charge_power_w:
+      name: Max charge power
+      required: true
+      selector:
+        number:
+          min: 100
+          max: 100000
+          step: 100
+          unit_of_measurement: W
+    max_discharge_power_w:
+      name: Max discharge power
+      required: true
+      selector:
+        number:
+          min: 100
+          max: 100000
+          step: 100
+          unit_of_measurement: W
+    round_trip_efficiency:
+      name: Round-trip efficiency
+      required: true
+      description: Decimal fraction, for example 0.92 for 92%.
+      selector:
+        number:
+          min: 0.5
+          max: 1.0
+          step: 0.01
+
+clear_battery_profile:
+  name: Clear canonical battery profile
+  description: Remove the explicitly registered Predictive Battery profile. This does not control or change the physical battery.
+
+preview_home_assistant_energy_import:
+  name: Preview Home Assistant Energy Import
+  description: Read Home Assistant Energy configuration and build a safe import preview. Nothing is written.
+
+apply_home_assistant_energy_import:
+  name: Apply Home Assistant Energy Import
+  description: Explicitly import reviewed Home Assistant Energy sources and individual electrical devices. Existing Zeus configuration is preserved by default.
+  fields:
+    import_whole_home:
+      name: Import whole-home energy sources
+      required: false
+      default: true
+      selector: {boolean: null}
+    import_devices:
+      name: Register individual electrical devices
+      required: false
+      default: true
+      selector: {boolean: null}
+    overwrite_existing:
+      name: Overwrite existing Zeus mappings
+      description: Keep disabled unless you intentionally want Home Assistant Energy to replace existing Zeus mappings.
+      required: false
+      default: false
+      selector: {boolean: null}

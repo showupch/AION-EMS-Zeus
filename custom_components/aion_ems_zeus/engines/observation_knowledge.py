@@ -1,0 +1,305 @@
+"""Observation and Knowledge Engine for AION EMS Zeus v11.4.
+
+Transforms live state transitions and compact Data Lake history into recorder-safe,
+persistent knowledge objects. The engine is read-only and recommendation-only.
+"""
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime, timezone
+from statistics import mean, median
+from typing import Any
+
+from homeassistant.helpers.storage import Store
+
+STORAGE_KEY = "aion_ems_zeus.observation_knowledge"
+STORAGE_VERSION = 1
+
+
+class ObservationKnowledgeEngine:
+    """Build persistent observations, patterns, habits and evidence chains."""
+
+    MAX_OBSERVATIONS = 240
+    MAX_EVOLUTION = 120
+
+    def __init__(self, hass, event_bus, energy_flow, data_lake, hyper, weather, registry) -> None:
+        self.hass = hass
+        self.event_bus = event_bus
+        self.energy_flow = energy_flow
+        self.data_lake = data_lake
+        self.hyper = hyper
+        self.weather = weather
+        self.registry = registry
+        self.store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self.data: dict[str, Any] = {
+            "schema_version": 1,
+            "previous": {},
+            "observations": [],
+            "evolution": [],
+            "metadata": {"created_at": datetime.now(timezone.utc).isoformat()},
+        }
+        self._save_pending = False
+        self.last: dict[str, Any] = {
+            "status": "Learning",
+            "headline": "Observation & Knowledge Engine is learning.",
+            "observations": [], "patterns": [], "habits": [], "weather_intelligence": [],
+            "evolution": [], "knowledge_graph": [], "evidence": [],
+            "confidence": 0, "recorder_safe": True,
+            "safety": "Recommendation only. No autonomous control.",
+        }
+
+    async def async_load(self) -> None:
+        stored = await self.store.async_load()
+        if isinstance(stored, dict):
+            self.data.update(stored)
+        self.data.setdefault("previous", {})
+        self.data.setdefault("observations", [])
+        self.data.setdefault("evolution", [])
+        self.data.setdefault("metadata", {})
+
+    async def async_save(self) -> None:
+        self._save_pending = False
+        await self.store.async_save(self.data)
+
+    def _schedule_save(self) -> None:
+        if not self._save_pending:
+            self._save_pending = True
+            self.hass.async_create_task(self.async_save())
+
+    @staticmethod
+    def _num(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value if value not in (None, "", "unknown", "unavailable") else default)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _iso_now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def _flow_values(self) -> dict[str, float]:
+        flow = self.energy_flow.summary() or {}
+        return {
+            "solar": self._num(flow.get("solar_power") or flow.get("solar_power_w")),
+            "home": self._num(flow.get("house_power") or flow.get("house_power_w")),
+            "import": self._num(flow.get("grid_import_power") or flow.get("grid_import_power_w")),
+            "export": self._num(flow.get("grid_export_power") or flow.get("grid_export_power_w")),
+            "charge": self._num(flow.get("battery_charge_power") or flow.get("battery_charge_power_w")),
+            "discharge": self._num(flow.get("battery_discharge_power") or flow.get("battery_discharge_power_w")),
+            "soc": self._num(flow.get("battery_soc_percent"), -1),
+        }
+
+    def _add_observation(self, kind: str, title: str, detail: str, evidence: dict[str, Any], confidence: int = 100) -> None:
+        now = self._iso_now()
+        fingerprint = f"{kind}:{title}:{now[:13]}"
+        if any(x.get("fingerprint") == fingerprint for x in self.data["observations"][:20]):
+            return
+        self.data["observations"].insert(0, {
+            "id": f"obs-{int(datetime.now(timezone.utc).timestamp())}-{len(self.data['observations'])}",
+            "fingerprint": fingerprint,
+            "type": kind,
+            "time": now,
+            "title": title,
+            "detail": detail,
+            "confidence": confidence,
+            "evidence": evidence,
+        })
+        self.data["observations"] = self.data["observations"][:self.MAX_OBSERVATIONS]
+        self._schedule_save()
+
+    def _observe_transitions(self, current: dict[str, float]) -> None:
+        prev = self.data.get("previous") or {}
+        threshold = 50.0
+        if prev:
+            transitions = [
+                (prev.get("solar", 0) <= threshold < current["solar"], "solar", "Solar production started", f"Solar output rose to {current['solar']:.0f} W."),
+                (prev.get("solar", 0) > threshold >= current["solar"], "solar", "Solar production stopped", "Measured solar output fell below the active-flow threshold."),
+                (prev.get("import", 0) <= threshold < current["import"], "grid", "Grid import started", f"The grid began supplying {current['import']:.0f} W."),
+                (prev.get("export", 0) <= threshold < current["export"], "grid", "Grid export started", f"Surplus export reached {current['export']:.0f} W."),
+                (prev.get("charge", 0) <= threshold < current["charge"], "battery", "Battery charging started", f"Battery charge power reached {current['charge']:.0f} W."),
+                (prev.get("discharge", 0) <= threshold < current["discharge"], "battery", "Battery support started", f"Battery discharge power reached {current['discharge']:.0f} W."),
+                (prev.get("soc", -1) < 99 <= current["soc"], "battery", "Battery reached full", "Battery state of charge reached the full threshold."),
+                (prev.get("soc", 101) > 20 >= current["soc"] >= 0, "battery", "Battery reached reserve", f"Battery state of charge reached {current['soc']:.0f}%."),
+                (current["home"] > max(prev.get("home", 0) * 1.8, 1500) and current["home"] - prev.get("home", 0) > 800, "home", "Large load increase detected", f"Home demand increased to {current['home']:.0f} W."),
+            ]
+            for condition, kind, title, detail in transitions:
+                if condition:
+                    self._add_observation(kind, title, detail, current.copy(), 100)
+        elif not self.data["observations"]:
+            self._add_observation("system", "Knowledge observation started", "Zeus began converting live transitions into persistent knowledge objects.", current.copy(), 100)
+        self.data["previous"] = current
+
+    def _daily_rows(self) -> list[dict[str, Any]]:
+        daily = self.data_lake.data.get("daily_summaries", {}) if hasattr(self.data_lake, "data") else {}
+        return [daily[k] for k in sorted(daily)][-400:]
+
+    def _snapshots(self) -> list[dict[str, Any]]:
+        return list((self.data_lake.data.get("snapshots", []) if hasattr(self.data_lake, "data") else [])[-20160:])
+
+    def _patterns(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if len(rows) < 4:
+            return []
+        weekdays: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            try:
+                day = datetime.fromisoformat(str(row.get("date"))).strftime("%A")
+            except (TypeError, ValueError):
+                continue
+            weekdays[day].append(row)
+        patterns = []
+        for metric, label, unit in (
+            ("solar_energy_kwh", "solar production", "kWh"),
+            ("house_energy_kwh", "home demand", "kWh"),
+            ("grid_import_energy_kwh", "grid import", "kWh"),
+        ):
+            averages = {day: mean(self._num(x.get(metric)) for x in vals) for day, vals in weekdays.items() if vals}
+            if averages:
+                day = max(averages, key=averages.get)
+                count = len(weekdays[day])
+                patterns.append({
+                    "type": "weekday", "trigger": day, "behavior": f"Highest average {label}",
+                    "value": round(averages[day], 2), "unit": unit, "observations": count,
+                    "confidence": min(98, 45 + count * 8),
+                    "explanation": f"Across {count} measured {day}s, average {label} was {averages[day]:.2f} {unit}.",
+                })
+        return patterns[:6]
+
+    def _habits(self, snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if len(snapshots) < 60:
+            return []
+        hourly: dict[int, list[float]] = defaultdict(list)
+        export_hours: list[int] = []
+        full_hours: list[int] = []
+        for snap in snapshots:
+            try:
+                dt = datetime.fromisoformat(str(snap.get("timestamp", "")).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                continue
+            f = snap.get("flows", {}) or {}
+            home = self._num(f.get("house_power_w"), -1)
+            if 0 <= home < 30000:
+                hourly[dt.hour].append(home)
+            if self._num(f.get("grid_export_power_w")) > 100:
+                export_hours.append(dt.hour)
+            if self._num(f.get("battery_soc_percent"), -1) >= 99:
+                full_hours.append(dt.hour)
+        habits = []
+        if hourly:
+            morning = {h: mean(v) for h, v in hourly.items() if 5 <= h <= 11 and v}
+            evening = {h: mean(v) for h, v in hourly.items() if 16 <= h <= 23 and v}
+            for name, values in (("Morning demand peak", morning), ("Evening demand peak", evening)):
+                if values:
+                    hour = max(values, key=values.get)
+                    habits.append({"name": name, "time": f"{hour:02d}:00", "value_w": round(values[hour]), "observations": len(hourly[hour]), "confidence": min(98, 40 + len(hourly[hour]) // 8)})
+        if export_hours:
+            habits.append({"name": "Typical export window", "time": f"{int(median(export_hours)):02d}:00", "observations": len(export_hours), "confidence": min(98, 45 + len(export_hours) // 20)})
+        if full_hours:
+            habits.append({"name": "Typical battery-full window", "time": f"{int(median(full_hours)):02d}:00", "observations": len(full_hours), "confidence": min(98, 45 + len(full_hours) // 20)})
+        return habits[:8]
+
+    def _weather_intelligence(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        weather = self.weather.summary() or {}
+        current = weather.get("condition") or weather.get("weather_condition") or weather.get("summary")
+        hyper = self.hyper.summary() or {}
+        discoveries = hyper.get("discoveries") or []
+        results = []
+        if current:
+            results.append({"condition": str(current), "relationship": "Current weather context is included in solar and demand reasoning.", "confidence": weather.get("confidence", 50), "evidence_count": len(rows)})
+        for item in discoveries:
+            text = f"{item.get('title','')} {item.get('detail','')}".lower()
+            if any(word in text for word in ("weather", "cloud", "temperature", "sunny", "rain")):
+                results.append({"condition": item.get("title"), "relationship": item.get("detail"), "confidence": hyper.get("confidence", 0), "evidence_count": len(rows)})
+        return results[:5]
+
+    def _evolution(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if len(rows) < 14:
+            return self.data.get("evolution", [])[:8]
+        recent, previous = rows[-7:], rows[-14:-7]
+        checks = []
+        for key, label, lower_better in (
+            ("solar_energy_kwh", "Solar production", False),
+            ("house_energy_kwh", "Home demand", True),
+            ("grid_import_energy_kwh", "Grid dependence", True),
+            ("grid_export_energy_kwh", "Solar export", False),
+        ):
+            a = mean(self._num(x.get(key)) for x in recent)
+            b = mean(self._num(x.get(key)) for x in previous)
+            if b <= 0:
+                continue
+            pct = (a - b) / b * 100
+            if abs(pct) >= 5:
+                improved = pct <= 0 if lower_better else pct >= 0
+                checks.append({"metric": label, "change_percent": round(pct, 1), "direction": "improved" if improved else "changed", "period": "last 7 days vs previous 7 days", "confidence": min(95, 55 + len(rows))})
+        existing = self.data.get("evolution", [])
+        for item in checks:
+            signature = f"{item['metric']}:{item['direction']}:{datetime.now(timezone.utc).date().isoformat()}"
+            if not any(x.get("signature") == signature for x in existing):
+                existing.insert(0, {**item, "signature": signature, "detected_at": self._iso_now()})
+        self.data["evolution"] = existing[:self.MAX_EVOLUTION]
+        if checks:
+            self._schedule_save()
+        return self.data["evolution"][:8]
+
+    @staticmethod
+    def _knowledge_graph(patterns: list[dict[str, Any]], habits: list[dict[str, Any]], hyper: dict[str, Any]) -> list[dict[str, Any]]:
+        graph = [
+            {"from": "Weather", "to": "Solar", "relation": "influences"},
+            {"from": "Solar", "to": "Battery", "relation": "charges"},
+            {"from": "Solar", "to": "Home", "relation": "supplies"},
+            {"from": "Battery", "to": "Grid import", "relation": "reduces"},
+            {"from": "Grid export", "to": "Finance", "relation": "creates revenue"},
+            {"from": "Self-consumption", "to": "Solar savings", "relation": "creates value"},
+        ]
+        if patterns:
+            graph.append({"from": patterns[0].get("trigger", "Pattern"), "to": patterns[0].get("behavior", "Behavior"), "relation": "predicts"})
+        if habits:
+            graph.append({"from": "House routine", "to": habits[0].get("name", "Habit"), "relation": "contains"})
+        if hyper.get("opportunities"):
+            graph.append({"from": "Discovered pattern", "to": "Opportunity", "relation": "supports"})
+        return graph[:10]
+
+    def refresh(self) -> dict[str, Any]:
+        current = self._flow_values()
+        self._observe_transitions(current)
+        rows = self._daily_rows()
+        snapshots = self._snapshots()
+        hyper = self.hyper.summary() or {}
+        patterns = self._patterns(rows)
+        habits = self._habits(snapshots)
+        weather_intelligence = self._weather_intelligence(rows)
+        evolution = self._evolution(rows)
+        graph = self._knowledge_graph(patterns, habits, hyper)
+        observations = self.data.get("observations", [])[:20]
+        evidence = []
+        for pattern in patterns[:4]:
+            evidence.append({"claim": pattern.get("behavior"), "because": pattern.get("explanation"), "confidence": pattern.get("confidence"), "observations": pattern.get("observations")})
+        for item in (hyper.get("discoveries") or [])[:3]:
+            evidence.append({"claim": item.get("title"), "because": item.get("detail"), "confidence": hyper.get("confidence", 0), "observations": len(rows)})
+        confidence = min(99, int(25 + min(len(rows), 40) * 1.5 + min(len(snapshots), 1000) / 50))
+        knowledge_objects = len(observations) + len(patterns) + len(habits) + len(weather_intelligence) + len(evolution)
+        headline = observations[0]["title"] if observations else "Zeus is building structured knowledge about your home."
+        self.last = {
+            "status": "Ready" if rows or snapshots else "Learning",
+            "headline": headline,
+            "generated_at": self._iso_now(),
+            "observation_count": len(self.data.get("observations", [])),
+            "knowledge_object_count": knowledge_objects,
+            "observations": observations,
+            "patterns": patterns,
+            "habits": habits,
+            "weather_intelligence": weather_intelligence,
+            "evolution": evolution,
+            "knowledge_graph": graph,
+            "evidence": evidence[:8],
+            "confidence": confidence,
+            "confidence_label": "High" if confidence >= 80 else "Medium" if confidence >= 55 else "Low",
+            "storage": "persistent_local_store",
+            "incremental": True,
+            "recorder_safe": True,
+            "safety": "Recommendation only. Observation & Knowledge Engine never controls devices.",
+        }
+        self.event_bus.publish("ObservationKnowledgeUpdated", "ObservationKnowledgeEngine", {"status": self.last["status"], "knowledge_objects": knowledge_objects, "confidence": confidence})
+        return self.last
+
+    def summary(self) -> dict[str, Any]:
+        return self.last
