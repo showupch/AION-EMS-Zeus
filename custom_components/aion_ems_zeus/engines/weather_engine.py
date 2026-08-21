@@ -80,6 +80,22 @@ class WeatherEngine:
     def refresh(self) -> dict[str, Any]:
         entity_id = self._select_entity()
         state = self.hass.states.get(entity_id) if entity_id else None
+
+        # Modern HA forecasts are fetched separately via weather.get_forecasts.
+        # A normal current-condition refresh must not erase a valid fetched
+        # forecast just because the weather entity has no legacy "forecast"
+        # attribute. Preserve it only when it belongs to the same selected entity.
+        preserved_forecast = []
+        preserved_available = False
+        preserved_granularity = None
+        preserved_diagnostics = None
+        if entity_id and self.last.get("entity_id") == entity_id:
+            if isinstance(self.last.get("forecast"), list):
+                preserved_forecast = list(self.last.get("forecast") or [])
+            preserved_available = bool(self.last.get("forecast_available") and preserved_forecast)
+            preserved_granularity = self.last.get("forecast_granularity")
+            preserved_diagnostics = self.last.get("forecast_diagnostics")
+
         if state is None:
             self.last = {
                 "status": "Waiting",
@@ -95,7 +111,8 @@ class WeatherEngine:
             return self.last
 
         attrs = state.attributes
-        forecast = attrs.get("forecast") if isinstance(attrs.get("forecast"), list) else []
+        legacy_forecast = attrs.get("forecast") if isinstance(attrs.get("forecast"), list) else []
+        forecast = legacy_forecast if legacy_forecast else preserved_forecast
         cloud = attrs.get("cloud_coverage")
         if cloud is None:
             cloud = attrs.get("cloud_cover", attrs.get("cloudiness"))
@@ -118,62 +135,112 @@ class WeatherEngine:
             "wind_speed": attrs.get("wind_speed"),
             "precipitation": attrs.get("precipitation", attrs.get("precipitation_amount", attrs.get("rainfall"))),
             "forecast_available": bool(forecast),
-            "forecast": forecast[:48],
+            "forecast": forecast[:168],
+            "forecast_granularity": (
+                "legacy"
+                if legacy_forecast
+                else preserved_granularity if preserved_available else None
+            ),
+            "forecast_diagnostics": preserved_diagnostics if preserved_available else None,
             "solar_factor": factor,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "configured": bool(self._configured_entity()),
             "candidates": self.candidates(),
             "provider": attrs.get("attribution"),
             "summary": f"{condition}; solar forecast factor {factor:.0%}.",
-            "note": "Zeus uses current weather and any forecast attributes exposed by the selected Home Assistant weather entity.",
+            "note": "Zeus uses current conditions from the weather entity and preserves future forecasts retrieved through Home Assistant weather.get_forecasts.",
             "safety": "Read-only weather context.",
         }
         return self.last
 
     async def async_refresh_forecast(self) -> dict[str, Any]:
-        """Refresh forecast rows using the modern Home Assistant weather service.
+        """Refresh future weather using Home Assistant's modern forecast action.
 
-        Newer HA versions no longer expose forecast rows in entity attributes.
-        Keep current-condition handling synchronous, but augment it here when the
-        service is available so Grid Outlook can use real future weather.
+        Providers differ: some expose hourly forecasts, others daily only.
+        Prefer hourly rows, then fall back to daily rows. The chosen granularity
+        is retained so ForecastEngine can apply daily weather across the complete
+        local calendar day instead of treating a midnight row as one isolated hour.
         """
         entity_id = self._select_entity()
         if not entity_id:
             return self.last
-        try:
-            response = await self.hass.services.async_call(
-                "weather", "get_forecasts",
-                {"entity_id": entity_id, "type": "hourly"},
-                blocking=True, return_response=True,
-            )
+
+        diagnostics = {
+            "entity_id": entity_id,
+            "hourly": {"status": "not_requested", "rows": 0, "error": None, "sample": []},
+            "daily": {"status": "not_requested", "rows": 0, "error": None, "sample": []},
+            "selected_granularity": None,
+        }
+
+        async def _request(kind: str) -> list[dict[str, Any]]:
+            try:
+                diagnostics[kind]["status"] = "requested"
+                response = await self.hass.services.async_call(
+                    "weather",
+                    "get_forecasts",
+                    {"type": kind},
+                    blocking=True,
+                    return_response=True,
+                    target={"entity_id": entity_id},
+                )
+            except Exception as err:
+                diagnostics[kind]["status"] = "error"
+                diagnostics[kind]["error"] = f"{type(err).__name__}: {err}"
+                return []
             payload = (response or {}).get(entity_id, {}) if isinstance(response, dict) else {}
             rows = payload.get("forecast") if isinstance(payload, dict) else None
-            if not isinstance(rows, list) or not rows:
-                return self.last
-            normalized = []
-            for row in rows[:168]:
-                if not isinstance(row, dict):
-                    continue
-                item = dict(row)
-                if item.get("cloud_coverage") is None:
-                    item["cloud_coverage"] = item.get("cloud_cover", item.get("cloudiness"))
-                if item.get("precipitation") is None:
-                    item["precipitation"] = item.get("precipitation_amount", item.get("rainfall"))
-                normalized.append(item)
-            if normalized:
-                self.last["forecast"] = normalized
-                self.last["forecast_available"] = True
-                # If current weather omits cloud/precipitation, use the nearest
-                # provider forecast row as current weather context rather than
-                # leaving every weather-intelligence field empty.
-                first = normalized[0]
-                if self.last.get("cloud_coverage") is None and first.get("cloud_coverage") is not None:
-                    self.last["cloud_coverage"] = first.get("cloud_coverage")
-                if self.last.get("precipitation") is None and first.get("precipitation") is not None:
-                    self.last["precipitation"] = first.get("precipitation")
+            rows = list(rows) if isinstance(rows, list) else []
+            diagnostics[kind]["status"] = "ok"
+            diagnostics[kind]["rows"] = len(rows)
+            diagnostics[kind]["sample"] = [
+                {
+                    "datetime": row.get("datetime") or row.get("time"),
+                    "condition": row.get("condition"),
+                    "cloud_coverage": row.get("cloud_coverage", row.get("cloud_cover", row.get("cloudiness"))),
+                    "precipitation": row.get("precipitation", row.get("precipitation_amount", row.get("rainfall"))),
+                }
+                for row in rows[:7] if isinstance(row, dict)
+            ]
+            return rows
+
+        kind = "hourly"
+        rows = await _request("hourly")
+        if not rows:
+            kind = "daily"
+            rows = await _request("daily")
+        if not rows:
+            self.last["forecast_available"] = False
+            self.last["forecast"] = []
+            self.last["forecast_granularity"] = None
+            diagnostics["selected_granularity"] = None
+            self.last["forecast_diagnostics"] = diagnostics
             return self.last
-        except Exception:
-            return self.last
+
+        normalized = []
+        limit = 168 if kind == "hourly" else 14
+        for row in rows[:limit]:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            if item.get("cloud_coverage") is None:
+                item["cloud_coverage"] = item.get("cloud_cover", item.get("cloudiness"))
+            if item.get("precipitation") is None:
+                item["precipitation"] = item.get("precipitation_amount", item.get("rainfall"))
+            normalized.append(item)
+
+        if normalized:
+            self.last["forecast"] = normalized
+            self.last["forecast_available"] = True
+            self.last["forecast_granularity"] = kind
+            diagnostics["selected_granularity"] = kind
+            diagnostics["normalized_rows"] = len(normalized)
+            self.last["forecast_diagnostics"] = diagnostics
+            first = normalized[0]
+            if self.last.get("cloud_coverage") is None and first.get("cloud_coverage") is not None:
+                self.last["cloud_coverage"] = first.get("cloud_coverage")
+            if self.last.get("precipitation") is None and first.get("precipitation") is not None:
+                self.last["precipitation"] = first.get("precipitation")
+        return self.last
 
     def summary(self) -> dict[str, Any]:
         return self.last

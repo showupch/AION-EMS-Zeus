@@ -506,6 +506,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         core.registry.data.setdefault("audit", []).append({"action": "save_weather_source", "entity_id": entity_id})
         await core.registry.async_save()
         core.weather.refresh()
+        if hasattr(core.weather, "async_refresh_forecast"):
+            await core.weather.async_refresh_forecast()
         core.refresh_pipeline()
         await _refresh_aion_entities(hass)
 

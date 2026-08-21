@@ -11,6 +11,7 @@ import re
 import statistics
 
 from homeassistant.util import dt as dt_util
+from homeassistant.components.energy import async_get_manager
 
 
 class HistoricalAnalyticsEngine:
@@ -53,11 +54,77 @@ class HistoricalAnalyticsEngine:
             "battery_discharge_energy_kwh": ("battery_discharge_energy_total", "battery_discharge_energy_today"),
         }
         selected: dict[str, str] = {}
+        selected_groups: dict[str, list[str]] = {}
         for key, candidates in roles.items():
             entity_id = next((str(mappings.get(field) or "").strip() for field in candidates if str(mappings.get(field) or "").strip()), "")
             if entity_id:
                 selected[key] = entity_id
-        entity_ids = sorted(set(selected.values()))
+                selected_groups[key] = [entity_id]
+
+        # Home Assistant Energy may contain more than one source of the same
+        # physical role (most importantly multiple PV sources). The Energy
+        # Dashboard sums those sources. Zeus must use the same source set rather
+        # than choosing only the first imported mapping.
+        try:
+            manager = await async_get_manager(self.hass)
+            getter = getattr(manager, "async_get_preferences", None)
+            if callable(getter):
+                prefs = await getter()
+            else:
+                prefs = getattr(manager, "data", None)
+                if prefs is None:
+                    prefs = getattr(manager, "preferences", None)
+            prefs = dict(prefs or {})
+            ha_groups: dict[str, list[str]] = {
+                "solar_energy_kwh": [],
+                "grid_import_energy_kwh": [],
+                "grid_export_energy_kwh": [],
+                "battery_charge_energy_kwh": [],
+                "battery_discharge_energy_kwh": [],
+            }
+            for item in prefs.get("energy_sources") or []:
+                if not isinstance(item, dict):
+                    continue
+                source_type = str(item.get("type") or "").lower()
+                if source_type == "solar":
+                    entity_id = str(item.get("stat_energy_from") or "").strip()
+                    if entity_id:
+                        ha_groups["solar_energy_kwh"].append(entity_id)
+                elif source_type == "grid":
+                    entity_id = str(item.get("stat_energy_from") or "").strip()
+                    if entity_id:
+                        ha_groups["grid_import_energy_kwh"].append(entity_id)
+                    entity_id = str(item.get("stat_energy_to") or "").strip()
+                    if entity_id:
+                        ha_groups["grid_export_energy_kwh"].append(entity_id)
+                    for flow in item.get("flow_from") or []:
+                        if isinstance(flow, dict):
+                            entity_id = str(flow.get("stat_energy_from") or flow.get("entity_id") or "").strip()
+                            if entity_id:
+                                ha_groups["grid_import_energy_kwh"].append(entity_id)
+                    for flow in item.get("flow_to") or []:
+                        if isinstance(flow, dict):
+                            entity_id = str(flow.get("stat_energy_to") or flow.get("entity_id") or "").strip()
+                            if entity_id:
+                                ha_groups["grid_export_energy_kwh"].append(entity_id)
+                elif source_type == "battery":
+                    entity_id = str(item.get("stat_energy_from") or "").strip()
+                    if entity_id:
+                        ha_groups["battery_discharge_energy_kwh"].append(entity_id)
+                    entity_id = str(item.get("stat_energy_to") or "").strip()
+                    if entity_id:
+                        ha_groups["battery_charge_energy_kwh"].append(entity_id)
+            for key, values in ha_groups.items():
+                unique = list(dict.fromkeys(v for v in values if v))
+                if unique:
+                    selected_groups[key] = unique
+                    selected[key] = unique[0]
+        except Exception:
+            # Registry mappings remain a safe fallback if EnergyManager is not
+            # available during an early startup refresh.
+            pass
+
+        entity_ids = sorted({entity_id for values in selected_groups.values() for entity_id in values})
         if not entity_ids:
             self._ha_energy_days = {}
             self._ha_energy_status = {"status": "No mapped energy statistic sensors"}
@@ -102,8 +169,12 @@ class HistoricalAnalyticsEngine:
             )
 
             timing_roles = ("house_energy_kwh", "grid_import_energy_kwh", "grid_export_energy_kwh", "solar_energy_kwh", "battery_discharge_energy_kwh")
-            timing_selected = {key: selected[key] for key in timing_roles if selected.get(key)}
-            timing_ids = sorted(set(timing_selected.values()))
+            timing_selected_groups = {
+                key: list(selected_groups.get(key) or ([selected[key]] if selected.get(key) else []))
+                for key in timing_roles
+            }
+            timing_selected = {key: values[0] for key, values in timing_selected_groups.items() if values}
+            timing_ids = sorted({entity_id for values in timing_selected_groups.values() for entity_id in values})
             timing_response = {}
             if timing_ids and timing_selected.get("house_energy_kwh"):
                 timing_start = dt_util.start_of_local_day(today_start - timedelta(days=30))
@@ -124,51 +195,55 @@ class HistoricalAnalyticsEngine:
             raw_today = (today_response or {}).get("statistics", today_response or {})
             raw_timing = (timing_response or {}).get("statistics", timing_response or {})
             result: dict[str, dict[str, float]] = {key: {} for key in roles}
-            for key, entity_id in selected.items():
-                for row in list((raw_history or {}).get(entity_id) or []):
-                    if not isinstance(row, dict):
-                        continue
-                    value = self._ha_stat_number(row.get("change"))
-                    stamp = self._ha_stat_datetime(row.get("start"))
-                    if value is None or stamp is None or value < -0.001:
-                        continue
-                    day = dt_util.as_local(stamp).date().isoformat()
-                    result[key][day] = round(max(value, 0.0), 4)
+            for key in roles:
+                entity_group = list(selected_groups.get(key) or ([selected[key]] if selected.get(key) else []))
+                for entity_id in entity_group:
+                    for row in list((raw_history or {}).get(entity_id) or []):
+                        if not isinstance(row, dict):
+                            continue
+                        value = self._ha_stat_number(row.get("change"))
+                        stamp = self._ha_stat_datetime(row.get("start"))
+                        if value is None or stamp is None or value < -0.001:
+                            continue
+                        day = dt_util.as_local(stamp).date().isoformat()
+                        result[key][day] = round(result[key].get(day, 0.0) + max(value, 0.0), 4)
 
-                today_total = 0.0
-                today_rows = 0
-                for row in list((raw_today or {}).get(entity_id) or []):
-                    if not isinstance(row, dict):
-                        continue
-                    value = self._ha_stat_number(row.get("change"))
-                    stamp = self._ha_stat_datetime(row.get("start"))
-                    if value is None or stamp is None or value < -0.001:
-                        continue
-                    local_stamp = dt_util.as_local(stamp)
-                    if local_stamp < today_start or local_stamp > now + timedelta(minutes=5):
-                        continue
-                    today_total += max(value, 0.0)
-                    today_rows += 1
-                if today_rows:
-                    result[key][now.date().isoformat()] = round(today_total, 4)
+                    today_total = 0.0
+                    today_rows = 0
+                    for row in list((raw_today or {}).get(entity_id) or []):
+                        if not isinstance(row, dict):
+                            continue
+                        value = self._ha_stat_number(row.get("change"))
+                        stamp = self._ha_stat_datetime(row.get("start"))
+                        if value is None or stamp is None or value < -0.001:
+                            continue
+                        local_stamp = dt_util.as_local(stamp)
+                        if local_stamp < today_start or local_stamp > now + timedelta(minutes=5):
+                            continue
+                        today_total += max(value, 0.0)
+                        today_rows += 1
+                    if today_rows:
+                        today_key = now.date().isoformat()
+                        result[key][today_key] = round(result[key].get(today_key, 0.0) + today_total, 4)
             self._ha_energy_days = result
 
             hourly_by_start: dict[str, dict[str, Any]] = {}
-            for key, entity_id in timing_selected.items():
-                for row in list((raw_timing or {}).get(entity_id) or []):
-                    if not isinstance(row, dict):
-                        continue
-                    value = self._ha_stat_number(row.get("change"))
-                    stamp = self._ha_stat_datetime(row.get("start"))
-                    if value is None or stamp is None or value < -0.001:
-                        continue
-                    local_stamp = dt_util.as_local(stamp)
-                    if local_stamp >= today_start:
-                        continue
-                    bucket = local_stamp.replace(minute=0, second=0, microsecond=0)
-                    bucket_key = bucket.isoformat()
-                    target = hourly_by_start.setdefault(bucket_key, {"start": bucket_key})
-                    target[key] = round(max(value, 0.0), 4)
+            for key, entity_group in timing_selected_groups.items():
+                for entity_id in entity_group:
+                    for row in list((raw_timing or {}).get(entity_id) or []):
+                        if not isinstance(row, dict):
+                            continue
+                        value = self._ha_stat_number(row.get("change"))
+                        stamp = self._ha_stat_datetime(row.get("start"))
+                        if value is None or stamp is None or value < -0.001:
+                            continue
+                        local_stamp = dt_util.as_local(stamp)
+                        if local_stamp >= today_start:
+                            continue
+                        bucket = local_stamp.replace(minute=0, second=0, microsecond=0)
+                        bucket_key = bucket.isoformat()
+                        target = hourly_by_start.setdefault(bucket_key, {"start": bucket_key})
+                        target[key] = round(target.get(key, 0.0) + max(value, 0.0), 4)
 
             self._ha_consumption_hourly = [
                 row for _, row in sorted(hourly_by_start.items())
@@ -187,10 +262,15 @@ class HistoricalAnalyticsEngine:
                 "refreshed_at": now.isoformat(),
             }
 
+            display_entities = {
+                key: (values[0] if len(values) == 1 else " + ".join(values))
+                for key, values in selected_groups.items() if values
+            }
             self._ha_energy_status = {
                 "status": "Ready",
-                "source": "Home Assistant Recorder statistics · local-day aligned",
-                "entities": selected,
+                "source": "Home Assistant Energy source set + Recorder statistics · local-day aligned",
+                "entities": display_entities,
+                "entity_sets": {key: list(values) for key, values in selected_groups.items() if values},
                 "days": {key: len(values) for key, values in result.items()},
                 "refreshed_at": now.isoformat(),
             }
@@ -366,26 +446,15 @@ class HistoricalAnalyticsEngine:
                 # dedicated photovoltaic power sensor. Other mapped meters remain
                 # authoritative as before.
                 if energy_key == "solar_energy_kwh" and hybrid_true_pv_configured:
-                    # Current day is owned exclusively by the dedicated True-PV
-                    # power integration. For completed historical days, Recorder
-                    # solar AC energy is retained only as a historical fallback and
-                    # corrected by the measured battery-discharge statistic. This
-                    # keeps month/year history useful without allowing today's
-                    # hybrid AC output to masquerade as photovoltaic production.
-                    if day == today_key:
-                        continue
-                    raw_solar = max(float(values[day] or 0.0), 0.0)
-                    discharge_days = self._ha_energy_days.get("battery_discharge_energy_kwh", {}) or {}
-                    discharge = max(float(discharge_days.get(day, 0.0) or 0.0), 0.0)
-                    corrected = max(raw_solar - discharge, 0.0) if day in discharge_days else raw_solar
-                    row["solar_energy_raw_ac_kwh"] = round(raw_solar, 4)
-                    row["solar_hybrid_correction_kwh"] = round(min(raw_solar, discharge), 4) if day in discharge_days else 0.0
-                    row["solar_energy_kwh"] = round(corrected, 4)
-                    row["solar_energy_kwh_method"] = (
-                        "hybrid_historical_ac_minus_battery_discharge"
-                        if day in discharge_days else "hybrid_historical_ac_unadjusted"
-                    )
+                    # Energy totals follow the same configured HA Energy solar
+                    # source set that feeds the Energy Dashboard. A dedicated
+                    # True-PV power entity remains the instantaneous live source
+                    # and the fallback only when no HA Energy statistic exists.
+                    recorder_value = max(float(values[day] or 0.0), 0.0)
+                    row["solar_energy_kwh"] = round(recorder_value, 4)
+                    row["solar_energy_kwh_method"] = "home_assistant_energy_source_set_statistics"
                     row["solar_energy_kwh_source"] = stat_entities.get(energy_key)
+                    row["solar_true_pv_live_entity"] = hybrid_true_pv_entity
                     continue
                 recorder_value = max(float(values[day] or 0.0), 0.0)
                 if day == today_key and energy_key in {"battery_charge_energy_kwh", "battery_discharge_energy_kwh"}:
@@ -439,12 +508,16 @@ class HistoricalAnalyticsEngine:
             true_pv_today = max(float(today_row.get("solar_true_pv_integrated_kwh", 0.0) or 0.0), 0.0)
             mapped_solar_source = str((getattr(self.registry, "data", {}) or {}).get("entity_mappings", {}).get("solar_energy_today") or "").strip()
             mapped_solar_active = bool(mapped_solar_source and today_row.get("solar_energy_kwh_source") == mapped_solar_source)
+            ha_solar_active = bool(
+                today_key in (self._ha_energy_days.get("solar_energy_kwh", {}) or {})
+                and today_row.get("solar_energy_kwh_method") == "home_assistant_energy_source_set_statistics"
+            )
             canonical_today = max(float(today_row.get("solar_energy_kwh", true_pv_today) or 0.0), 0.0)
             today_row["hybrid_true_pv_configured"] = True
             today_row["hybrid_true_pv_entity"] = hybrid_true_pv_entity
             today_row["solar_true_pv_integrated_kwh"] = round(true_pv_today, 4)
             today_row["solar_energy_kwh"] = round(canonical_today, 4)
-            if not mapped_solar_active:
+            if not mapped_solar_active and not ha_solar_active:
                 today_row.setdefault("solar_energy_kwh_method", "inputs_solar_power_integration")
                 today_row["solar_energy_kwh_source"] = hybrid_true_pv_entity
         # Match Home Assistant Energy calendar periods. A Week is the current
@@ -2552,15 +2625,18 @@ class ForecastEngine:
             values = {
                 "solar": flows.get("solar_power_w"),
                 "house": flows.get("house_power_w"),
+                "grid_import": flows.get("grid_import_power_w"),
+                "grid_export": flows.get("grid_export_power_w"),
             }
             for key in ((dt.weekday(), dt.hour), dt.hour):
-                target = buckets.setdefault(key, {"solar": [], "house": []}) if isinstance(key, tuple) else hour_buckets.setdefault(key, {"solar": [], "house": []})
+                target = buckets.setdefault(key, {"solar": [], "house": [], "grid_import": [], "grid_export": []}) if isinstance(key, tuple) else hour_buckets.setdefault(key, {"solar": [], "house": [], "grid_import": [], "grid_export": []})
                 for name, value in values.items():
                     if isinstance(value, (int, float)):
                         target[name].append(float(value))
 
         weather = self.weather.summary() if self.weather else {}
         forecast_rows = weather.get("forecast", []) if isinstance(weather.get("forecast"), list) else []
+        forecast_granularity = str(weather.get("forecast_granularity") or "hourly").lower()
         current_factor = self._number(weather.get("solar_factor"), 1.0) or 1.0
 
         def average(values):
@@ -2573,6 +2649,7 @@ class ForecastEngine:
 
         def weather_for(dt):
             best = None
+            target_local = dt_util.as_local(dt)
             for row in forecast_rows:
                 raw = row.get("datetime") or row.get("time")
                 try:
@@ -2581,17 +2658,27 @@ class ForecastEngine:
                     continue
                 if candidate.tzinfo is None:
                     candidate = candidate.replace(tzinfo=timezone.utc)
-                distance = abs((candidate - dt).total_seconds())
+                candidate_local = dt_util.as_local(candidate)
+
+                if forecast_granularity == "daily":
+                    if candidate_local.date() != target_local.date():
+                        continue
+                    # A daily forecast represents the complete local day.
+                    row_factor = self.weather.factor_for(row.get("condition"), row.get("cloud_coverage")) if self.weather else 1.0
+                    return row_factor, row.get("condition"), row.get("cloud_coverage"), True
+
+                distance = abs((candidate_local - target_local).total_seconds())
                 if best is None or distance < best[0]:
                     best = (distance, row)
-            if best and best[0] <= 6 * 3600:
+
+            if best and best[0] <= 3 * 3600:
                 row = best[1]
                 factor = self.weather.factor_for(row.get("condition"), row.get("cloud_coverage")) if self.weather else 1.0
                 return factor, row.get("condition"), row.get("cloud_coverage"), True
+
             # Historical solar profiles already contain normal weather variation.
-            # Never copy the current condition across future days: doing so can
-            # apply a severe-weather factor (for example lightning-rainy = 10%)
-            # to the entire week when Home Assistant exposes no forecast rows.
+            # Current weather is never copied into future days when no timestamped
+            # future forecast row exists.
             return 1.0, None, None, False
 
         flow_summary = self.energy_flow.summary() or {}
@@ -2606,6 +2693,54 @@ class ForecastEngine:
         adaptive = self._adaptive_solar_correction()
         correction_factor = self._number(adaptive.get("correction_factor"), 1.0) or 1.0
 
+        # Forecast fallback must consume the same canonical daily energy table
+        # that powers Zeus Statistics. Raw DataLake summaries can pre-date source
+        # corrections and otherwise preserve stale/high export values.
+        today_date = now.date()
+        analytics_summary = {}
+        if self.core is not None and hasattr(self.core, "analytics"):
+            try:
+                analytics_summary = self.core.analytics.summary() or {}
+            except Exception:  # noqa: BLE001 - forecast remains available
+                analytics_summary = {}
+        canonical_rows = list(((analytics_summary.get("chart_history") or {}).get("total") or []))
+        measured_days = []
+        for row in canonical_rows:
+            if not isinstance(row, dict):
+                continue
+            day_key = row.get("date")
+            try:
+                day_date = datetime.fromisoformat(str(day_key)).date()
+            except (TypeError, ValueError):
+                continue
+            if day_date >= today_date:
+                continue
+            measured_days.append((day_date, row))
+        measured_days = measured_days[-60:]
+
+        def robust_daily_value(target_date, field):
+            weekday_values = []
+            fallback_values = []
+            for day_date, row in measured_days:
+                value = row.get(field)
+                if not isinstance(value, (int, float)) or value < 0:
+                    continue
+                fallback_values.append(float(value))
+                if day_date.weekday() == target_date.weekday():
+                    weekday_values.append(float(value))
+            values = weekday_values[-8:] if len(weekday_values) >= 2 else fallback_values[-21:]
+            if not values:
+                return None
+            values = sorted(values)
+            # Median is deliberately used for forecast fallback. It is resistant
+            # to a few unusually sunny/export-heavy historical days and does not
+            # claim weather knowledge that Zeus does not have.
+            middle = len(values) // 2
+            median = values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
+            return round(median, 3)
+
+        canonical_today = dict(((analytics_summary.get("periods") or {}).get("today") or {}))
+
         hourly = []
         projected_soc = soc if 0 <= soc <= 100 else None
         for offset in range(168):
@@ -2614,8 +2749,12 @@ class ForecastEngine:
             fallback = hour_buckets.get(dt.hour, {})
             solar_values = weekday_sample.get("solar") or fallback.get("solar", [])
             house_values = weekday_sample.get("house") or fallback.get("house", [])
+            grid_import_values = weekday_sample.get("grid_import") or fallback.get("grid_import", [])
+            grid_export_values = weekday_sample.get("grid_export") or fallback.get("grid_export", [])
             baseline_solar = average(solar_values)
             house = average(house_values)
+            baseline_grid_import = average(grid_import_values)
+            baseline_grid_export = average(grid_export_values)
             factor, condition, cloud, weather_forecast_applied = weather_for(dt)
             raw_solar = round(max((baseline_solar or 0) * factor, 0), 1) if baseline_solar is not None else None
             adjusted_solar = round(max((raw_solar or 0) * correction_factor, 0), 1) if raw_solar is not None else None
@@ -2645,6 +2784,8 @@ class ForecastEngine:
                 "surplus_power_w": round(max(net_w, 0), 1) if adjusted_solar is not None and house is not None else None,
                 "grid_import_power_w": round(grid_import, 1),
                 "grid_export_power_w": round(grid_export, 1),
+                "historical_grid_import_power_w": baseline_grid_import,
+                "historical_grid_export_power_w": baseline_grid_export,
                 "projected_battery_soc_percent": round(projected_soc, 1) if projected_soc is not None else None,
                 "weather_factor": round(factor, 3),
                 "condition": condition,
@@ -2674,26 +2815,128 @@ class ForecastEngine:
         daily_forecast = []
         for day_offset in range(7):
             rows = hourly[day_offset * 24:(day_offset + 1) * 24]
+            target_date = (forecast_start + timedelta(days=day_offset)).date()
             peak = max(rows, key=lambda h: h.get("solar_power_w") or 0, default=None)
             conditions = [str(h.get("condition")) for h in rows if h.get("condition") and h.get("weather_forecast_applied")]
-            condition = max(set(conditions), key=conditions.count) if conditions else "historical-baseline"
+            weather_applied = any(bool(r.get("weather_forecast_applied")) for r in rows)
+            # Some HA hourly weather providers expose cloud/precipitation for each
+            # hour but omit a textual condition. The weather factor has still been
+            # applied to every matched hourly solar value. Never relabel such a
+            # weather-adjusted day as historical-only merely because condition text
+            # is absent.
+            condition = (
+                max(set(conditions), key=conditions.count)
+                if conditions
+                else "hourly-weather-forecast" if weather_applied
+                else "historical-baseline"
+            )
             end_soc = next((r.get("projected_battery_soc_percent") for r in reversed(rows) if r.get("projected_battery_soc_percent") is not None), None)
+
+            model_solar = energy(rows, "solar_power_w")
+            model_load = energy(rows, "house_power_w")
+            model_import = energy(rows, "grid_import_power_w")
+            model_export = energy(rows, "grid_export_power_w")
+
+            measured_solar_baseline = robust_daily_value(target_date, "solar_energy_kwh")
+            measured_load_baseline = robust_daily_value(target_date, "house_energy_kwh")
+            measured_import_baseline = robust_daily_value(target_date, "grid_import_energy_kwh")
+            measured_export_baseline = robust_daily_value(target_date, "grid_export_energy_kwh")
+
+            # With no future weather evidence, use canonical measured history.
+            # Today is special: anchor the full-day forecast to what has already
+            # happened, then add only the remaining-hours historical profile.
+            # Future days use a robust same-weekday median from completed canonical
+            # HA/Recorder days.
+            if not weather_applied:
+                if day_offset == 0 and canonical_today:
+                    future_rows = []
+                    for forecast_row in rows:
+                        try:
+                            row_time = datetime.fromisoformat(str(forecast_row.get("time") or ""))
+                            if row_time.tzinfo is None:
+                                row_time = row_time.replace(tzinfo=timezone.utc)
+                            row_time = dt_util.as_local(row_time)
+                        except (TypeError, ValueError):
+                            continue
+                        if row_time > now:
+                            future_rows.append(forecast_row)
+
+                    actual_solar = max(0.0, self._number(canonical_today.get("solar_energy_kwh"), 0.0))
+                    actual_load = max(0.0, self._number(canonical_today.get("house_energy_kwh"), 0.0))
+                    actual_import = max(0.0, self._number(canonical_today.get("grid_import_energy_kwh"), 0.0))
+                    actual_export = max(0.0, self._number(canonical_today.get("grid_export_energy_kwh"), 0.0))
+
+                    expected_solar = actual_solar + energy(future_rows, "solar_power_w")
+                    expected_load = actual_load + energy(future_rows, "house_power_w")
+                    # For the grid boundary, use directly observed historical grid
+                    # profiles for the remaining hours instead of re-simulating
+                    # battery/grid routing.
+                    expected_import = actual_import + energy(future_rows, "historical_grid_import_power_w")
+                    expected_export = actual_export + energy(future_rows, "historical_grid_export_power_w")
+                    evidence_method = "measured_today_plus_remaining_historical_profile"
+                else:
+                    expected_solar = measured_solar_baseline if measured_solar_baseline is not None else model_solar
+                    expected_load = measured_load_baseline if measured_load_baseline is not None else model_load
+                    expected_import = measured_import_baseline if measured_import_baseline is not None else model_import
+                    expected_export = measured_export_baseline if measured_export_baseline is not None else model_export
+                    evidence_method = "canonical_completed_day_weekday_median"
+            else:
+                expected_solar = model_solar
+                expected_load = model_load
+                expected_import = model_import
+                expected_export = model_export
+                evidence_method = "weather_adjusted_hourly_model"
+
+            matched_weather_rows = [
+                {
+                    "time": r.get("time"),
+                    "condition": r.get("condition"),
+                    "weather_forecast_applied": bool(r.get("weather_forecast_applied")),
+                    "weather_factor": r.get("weather_factor"),
+                    "cloud_coverage": r.get("cloud_coverage"),
+                }
+                for r in rows if r.get("weather_forecast_applied")
+            ][:6]
             daily_forecast.append({
-                "date": (forecast_start + timedelta(days=day_offset)).date().isoformat(),
-                "label": "Today" if day_offset == 0 else "Tomorrow" if day_offset == 1 else (forecast_start + timedelta(days=day_offset)).strftime("%A"),
+                "date": target_date.isoformat(),
+                "label": "Today" if day_offset == 0 else "Tomorrow" if day_offset == 1 else target_date.strftime("%A"),
                 "raw_expected_solar_kwh": energy(rows, "raw_solar_power_w"),
-                "expected_solar_kwh": energy(rows, "solar_power_w"),
+                "expected_solar_kwh": round(max(expected_solar, 0.0), 2),
                 "adaptive_correction_percent": adaptive.get("applied_correction_percent", 0.0),
                 "adaptive_correction_applied": bool(adaptive.get("applied")),
-                "expected_consumption_kwh": energy(rows, "house_power_w"),
-                "expected_grid_import_kwh": energy(rows, "grid_import_power_w"),
-                "expected_grid_export_kwh": energy(rows, "grid_export_power_w"),
+                "expected_consumption_kwh": round(max(expected_load, 0.0), 2),
+                "expected_grid_import_kwh": round(max(expected_import, 0.0), 2),
+                "expected_grid_export_kwh": round(max(expected_export, 0.0), 2),
                 "battery_soc_end_percent": end_soc,
                 "peak_hour": peak.get("hour") if peak else None,
                 "peak_power_w": peak.get("solar_power_w") if peak else None,
                 "condition": condition,
-                "weather_forecast_applied": any(bool(r.get("weather_forecast_applied")) for r in rows),
+                "weather_forecast_applied": weather_applied,
+                "evidence_method": evidence_method,
+                "weather_match_diagnostics": {
+                    "forecast_granularity": forecast_granularity,
+                    "matched_rows": len([r for r in rows if r.get("weather_forecast_applied")]),
+                    "average_weather_factor": round(
+                        sum(float(r.get("weather_factor") or 1.0) for r in rows if r.get("weather_forecast_applied"))
+                        / max(1, len([r for r in rows if r.get("weather_forecast_applied")])),
+                        3,
+                    ) if weather_applied else None,
+                    "sample": matched_weather_rows,
+                },
             })
+
+        # Public 24h/following-24h values follow the same daily evidence contract
+        # as the 7-day cards.
+        if daily_forecast:
+            today_solar = daily_forecast[0]["expected_solar_kwh"]
+            today_load = daily_forecast[0]["expected_consumption_kwh"]
+            today_import = daily_forecast[0]["expected_grid_import_kwh"]
+            today_export = daily_forecast[0]["expected_grid_export_kwh"]
+        if len(daily_forecast) > 1:
+            tomorrow_solar = daily_forecast[1]["expected_solar_kwh"]
+            tomorrow_load = daily_forecast[1]["expected_consumption_kwh"]
+            tomorrow_import = daily_forecast[1]["expected_grid_import_kwh"]
+            tomorrow_export = daily_forecast[1]["expected_grid_export_kwh"]
 
         history_samples = sum(min(h["sample_count"], 21) for h in valid[:24])
         history_confidence = min(75, int(history_samples / max(24 * 21, 1) * 75)) if valid else 0
@@ -2732,7 +2975,10 @@ class ForecastEngine:
             "calendar_aligned": True,
             "weather_forecast_hours_48h": forecast_weather_hours,
             "weather_fallback": "historical_profile" if forecast_weather_hours < 4 else None,
-            "weather": {k: weather.get(k) for k in ("entity_id", "condition", "temperature", "cloud_coverage", "forecast_available", "solar_factor")},
+            "weather": {
+                **{k: weather.get(k) for k in ("entity_id", "condition", "temperature", "cloud_coverage", "forecast_available", "forecast_granularity", "solar_factor")},
+                "forecast_diagnostics": weather.get("forecast_diagnostics"),
+            },
             "raw_expected_solar_next_24h_kwh": raw_today_solar,
             "raw_expected_solar_following_24h_kwh": raw_tomorrow_solar,
             "expected_solar_next_24h_kwh": today_solar,

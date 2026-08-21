@@ -253,8 +253,17 @@ class AionCore:
         await self.opportunity_learning.async_load()
         await self.planning_engine.async_load()
         await self.integration_hub.async_discover_ha_mounts()
+        # Modern HA weather forecasts are action responses, not entity attributes.
+        # Fetch them before the first forecast/decision refresh so Zeus starts with
+        # tomorrow/day-N weather evidence already available.
+        self.weather.refresh()
+        if hasattr(self.weather, "async_refresh_forecast"):
+            await self.weather.async_refresh_forecast()
         self.refresh_pipeline()
         await self.weather_history.async_capture_today()
+        # weather_history refreshes the provider forecast as part of capture;
+        # refresh forecast-dependent engines once more so the newest rows are live.
+        self._refresh_decision_and_api_engines()
         await self.update_engine.async_start()
         self._schedule_startup_mapping_restore()
         self._schedule_startup_engine_recovery()
@@ -529,7 +538,13 @@ class AionCore:
         self._refresh_decision_and_api_engines()
 
     async def async_capture_pipeline_snapshot(self) -> None:
-        self.refresh_live_pipeline(force_decisions=True)
+        # Refresh live measurements first, then retrieve modern HA future weather
+        # before decision engines calculate the forecast.
+        self.refresh_live_pipeline(force_decisions=False)
+        self.weather.refresh()
+        if hasattr(self.weather, "async_refresh_forecast"):
+            await self.weather.async_refresh_forecast()
+        self._refresh_decision_and_api_engines()
         await self.data_lake.async_capture_snapshot()
         await self.intelligence_memory.async_capture_today()
         await self.weather_history.async_capture_today()

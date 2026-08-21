@@ -1,11 +1,13 @@
 {
   "domain": "aion_ems_zeus",
-  "name": "AION EMS",
-  "codeowners": [],
+  "name": "AION EMS Zeus",
+  "codeowners": [
+    "@showupch"
+  ],
   "config_flow": true,
-  "documentation": "https://example.local/aion-ems",
+  "documentation": "https://github.com/showupch/AION-EMS-Zeus",
   "iot_class": "local_push",
-  "issue_tracker": "https://example.local/aion-ems/issues",
+  "issue_tracker": "https://github.com/showupch/AION-EMS-Zeus/issues",
   "requirements": [],
-  "version": "14.0.0-alpha.22.18.1.62"
+  "version": "14.0.0-alpha.22.18.1.78"
 }
