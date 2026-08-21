@@ -315,7 +315,15 @@ The kiosk uses the same underlying Zeus/Home Assistant data sources as the main 
 
 ## 1. Download Zeus
 
-Download the latest AION EMS Zeus release ZIP.
+For normal Home Assistant installation, download the prepared Zeus installation package from the **latest GitHub Release**.
+
+Go to **Releases → Latest** and download the asset whose filename ends with:
+
+`_GITHUB_RELEASE.zip`
+
+> **Do not use GitHub's automatically generated `Source code (zip)` or `Source code (tar.gz)` archives for installation.**
+>
+> Always use the prepared AION EMS Zeus `_GITHUB_RELEASE.zip` package listed under **Assets**.
 
 Creating a Home Assistant backup before installing or updating a custom integration is recommended.
 
