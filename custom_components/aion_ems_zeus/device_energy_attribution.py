@@ -36,7 +36,7 @@ class DeviceEnergyAttributionEngine:
         self.device_analytics = device_analytics
         self.last: dict[str, Any] = {
             "status": "Waiting", "engine": "Device Energy Attribution Engine",
-            "version": "1.10", "devices": [], "periods": {},
+            "version": "1.13", "devices": [], "periods": {},
         }
 
     @staticmethod
@@ -245,12 +245,32 @@ class DeviceEnergyAttributionEngine:
             if analytics is None:
                 result.append(self._fallback_device_row(registered))
             else:
-                # Keep current registry mappings/classification authoritative while
-                # preserving period-energy fields calculated by Device Analytics.
-                result.append({**registered, **analytics})
+                # Device Analytics supplies the calculated period-energy fields,
+                # but Registry owns the entity mappings.  The previous merge order
+                # allowed stale/None analytics mapping fields to overwrite valid
+                # registry power_entity / energy_entity values, which excluded
+                # otherwise valid flexible loads from DEA history collection.
+                merged = {**registered, **analytics}
+                for mapping_key in (
+                    "power_entity", "energy_entity", "temperature_entity",
+                    "cop_entity", "state_entity", "availability_entity",
+                ):
+                    registry_value = registered.get(mapping_key)
+                    if registry_value:
+                        merged[mapping_key] = registry_value
+                # Keep the registry classification where it exists as well; this
+                # prevents stale analytics metadata from reclassifying a load.
+                for classification_key in ("type", "category", "role", "device_class"):
+                    registry_value = registered.get(classification_key)
+                    if registry_value:
+                        merged[classification_key] = registry_value
+                result.append(merged)
         return result
 
     async def async_refresh(self) -> dict[str, Any]:
+        registry_devices = list(self.registry.data.get("devices", []) or [])
+        registry_with_power = [d for d in registry_devices if d.get("power_entity")]
+        registry_consuming = [d for d in registry_with_power if self._is_consuming_load(d)]
         devices = self._registered_loads()
         sources = self._source_entities()
         required_sources = [x for x in sources.values() if x]
@@ -520,11 +540,17 @@ class DeviceEnergyAttributionEngine:
         payload_devices = list(per_device.values())
         self.last = {
             "status": "Ready" if payload_devices else "Waiting",
-            "engine": "Device Energy Attribution Engine", "version": "1.10",
+            "engine": "Device Energy Attribution Engine", "version": "1.13",
             "generated_at": now.isoformat(), "devices": payload_devices,
             "periods": period_payload,
             "method": "Recorder state-history power timing on exact calendar windows; registered-device power is reconciled to measured whole-home demand at each aligned timestamp before energy integration and source allocation.",
             "principle": "Every device kWh is attributed once across solar, wind, generator, battery and grid; local generation remains source-preserving.",
+            "registry_diagnostics": {
+                "registered_total": len(registry_devices),
+                "registered_with_power_entity": len(registry_with_power),
+                "classified_consuming_loads": len(registry_consuming),
+                "dea_load_rows": len(devices),
+            },
             "safety": "Read-only. Recommendation-only mode; no device control.",
         }
         self.event_bus.publish("DeviceEnergyAttributionUpdated", "DeviceEnergyAttributionEngine", {"device_count": len(payload_devices)})
@@ -575,7 +601,7 @@ class DeviceEnergyAttributionEngine:
         return {
             "status": data.get("status", "Waiting"),
             "engine": data.get("engine", "Device Energy Attribution Engine"),
-            "version": data.get("version", "1.7"),
+            "version": data.get("version", "1.12"),
             "generated_at": data.get("generated_at"),
             "device_count": len(devices),
             "periods": compact_periods,

@@ -104,6 +104,7 @@ class RegistryEngine:
         hybrid_inverter: bool = False,
         solar_power_entity: str | None = None,
         temperature_entity: str | None = None,
+        cop_entity: str | None = None,
     ) -> dict[str, Any]:
         return {
             "id": device_id,
@@ -126,6 +127,7 @@ class RegistryEngine:
             "hybrid_inverter": bool(hybrid_inverter),
             "solar_power_entity": solar_power_entity,
             "temperature_entity": temperature_entity,
+            "cop_entity": cop_entity,
             "created_by": "aion_ems",
             "site_id": "home",
         }
@@ -203,6 +205,29 @@ class RegistryEngine:
                         issues.append({"severity": "error", "code": "TEMPERATURE_ENTITY_INVALID", "message": "temperature_entity must be a Home Assistant temperature sensor (°C, °F, or K)."})
                     elif str(state.state).strip().lower() in {"unknown", "unavailable", "none", ""}:
                         issues.append({"severity": "warning", "code": "TEMPERATURE_TEMPORARILY_UNAVAILABLE", "message": "Temperature sensor is configured but currently unavailable."})
+        cop_entity = device.get("cop_entity")
+        if cop_entity:
+            if str(device.get("type") or "") != "heat_pump":
+                issues.append({"severity": "error", "code": "COP_DEVICE_TYPE_INVALID", "message": "cop_entity is only supported for Heat Pump devices."})
+            elif str(cop_entity).startswith(("sensor.aion_ems_zeus_", "binary_sensor.aion_ems_zeus_", "switch.aion_ems_zeus_")):
+                issues.append({"severity": "error", "code": "CIRCULAR_AION_MAPPING", "message": "cop_entity cannot use an AION output entity."})
+            else:
+                state = self.hass.states.get(cop_entity)
+                if state is None:
+                    issues.append({"severity": "error", "code": "ENTITY_NOT_FOUND", "message": "cop_entity entity does not exist."})
+                else:
+                    unit = str(state.attributes.get("unit_of_measurement") or "").strip()
+                    raw = str(state.state).strip().lower()
+                    try:
+                        value = float(state.state)
+                    except (TypeError, ValueError):
+                        value = None
+                    if raw in {"unknown", "unavailable", "none", ""}:
+                        issues.append({"severity": "warning", "code": "COP_TEMPORARILY_UNAVAILABLE", "message": "COP sensor is configured but currently unavailable."})
+                    elif value is None:
+                        issues.append({"severity": "error", "code": "COP_ENTITY_INVALID", "message": "cop_entity must expose a numeric COP value."})
+                    elif unit and unit.lower() not in {"cop", "ratio"}:
+                        issues.append({"severity": "warning", "code": "COP_UNIT_UNUSUAL", "message": f"COP sensor unit is '{unit}'. Expected COP or a dimensionless ratio."})
         for key in ("state_entity", "availability_entity"):
             entity_id = device.get(key)
             if not entity_id:
@@ -229,7 +254,7 @@ class RegistryEngine:
 
     async def async_remove_device(self, device_id: str) -> None:
         removed = next((d for d in self.data.get("devices", []) if d.get("id") == device_id), None)
-        removed_entities = {str(removed.get(k)) for k in ("power_entity", "energy_entity", "state_entity", "availability_entity", "solar_power_entity", "temperature_entity") if removed and removed.get(k)}
+        removed_entities = {str(removed.get(k)) for k in ("power_entity", "energy_entity", "state_entity", "availability_entity", "solar_power_entity", "temperature_entity", "cop_entity") if removed and removed.get(k)}
         self.data["devices"] = [d for d in self.data["devices"] if d.get("id") != device_id]
         # Lifecycle cleanup: mappings owned by the removed device must not survive
         # as permanent stale System Health warnings. Never touch unrelated mappings.

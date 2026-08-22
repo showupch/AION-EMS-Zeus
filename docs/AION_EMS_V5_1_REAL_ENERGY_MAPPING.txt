@@ -1,0 +1,33 @@
+AION EMS v5.1 Real Energy Mapping
+=================================
+
+New:
+- EnergyMappingEngine
+- sensor.aion_ems_zeus_energy_mapping
+- aion_ems_zeus.refresh_energy_mapping
+- Dashboard: AION_EMS_v5_1_Real_Energy_Mapping.yaml
+
+Mapped EMS fields:
+- solar_power
+- solar_energy_total
+- house_power
+- house_energy_total
+- grid_import_power
+- grid_export_power
+- grid_power
+- grid_import_energy_total
+- grid_export_energy_total
+- battery_soc
+- battery_power
+- battery_charge_power
+- battery_discharge_power
+- ev_power
+- ev_energy_total
+- heat_pump_power
+- heat_pump_energy_total
+- water_heater_power
+- water_heater_energy_total
+
+Safety:
+- Read-only
+- No device control

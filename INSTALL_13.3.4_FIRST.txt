@@ -1,0 +1,10 @@
+AION EMS Zeus v14.0.0-alpha.22.6.1.13.3.4
+
+Install:
+1. Stop/restart window as usual.
+2. Delete /config/custom_components/aion_ems_zeus completely.
+3. Copy the fresh custom_components/aion_ems_zeus folder from this ZIP.
+4. Confirm knowledge_v2_pkg/__init__.py exists.
+5. Restart Home Assistant.
+
+Keep sensor.zeus_solar mapped as Inputs -> Solar Power.

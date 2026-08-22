@@ -1,0 +1,21 @@
+AION EMS Zeus v14.0.0-alpha.22.6.1.13.3.3
+
+IMPORTANT: DO NOT MERGE THIS OVER THE FAILED 13.3.2 INSTALL.
+
+1) Delete this folder completely:
+   /config/custom_components/aion_ems_zeus
+
+2) From this ZIP copy/extract:
+   custom_components/aion_ems_zeus
+   into:
+   /config/custom_components/
+
+3) BEFORE restart, verify this exact file exists:
+   /config/custom_components/aion_ems_zeus/knowledge_v2_pkg/__init__.py
+
+4) Also verify:
+   /config/custom_components/aion_ems_zeus/knowledge_v2_pkg/knowledge_engine.py
+
+5) Restart Home Assistant.
+
+KEEP sensor.zeus_solar configured as the canonical Solar Input.

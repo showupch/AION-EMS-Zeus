@@ -131,6 +131,7 @@ def _device_schema(require_all=True):
         vol.Optional("hybrid_inverter", default=False): cv.boolean,
         vol.Optional("solar_power_entity"): cv.entity_id,
         vol.Optional("temperature_entity"): cv.entity_id,
+        vol.Optional("cop_entity"): cv.entity_id,
     })
 
 
@@ -290,6 +291,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             hybrid_inverter=call.data.get("hybrid_inverter", False),
             solar_power_entity=call.data.get("solar_power_entity"),
             temperature_entity=call.data.get("temperature_entity"),
+            cop_entity=call.data.get("cop_entity"),
         )
         issues = await core.registry.async_add_device(device)
         core.device_import_manager.last_validation = {"status": "Imported" if not any(i["severity"] == "error" for i in issues) else "Error", "device": device, "issues": issues, "message": "Device import completed."}

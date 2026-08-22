@@ -425,8 +425,8 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
     <details class="panel" open><summary><b>Energy Totals — exact daily statistics</b></summary><div class="sub">Map daily-reset energy sensors when available. Lifetime total-increasing meters are also supported and Zeus calculates the daily delta. Without an energy mapping, totals are estimates integrated from live power samples.</div>${fields.filter(f=>["solar_energy_today","solar_energy_total","house_energy_today","house_energy_total","grid_import_energy_today","grid_export_energy_today","grid_import_energy_total","grid_export_energy_total","battery_charge_energy_today","battery_discharge_energy_today","battery_charge_energy_total","battery_discharge_energy_total"].includes(f)).map(f=>this.mappingRow(f,mappings,suggestions,invalid)).join("")}</details>
     <div id="registeredDevices" class="section-title"><span>2</span><div><h2>Registered Devices</h2><div class="sub">Add EV wallboxes, heat pumps, water heaters and every other monitored load. Multiple devices of the same type are supported.</div></div></div><div class="panel"><h2>Add Device</h2><div class="sub">Add any number of devices of the same type, for example two or more EV wallboxes. Each device requires a live power entity and a daily energy entity. State and availability are optional.</div><div class="grid">
       <select id="devType"><option value="ev_charger">EV Charger / Wallbox</option><option value="battery">Battery</option><option value="heat_pump">Heat Pump</option><option value="water_heater">DHW / Water Heater</option><option value="dishwasher">Dishwasher</option><option value="washing_machine">Washing Machine</option><option value="dryer">Dryer</option><option value="air_conditioner">Air Conditioner</option><option value="pool_pump">Pool Pump</option><option value="smart_plug">Smart Plug / Generic Load</option><option value="custom">Other Device</option></select>
-      <input id="devName" type="text" placeholder="Friendly name, e.g. Garage Wallbox"><input id="devId" type="text" placeholder="Unique ID (optional; generated from name)">${this.picker("devPower","","Required: search power entity (W/kW)")}${this.picker("devEnergy","","Required: search energy entity (daily or total, Wh/kWh/MWh)")}<select id="devEnergyType"><option value="auto">Energy type: Auto detect (recommended)</option><option value="daily">Energy type: Daily / resets each day</option><option value="total_increasing">Energy type: Total increasing (Shelly and smart plugs)</option></select>${this.picker("devState","","Optional: search state entity")}${this.picker("devAvailability","","Optional: search availability entity")}<span id="devTemperatureField" style="display:none">${this.picker("devTemperature","","Optional: DHW / device temperature sensor (°C/°F/K)")}</span><label id="devHybridInverterOption" class="hybrid-inverter-option" hidden><input id="devHybridInverter" type="checkbox"> Hybrid inverter — AC output includes battery discharge</label><div id="hybridSolarPowerField" class="hybrid-solar-power-field" hidden><b>HYBRID SOLAR POWER ENTITY — REQUIRED</b><small>This MUST be the real photovoltaic power sensor, not inverter AC power. Example: sensor.solarnet_power_photovoltaics</small>${this.picker("devSolarPower","","Required for HYBRID: true PV / photovoltaic power entity (W or kW)")}</div></div><div class="buttons" style="margin-top:10px"><button id="testDevice">Save Device</button></div><div class="hint">Power and Energy are required. Energy may be a daily-reset sensor or a lifetime total-increasing sensor. Auto detect uses Home Assistant state_class and the entity name. State and Availability are optional. Adding another EV charger creates another Registry entry—it does not replace the first unless the same ID is reused.</div></div>
-    <div class="panel"><h2>Saved Devices <span class="pill">${devices.length}</span></h2><div class="grid">${devices.length?devices.map(d=>`<div class="device"><b>${this.esc(d.name||d.id)}</b><div><span class="pill">${this.esc(d.type||"custom")}</span></div><div>${this.esc(d.id)}</div><div>${this.esc(d.power_entity||"")}</div>${d.energy_entity?`<div>${this.esc(d.energy_entity)} · ${this.esc(d.energy_type||"auto")}</div>`:""}${d.temperature_entity?`<div><b>Temperature:</b> ${this.esc(d.temperature_entity)}</div>`:""}${d.hybrid_inverter?`<div><span class="pill">Hybrid correction active</span></div><div><b>Solar power:</b> ${this.esc(d.solar_power_entity||"NOT CONFIGURED")}</div>`:""}<div class="buttons"><button data-edit="${this.esc(d.id)}">Edit</button><button class="danger" data-remove="${this.esc(d.id)}">Remove</button></div></div>`).join(""):"No registered devices."}</div></div>`;
+      <input id="devName" type="text" placeholder="Friendly name, e.g. Garage Wallbox"><input id="devId" type="text" placeholder="Unique ID (optional; generated from name)">${this.picker("devPower","","Required: search power entity (W/kW)")}${this.picker("devEnergy","","Required: search energy entity (daily or total, Wh/kWh/MWh)")}<select id="devEnergyType"><option value="auto">Energy type: Auto detect (recommended)</option><option value="daily">Energy type: Daily / resets each day</option><option value="total_increasing">Energy type: Total increasing (Shelly and smart plugs)</option></select>${this.picker("devState","","Optional: search state entity")}${this.picker("devAvailability","","Optional: search availability entity")}<span id="devTemperatureField" style="display:none">${this.picker("devTemperature","","Optional: DHW / device temperature sensor (°C/°F/K)")}</span><span id="devCopField" style="display:none">${this.picker("devCop","","Optional: Heat Pump COP sensor")}</span><label id="devHybridInverterOption" class="hybrid-inverter-option" hidden><input id="devHybridInverter" type="checkbox"> Hybrid inverter — AC output includes battery discharge</label><div id="hybridSolarPowerField" class="hybrid-solar-power-field" hidden><b>HYBRID SOLAR POWER ENTITY — REQUIRED</b><small>This MUST be the real photovoltaic power sensor, not inverter AC power. Example: sensor.solarnet_power_photovoltaics</small>${this.picker("devSolarPower","","Required for HYBRID: true PV / photovoltaic power entity (W or kW)")}</div></div><div class="buttons" style="margin-top:10px"><button id="testDevice">Save Device</button></div><div class="hint">Power and Energy are required. Energy may be a daily-reset sensor or a lifetime total-increasing sensor. Auto detect uses Home Assistant state_class and the entity name. State and Availability are optional. Adding another EV charger creates another Registry entry—it does not replace the first unless the same ID is reused.</div></div>
+    <div class="panel"><h2>Saved Devices <span class="pill">${devices.length}</span></h2><div class="grid">${devices.length?devices.map(d=>`<div class="device"><b>${this.esc(d.name||d.id)}</b><div><span class="pill">${this.esc(d.type||"custom")}</span></div><div>${this.esc(d.id)}</div><div>${this.esc(d.power_entity||"")}</div>${d.energy_entity?`<div>${this.esc(d.energy_entity)} · ${this.esc(d.energy_type||"auto")}</div>`:""}${d.temperature_entity?`<div><b>Temperature:</b> ${this.esc(d.temperature_entity)}</div>`:""}${d.cop_entity?`<div><b>COP:</b> ${this.esc(d.cop_entity)}</div>`:""}${d.hybrid_inverter?`<div><span class="pill">Hybrid correction active</span></div><div><b>Solar power:</b> ${this.esc(d.solar_power_entity||"NOT CONFIGURED")}</div>`:""}<div class="buttons"><button data-edit="${this.esc(d.id)}">Edit</button><button class="danger" data-remove="${this.esc(d.id)}">Remove</button></div></div>`).join(""):"No registered devices."}</div></div>`;
     const gridSign=this.shadowRoot.querySelector("#gridSign");if(gridSign)gridSign.value=mappingOptions.grid_power_sign||"positive_import";
     const batterySign=this.shadowRoot.querySelector("#batterySign");if(batterySign)batterySign.value=mappingOptions.battery_power_sign||"positive_discharge";
     this.shadowRoot.querySelectorAll('input[name="gridMode"]').forEach(r=>r.onchange=()=>{
@@ -459,20 +459,22 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
     this.shadowRoot.querySelector('#manager-clear-battery-capacity')?.addEventListener('click',async()=>{
       try{await this._hass.callService('aion_ems_zeus','clear_battery_capacity',{});this._wizardData={...(this._wizardData||{}),battery_capacity:''};try{localStorage.setItem('aion_zeus_wizard_data',JSON.stringify(this._wizardData));}catch(_e){}this._unsavedChanges=false;this._editLocked=false;await this._hass.callService('homeassistant','update_entity',{entity_id:'sensor.aion_ems_zeus_settings_api'});this.render();}catch(e){alert(e.message||String(e));}
     });
-    const devType=this.shadowRoot.querySelector("#devType"),temperatureField=this.shadowRoot.querySelector("#devTemperatureField"),hybridOption=this.shadowRoot.querySelector("#devHybridInverterOption"),hybridToggle=this.shadowRoot.querySelector("#devHybridInverter"),hybridField=this.shadowRoot.querySelector("#hybridSolarPowerField");
+    const devType=this.shadowRoot.querySelector("#devType"),temperatureField=this.shadowRoot.querySelector("#devTemperatureField"),copField=this.shadowRoot.querySelector("#devCopField"),hybridOption=this.shadowRoot.querySelector("#devHybridInverterOption"),hybridToggle=this.shadowRoot.querySelector("#devHybridInverter"),hybridField=this.shadowRoot.querySelector("#hybridSolarPowerField");
     const syncDeviceTypeFields=()=>{
       const type=String(devType?.value||"").toLowerCase();
       const isWaterHeater=type==="water_heater";
+      const isHeatPump=type==="heat_pump";
       const isInverter=type==="inverter";
       if(temperatureField)temperatureField.style.display=isWaterHeater?"contents":"none";
+      if(copField)copField.style.display=isHeatPump?"contents":"none";
       if(hybridOption)hybridOption.hidden=!isInverter;
       if(hybridField)hybridField.hidden=!(isInverter&&hybridToggle?.checked);
     };
     if(devType)devType.onchange=syncDeviceTypeFields;
     if(hybridToggle)hybridToggle.onchange=syncDeviceTypeFields;
     syncDeviceTypeFields();
-    this.shadowRoot.querySelector("#testDevice").onclick=()=>{const type=this.shadowRoot.querySelector("#devType").value,name=this.shadowRoot.querySelector("#devName").value.trim(),power=this.shadowRoot.querySelector("#devPower").value.trim(),energy=this.shadowRoot.querySelector("#devEnergy").value.trim(),energyType=this.shadowRoot.querySelector("#devEnergyType").value,state=this.shadowRoot.querySelector("#devState").value.trim(),availability=this.shadowRoot.querySelector("#devAvailability").value.trim(),temperature=(type==="water_heater"?(this.shadowRoot.querySelector("#devTemperature")?.value.trim()||""):""),hybridInverter=(type==="inverter"&&!!this.shadowRoot.querySelector("#devHybridInverter")?.checked),solarPower=(type==="inverter"?(this.shadowRoot.querySelector("#devSolarPower")?.value.trim()||""):"");let id=this.shadowRoot.querySelector("#devId").value.trim();if(!name||!power||!energy){this._error="Friendly name, power entity and energy entity are required.";this.render();return;}if(hybridInverter&&!solarPower){this._error="HYBRID inverter requires the true Solar Power entity. Do not use AC power.";this.render();return;}if(!id)id=`${type}_${this.slug(name)}`;const exists=devices.some(d=>d.id===id);this.call(exists?"update_device":"add_device",{device_id:id,name,power_entity:power,energy_entity:energy,energy_type:energyType,device_type:type,hybrid_inverter:hybridInverter,...(solarPower?{solar_power_entity:solarPower}:{}),...(state?{state_entity:state}:{}),...(availability?{availability_entity:availability}:{}),...(temperature?{temperature_entity:temperature}:{})});};
-    this.shadowRoot.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>{const d=devices.find(x=>x.id===b.dataset.edit);if(!d)return;this.shadowRoot.querySelector("#devType").value=d.type||"custom";this.shadowRoot.querySelector("#devName").value=d.name||"";this.shadowRoot.querySelector("#devId").value=d.id||"";this.shadowRoot.querySelector("#devPower").value=d.power_entity||"";this.shadowRoot.querySelector("#devEnergy").value=d.energy_entity||"";this.shadowRoot.querySelector("#devEnergyType").value=d.energy_type||"auto";this.shadowRoot.querySelector("#devState").value=d.state_entity||"";this.shadowRoot.querySelector("#devAvailability").value=d.availability_entity||"";this.shadowRoot.querySelector("#devTemperature").value=d.temperature_entity||"";this.shadowRoot.querySelector("#devHybridInverter").checked=!!d.hybrid_inverter;const solarPowerInput=this.shadowRoot.querySelector("#devSolarPower");if(solarPowerInput)solarPowerInput.value=d.solar_power_entity||"";syncDeviceTypeFields();this.shadowRoot.querySelector("#testDevice").textContent="Update Device";this.shadowRoot.querySelector("#registeredDevices")?.scrollIntoView({behavior:"smooth",block:"start"});});
+    this.shadowRoot.querySelector("#testDevice").onclick=()=>{const type=this.shadowRoot.querySelector("#devType").value,name=this.shadowRoot.querySelector("#devName").value.trim(),power=this.shadowRoot.querySelector("#devPower").value.trim(),energy=this.shadowRoot.querySelector("#devEnergy").value.trim(),energyType=this.shadowRoot.querySelector("#devEnergyType").value,state=this.shadowRoot.querySelector("#devState").value.trim(),availability=this.shadowRoot.querySelector("#devAvailability").value.trim(),temperature=(type==="water_heater"?(this.shadowRoot.querySelector("#devTemperature")?.value.trim()||""):""),cop=(type==="heat_pump"?(this.shadowRoot.querySelector("#devCop")?.value.trim()||""):""),hybridInverter=(type==="inverter"&&!!this.shadowRoot.querySelector("#devHybridInverter")?.checked),solarPower=(type==="inverter"?(this.shadowRoot.querySelector("#devSolarPower")?.value.trim()||""):"");let id=this.shadowRoot.querySelector("#devId").value.trim();if(!name||!power||!energy){this._error="Friendly name, power entity and energy entity are required.";this.render();return;}if(hybridInverter&&!solarPower){this._error="HYBRID inverter requires the true Solar Power entity. Do not use AC power.";this.render();return;}if(!id)id=`${type}_${this.slug(name)}`;const exists=devices.some(d=>d.id===id);this.call(exists?"update_device":"add_device",{device_id:id,name,power_entity:power,energy_entity:energy,energy_type:energyType,device_type:type,hybrid_inverter:hybridInverter,...(solarPower?{solar_power_entity:solarPower}:{}),...(state?{state_entity:state}:{}),...(availability?{availability_entity:availability}:{}),...(temperature?{temperature_entity:temperature}:{}),...(cop?{cop_entity:cop}:{})});};
+    this.shadowRoot.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>{const d=devices.find(x=>x.id===b.dataset.edit);if(!d)return;this.shadowRoot.querySelector("#devType").value=d.type||"custom";this.shadowRoot.querySelector("#devName").value=d.name||"";this.shadowRoot.querySelector("#devId").value=d.id||"";this.shadowRoot.querySelector("#devPower").value=d.power_entity||"";this.shadowRoot.querySelector("#devEnergy").value=d.energy_entity||"";this.shadowRoot.querySelector("#devEnergyType").value=d.energy_type||"auto";this.shadowRoot.querySelector("#devState").value=d.state_entity||"";this.shadowRoot.querySelector("#devAvailability").value=d.availability_entity||"";this.shadowRoot.querySelector("#devTemperature").value=d.temperature_entity||"";this.shadowRoot.querySelector("#devCop").value=d.cop_entity||"";this.shadowRoot.querySelector("#devHybridInverter").checked=!!d.hybrid_inverter;const solarPowerInput=this.shadowRoot.querySelector("#devSolarPower");if(solarPowerInput)solarPowerInput.value=d.solar_power_entity||"";syncDeviceTypeFields();this.shadowRoot.querySelector("#testDevice").textContent="Update Device";this.shadowRoot.querySelector("#registeredDevices")?.scrollIntoView({behavior:"smooth",block:"start"});});
     this.shadowRoot.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>confirm(`Remove ${b.dataset.remove}?`)&&this.call("device_manager_remove_device",{device_id:b.dataset.remove}));
     try{const pending=localStorage.getItem('aion_zeus_manage_device')||'';if(pending){const edit=this.shadowRoot.querySelector(`[data-edit="${pending.replace(/"/g,'')}"]`);if(edit){requestAnimationFrame(()=>edit.click());localStorage.removeItem('aion_zeus_manage_device');}}}catch(_e){}
   }
@@ -494,7 +496,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       if(requestId!==this._deaRequestSeq||!this.isConnected)return;
       this._deaData=data||{};
       this._deaMarker=marker||String(data?.generated_at||'');
-      if(this._page==='dashboard'||this._page==='energy_finance'||this._page==='energy_flow_intelligence'||this._page==='battery_intelligence'||this._page==='device_intelligence')this.queueRender(0);
+      if(['dashboard','energy_finance','finance','energy_flow_intelligence','battery_intelligence','device_intelligence','energy_plan','statistics_hub','energy_status'].includes(this._page))this.queueRender(0);
     }catch(e){
       if(requestId!==this._deaRequestSeq)return;
       const message=e?.message||String(e);
@@ -871,8 +873,9 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const today=this.planningTodayPage();
     const scenarios=this.planningScenariosPage();
     const intelligence=this.planningIntelligenceSummary();
+    const flexible=this.evFlexibleLoadIntelligencePanel();
     const embed=x=>String(x||'').replace(/^<section class="page([^"]*)">/,(_m,classes)=>`<section class="embedded-page${classes}">`);
-    return `<section style="padding-top:18px" class="page consolidated-plan-page"><div class="page-head"><div><span>ENERGY · PLAN</span><h1>Plan</h1><p>Today’s energy plan, recommendation-only scenarios and planning intelligence.</p></div></div><div class="consolidated-page-stack">${embed(today)}${embed(scenarios)}${intelligence}</div></section>`;
+    return `<section style="padding-top:18px" class="page consolidated-plan-page"><div class="page-head"><div><span>ENERGY · PLAN</span><h1>Plan</h1><p>Today’s energy plan, recommendation-only scenarios and planning intelligence.</p></div></div><div class="consolidated-page-stack">${embed(today)}${embed(scenarios)}${intelligence}${flexible}</div></section>`;
   }
   isHomeAssistantCompanionApp(){
     const ua=String(globalThis.navigator?.userAgent||'');
@@ -961,12 +964,12 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const node=(kind,icon,title,value,sub,left,top,active)=>`<article class="hub-node ${kind} ${active?'active':''}" style="--node-left:${left}%;--node-top:${top}%"><div class="hub-node-icon"><ha-icon icon="${icon}"></ha-icon></div><span>${this.esc(title)}</span><strong>${this.esc(value)}</strong>${sub?`<small>${this.esc(sub)}</small>`:''}<i class="hub-anchor"></i></article>`;
     return `<section style="padding-top:18px" class="page"><div class="page-head"><div><span>LIVE · ENERGY</span><h1>Energy</h1><p>See live production, consumption, storage and grid flow together in one place.</p></div><div class="live-badge"><i></i> LIVE</div></div><div class="energy-hub-stage"><svg class="energy-hub-svg" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="arrow-solar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z"></path></marker><marker id="arrow-load" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z"></path></marker><marker id="arrow-grid" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z"></path></marker><marker id="arrow-battery" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z"></path></marker></defs>${path('solar-hub','M 280 130 C 365 130, 410 220, 475 285',solarActive,solar,'solar',false,this.watts(solar))}${path('hub-home','M 475 315 C 405 390, 365 470, 280 470',homeActive,home,'load',false,this.watts(home),'M 280 470 C 365 470, 405 390, 475 315')}${path('grid-hub','M 720 160 C 635 160, 590 230, 525 285',importActive,imp,'grid',false,this.watts(imp),'M 525 285 C 590 230, 635 160, 720 160')}${path('hub-grid','M 525 285 C 590 230, 635 160, 720 160',exportActive,exp,'grid',false,this.watts(exp))}${path('hub-battery','M 525 315 C 590 370, 635 440, 720 440',chargeActive,ch,'battery',false,this.watts(ch))}${path('battery-hub','M 720 440 C 635 440, 590 370, 525 315',dischargeActive,dis,'battery',false,this.watts(dis),'M 525 315 C 590 370, 635 440, 720 440')}</svg><div class="energy-hub-core"><ha-icon icon="mdi:lightning-bolt"></ha-icon><span>Energy Hub</span><b>${exportActive?this.watts(exp)+' export':importActive?this.watts(imp)+' import':'Balanced'}</b></div>${node('solar','mdi:white-balance-sunny','Solar',this.watts(solar),solarActive?'Producing':'Idle',18,22,solarActive)}${node('grid','mdi:transmission-tower',`Grid ${gridState}`,this.watts(importActive?imp:exportActive?exp:0),gridState,82,27,importActive||exportActive)}${node('home','mdi:home-lightning-bolt','Home',this.watts(home),homeActive?'Consuming':'Idle',18,78,homeActive)}${node('battery','mdi:battery-high',`Battery · ${batteryState}`,soc===null?'—':`${soc.toFixed(1)}%`,chargeActive?this.watts(ch):dischargeActive?this.watts(dis):'No active flow',82,73,chargeActive||dischargeActive)}<div class="flow-legend hub-legend"><span><i class="solar-dot"></i>Solar ${this.watts(solar)}</span><span><i class="load-dot"></i>Home ${this.watts(home)}</span><span>Grid ${importActive?'import '+this.watts(imp):exportActive?'export '+this.watts(exp):'balanced'}</span><span>Battery ${chargeActive?'charge '+this.watts(ch):dischargeActive?'discharge '+this.watts(dis):'idle'}</span></div></div><div class="flow-explain"><article><ha-icon icon="mdi:check-circle-outline"></ha-icon><div><b>What is happening</b><p>${this.esc(explanation)}</p></div></article><article><ha-icon icon="mdi:shield-outline"></ha-icon><div><b>Noise filter</b><p>Values at or below ${threshold} W are treated as idle so impossible paths stay hidden.</p></div></article></div><div class="flow-summary"><div><span>Threshold</span><b>${threshold} W</b></div><div><span>Solar</span><b>${this.watts(solar)}</b></div><div><span>To home</span><b>${this.watts(solarToHome||gridToHome||batteryToHome)}</b></div><div><span>To battery</span><b>${this.watts(solarToBattery)}</b></div><div><span>Grid export</span><b>${this.watts(exp)}</b></div><div><span>Grid import</span><b>${this.watts(imp)}</b></div><div><span>Net</span><b>${exportActive?`${this.watts(exp)} export`:importActive?`${this.watts(imp)} import`:'Balanced'}</b></div></div><article class="panel spaced"><div class="section-head"><div><span>LIVE LOADS</span><h2>Device demand</h2></div><button type="button" class="text-button" data-page="devices">Manage devices</button></div>${this.compactDeviceList(99)}</article></section>`;
   }
-  deviceHealth(d){if(d.available===false)return {label:'Unavailable',kind:'bad',score:20,note:'One or more mapped entities are unavailable.'};const power=this.s(d.power_entity),energy=this.s(d.energy_entity),temperature=d.temperature_entity?this.s(d.temperature_entity):null;if((d.power_entity&&!power)||(d.energy_entity&&!energy)||(d.temperature_entity&&!temperature))return {label:'Needs attention',kind:'warn',score:55,note:'A mapped entity cannot be found in Home Assistant.'};return {label:'Healthy',kind:'good',score:100,note:'Live monitoring and registry mappings are available.'};}
+  deviceHealth(d){if(d.available===false)return {label:'Unavailable',kind:'bad',score:20,note:'One or more mapped entities are unavailable.'};const power=this.s(d.power_entity),energy=this.s(d.energy_entity),temperature=d.temperature_entity?this.s(d.temperature_entity):null,cop=d.cop_entity?this.s(d.cop_entity):null;if((d.power_entity&&!power)||(d.energy_entity&&!energy)||(d.temperature_entity&&!temperature)||(d.cop_entity&&!cop))return {label:'Needs attention',kind:'warn',score:55,note:'A mapped entity cannot be found in Home Assistant.'};return {label:'Healthy',kind:'good',score:100,note:'Live monitoring and registry mappings are available.'};}
   deviceStatus(d){const p=Number(d.power_w)||0,state=String(d.state||d.status||'').trim();if(d.available===false)return 'Unavailable';if(state&&!['unknown','unavailable'].includes(state.toLowerCase()))return state;if(p>10)return 'Running';return 'Idle';}
-  deviceData(){const live=this.s('sensor.aion_ems_zeus_energy_flow')?.attributes?.registered_devices||[],an=this.s('sensor.aion_ems_zeus_device_analytics')?.attributes?.devices||[];const map=new Map(an.map(x=>[String(x.id),x]));return live.map(d=>({...d,...(map.get(String(d.id))||{})}));}
-  deviceCards(limit=99,compact=false,source=null){const data=(source||this.deviceData()).slice(0,limit);if(!data.length)return `<div class="empty">No matching registered devices. Add devices from Configuration or change the filter.</div>`;return `<div class="device-grid ${compact?'compact':''} registry-v2-grid">${data.map(d=>{const p=Number(d.power_w)||0,runtime=d.runtime_today_minutes||0,status=this.deviceStatus(d),health=this.deviceHealth(d),active=p>10&&d.available!==false;return `<article class="device-card registry-v2-card ${health.kind}"><div class="device-top"><div class="device-icon"><ha-icon icon="${this.icon(d.type)}"></ha-icon></div><span class="state-chip ${active?'running':health.kind==='bad'?'unavailable':'idle'}">${this.esc(status)}</span></div><div class="device-card-title"><div><h3>${this.esc(d.name||d.id)}</h3><p>${this.esc(String(d.type||'custom').replaceAll('_',' '))}</p></div><span class="device-health-badge ${health.kind}">${health.score}%</span></div><strong class="device-power">${this.watts(p)}</strong><div class="device-stats"><div><span>Today</span><b>${this.kwh(d.energy_today_kwh)}</b></div><div><span>Runtime</span><b>${this.duration(runtime)}</b></div><div><span>Peak</span><b>${this.watts(d.peak_power_today_w)}</b></div></div>${d.temperature_entity?`<div class="device-card-temperature"><ha-icon icon="mdi:thermometer-water"></ha-icon><span>Temperature</span><b>${d.temperature_available&&Number.isFinite(Number(d.temperature_c))?Number(d.temperature_c).toFixed(1)+' °C':'—'}</b></div>`:''}<div class="device-card-meta"><span>${this.esc(d.room_id||'Unassigned')}</span><span>${this.esc(d.priority||'Standard')}</span></div><div class="health-meter"><i style="width:${health.score}%"></i></div><small>${this.esc(health.note)}</small><div class="device-card-actions"><button type="button" class="outline-button" data-device-details="${this.esc(d.id)}">Details</button><button type="button" class="text-button" data-device-manage="${this.esc(d.id)}">Manage</button></div></article>`}).join('')}</div>`;}
+  deviceData(){const live=this.s('sensor.aion_ems_zeus_energy_flow')?.attributes?.registered_devices||[],an=this.s('sensor.aion_ems_zeus_device_analytics')?.attributes?.devices||[],reg=this.s('sensor.aion_ems_zeus_registry_summary')?.attributes?.devices||[];const amap=new Map(an.map(x=>[String(x.id),x])),rmap=new Map(reg.map(x=>[String(x.id),x]));return live.map(d=>({...d,...(rmap.get(String(d.id))||{}),...(amap.get(String(d.id))||{})}));}
+  deviceCards(limit=99,compact=false,source=null){const data=(source||this.deviceData()).slice(0,limit);if(!data.length)return `<div class="empty">No matching registered devices. Add devices from Configuration or change the filter.</div>`;return `<div class="device-grid ${compact?'compact':''} registry-v2-grid">${data.map(d=>{const p=Number(d.power_w)||0,runtime=d.runtime_today_minutes||0,status=this.deviceStatus(d),health=this.deviceHealth(d),active=p>10&&d.available!==false;return `<article class="device-card registry-v2-card ${health.kind}"><div class="device-top"><div class="device-icon"><ha-icon icon="${this.icon(d.type)}"></ha-icon></div><span class="state-chip ${active?'running':health.kind==='bad'?'unavailable':'idle'}">${this.esc(status)}</span></div><div class="device-card-title"><div><h3>${this.esc(d.name||d.id)}</h3><p>${this.esc(String(d.type||'custom').replaceAll('_',' '))}</p></div><span class="device-health-badge ${health.kind}">${health.score}%</span></div><strong class="device-power">${this.watts(p)}</strong><div class="device-stats"><div><span>Today</span><b>${this.kwh(d.energy_today_kwh)}</b></div><div><span>Runtime</span><b>${this.duration(runtime)}</b></div><div><span>Peak</span><b>${this.watts(Math.max(Number(d.peak_power_today_w)||0,Number(d.power_w)||0))}</b></div></div>${d.temperature_entity?`<div class="device-card-temperature"><ha-icon icon="mdi:thermometer-water"></ha-icon><span>Temperature</span><b>${d.temperature_available&&Number.isFinite(Number(d.temperature_c))?Number(d.temperature_c).toFixed(1)+' °C':'—'}</b></div>`:''}<div class="device-card-meta"><span>${this.esc(d.room_id||'Unassigned')}</span><span>${this.esc(d.priority||'Standard')}</span></div><div class="health-meter"><i style="width:${health.score}%"></i></div><small>${this.esc(health.note)}</small><div class="device-card-actions"><button type="button" class="outline-button" data-device-details="${this.esc(d.id)}">Details</button><button type="button" class="text-button" data-device-manage="${this.esc(d.id)}">Manage</button></div></article>`}).join('')}</div>`;}
   compactDeviceList(limit=99){const isLoad=d=>{if(d?.hybrid_inverter===true)return false;const text=[d.type,d.category,d.role,d.device_class,d.name,d.manufacturer,d.model].filter(Boolean).join(' ').toLowerCase();const sourceTypes=['solar','photovoltaic','pv','inverter','fronius symo','fronius hybrid','battery inverter','smart meter','grid meter','energy meter','power meter','meter'];return !sourceTypes.some(x=>text.includes(x));};const data=this.deviceData().filter(isLoad).slice().sort((a,b)=>(Number(b.power_w)||0)-(Number(a.power_w)||0)).slice(0,limit);if(!data.length)return `<div class="empty">No consuming devices are active or registered yet.</div>`;return `<div class="compact-load-list">${data.map(d=>{const p=Number(d.power_w)||0,active=p>10&&d.available!==false,status=d.available===false?'Offline':active?'Active':'Idle',kind=d.available===false?'offline':active?'active':'idle';return `<button type="button" class="compact-load-row" data-device-details="${this.esc(d.id)}"><span class="compact-load-status ${kind}"></span><strong>${this.esc(d.name||d.id)}</strong><span>${this.watts(p)}</span><small>Today ${this.kwh(d.energy_today_kwh)}</small><em>${status}</em></button>`}).join('')}</div>`;}
-  deviceDetailPanel(){const d=this.deviceData().find(x=>String(x.id)===String(this._selectedDeviceId));if(!d)return '';const h=this.deviceHealth(d),status=this.deviceStatus(d),entities=[['Power',d.power_entity],['Energy',d.energy_entity],['Temperature',d.temperature_entity],['State',d.state_entity],['Availability',d.availability_entity]].filter(x=>x[1]);return `<div class="device-detail-backdrop" data-close-device-detail><aside class="device-detail-panel" role="dialog" aria-modal="true" aria-label="Device details" onclick="event.stopPropagation()"><header><div class="device-icon large"><ha-icon icon="${this.icon(d.type)}"></ha-icon></div><div><span>DEVICE DETAILS</span><h2>${this.esc(d.name||d.id)}</h2><p>${this.esc(String(d.type||'custom').replaceAll('_',' '))}</p></div><button type="button" class="icon-button" data-close-device-detail aria-label="Close"><ha-icon icon="mdi:close"></ha-icon></button></header><div class="detail-status ${h.kind}"><span>${this.esc(status)}</span><b>${h.score}% health</b><small>${this.esc(h.note)}</small></div><div class="detail-kpis"><div><span>Live power</span><b>${this.watts(d.power_w)}</b></div><div><span>Energy today</span><b>${this.kwh(d.energy_today_kwh)}</b></div><div><span>Runtime today</span><b>${this.duration(d.runtime_today_minutes)}</b></div><div><span>Peak today</span><b>${this.watts(d.peak_power_today_w)}</b></div></div><section><h3>Registry</h3><div class="detail-list"><div><span>Device ID</span><b>${this.esc(d.id)}</b></div><div><span>Room</span><b>${this.esc(d.room_id||'Unassigned')}</b></div><div><span>Groups</span><b>${this.esc(Array.isArray(d.group_ids)&&d.group_ids.length?d.group_ids.join(', '):'None')}</b></div><div><span>Priority</span><b>${this.esc(d.priority||'Standard')}</b></div></div></section><section><h3>Entity mappings</h3><div class="detail-entities">${entities.length?entities.map(([label,id])=>{const st=this.s(id);return `<div><ha-icon icon="${st?'mdi:check-circle-outline':'mdi:alert-circle-outline'}"></ha-icon><span><b>${label}</b><small>${this.esc(id)}</small></span><strong>${this.esc(st?.state??'Missing')}${st?.attributes?.unit_of_measurement?` ${this.esc(st.attributes.unit_of_measurement)}`:''}</strong></div>`}).join(''):'<div class="empty">No entity mappings exposed.</div>'}</div></section><footer><button type="button" class="primary-button" data-device-manage="${this.esc(d.id)}"><ha-icon icon="mdi:pencil-outline"></ha-icon> Edit in Registry Manager</button><button type="button" class="danger-button" data-device-remove="${this.esc(d.id)}"><ha-icon icon="mdi:delete-outline"></ha-icon> Remove</button></footer><small class="safety-note">Recommendation Only · Zeus will never control this device automatically.</small></aside></div>`;}
+  deviceDetailPanel(){const d=this.deviceData().find(x=>String(x.id)===String(this._selectedDeviceId));if(!d)return '';const h=this.deviceHealth(d),status=this.deviceStatus(d),entities=[['Power',d.power_entity],['Energy',d.energy_entity],['Temperature',d.temperature_entity],['COP',d.cop_entity],['State',d.state_entity],['Availability',d.availability_entity]].filter(x=>x[1]);return `<div class="device-detail-backdrop" data-close-device-detail><aside class="device-detail-panel" role="dialog" aria-modal="true" aria-label="Device details" onclick="event.stopPropagation()"><header><div class="device-icon large"><ha-icon icon="${this.icon(d.type)}"></ha-icon></div><div><span>DEVICE DETAILS</span><h2>${this.esc(d.name||d.id)}</h2><p>${this.esc(String(d.type||'custom').replaceAll('_',' '))}</p></div><button type="button" class="icon-button" data-close-device-detail aria-label="Close"><ha-icon icon="mdi:close"></ha-icon></button></header><div class="detail-status ${h.kind}"><span>${this.esc(status)}</span><b>${h.score}% health</b><small>${this.esc(h.note)}</small></div><div class="detail-kpis"><div><span>Live power</span><b>${this.watts(d.power_w)}</b></div><div><span>Energy today</span><b>${this.kwh(d.energy_today_kwh)}</b></div><div><span>Runtime today</span><b>${this.duration(d.runtime_today_minutes)}</b></div><div><span>Peak today</span><b>${this.watts(Math.max(Number(d.peak_power_today_w)||0,Number(d.power_w)||0))}</b></div></div><section><h3>Registry</h3><div class="detail-list"><div><span>Device ID</span><b>${this.esc(d.id)}</b></div><div><span>Room</span><b>${this.esc(d.room_id||'Unassigned')}</b></div><div><span>Groups</span><b>${this.esc(Array.isArray(d.group_ids)&&d.group_ids.length?d.group_ids.join(', '):'None')}</b></div><div><span>Priority</span><b>${this.esc(d.priority||'Standard')}</b></div></div></section><section><h3>Entity mappings</h3><div class="detail-entities">${entities.length?entities.map(([label,id])=>{const st=this.s(id);return `<div><ha-icon icon="${st?'mdi:check-circle-outline':'mdi:alert-circle-outline'}"></ha-icon><span><b>${label}</b><small>${this.esc(id)}</small></span><strong>${this.esc(st?.state??'Missing')}${st?.attributes?.unit_of_measurement?` ${this.esc(st.attributes.unit_of_measurement)}`:''}</strong></div>`}).join(''):'<div class="empty">No entity mappings exposed.</div>'}</div></section><footer><button type="button" class="primary-button" data-device-manage="${this.esc(d.id)}"><ha-icon icon="mdi:pencil-outline"></ha-icon> Edit in Registry Manager</button><button type="button" class="danger-button" data-device-remove="${this.esc(d.id)}"><ha-icon icon="mdi:delete-outline"></ha-icon> Remove</button></footer><small class="safety-note">Recommendation Only · Zeus will never control this device automatically.</small></aside></div>`;}
   deviceManagerPage(){return `<section class="page"><div class="page-head"><div><span>DEVICE MANAGEMENT</span><h1>Registry Manager</h1><p>Edit the selected device and its mapped Home Assistant entities.</p></div><button type="button" data-page="devices" class="outline-button">Back to devices</button></div><aion-ems-device-manager></aion-ems-device-manager></section>`;}
   roomsPage(){
     const registry=this.s('sensor.aion_ems_zeus_registry_summary')?.attributes||{},rooms=Array.isArray(registry.rooms)?registry.rooms:[],groups=Array.isArray(registry.groups)?registry.groups:[],devices=this.deviceData();
@@ -3883,6 +3886,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
   }
 
   dhwStatisticsPanel(){
+    this.ensureDEAData();
     const isDhwDevice=d=>{
       const text=[d?.type,d?.category,d?.role,d?.name,d?.friendly_name].filter(Boolean).join(' ').toLowerCase().replaceAll('_',' ');
       return text.includes('dhw')||text.includes('water heater')||text.includes('hot water')||text.includes('boiler')||text.includes('elwa');
@@ -3892,15 +3896,123 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const sum=key=>{
       if(!recorder.length)return null;
       let value=0,found=false;
-      for(const d of recorder){const n=Number(d?.[key]);if(Number.isFinite(n)){value+=Math.max(0,n);found=true;}}
+      for(const d of recorder){
+        const n=Number(d?.[key]);
+        if(Number.isFinite(n)){value+=Math.max(0,n);found=true;}
+      }
       return found?value:null;
     };
-    const rows=[['Today','energy_today_kwh','mdi:water-boiler'],['This week','energy_week_kwh','mdi:calendar-week-outline'],['This month','energy_month_kwh','mdi:calendar-month-outline'],['This year','energy_year_kwh','mdi:calendar-outline']];
-    const evidence=!dhw.length?'No registered DHW / water-heater device is configured.':!recorder.length?'The registered DHW device does not currently expose Home Assistant Recorder-backed daily statistics. Zeus will not estimate these period totals.':recorder.length<dhw.length?`${recorder.length} of ${dhw.length} registered DHW devices have Home Assistant Recorder-backed statistics. Only those measured sources are included.`:'Home Assistant Recorder · real mapped DHW energy only.';
-    return `<section class="page dhw-statistics-page"><article class="panel spaced"><div class="section-title"><div><span>STATISTICS · DHW</span><h2>DHW energy history</h2><small>${this.esc(evidence)}</small></div><ha-icon icon="mdi:water-boiler"></ha-icon></div><div class="energy-statistics-grid">${rows.map(([label,key,icon])=>`<div class="energy-statistics-card"><ha-icon icon="${icon}"></ha-icon><div><span>${label}</span><b>${this.kwh(sum(key))}</b><small>DHW consumption</small></div></div>`).join('')}</div></article></section>`;
-  }
+    const rows=[
+      ['Today','energy_today_kwh','mdi:water-boiler'],
+      ['This week','energy_week_kwh','mdi:calendar-week-outline'],
+      ['This month','energy_month_kwh','mdi:calendar-month-outline'],
+      ['This year','energy_year_kwh','mdi:calendar-outline']
+    ];
+    const evidence=!dhw.length
+      ?'No registered DHW / water-heater device is configured.'
+      :!recorder.length
+        ?'The registered DHW device does not currently expose Home Assistant Recorder-backed daily statistics. Zeus will not estimate these period totals.'
+        :recorder.length<dhw.length
+          ?`${recorder.length} of ${dhw.length} registered DHW devices have Home Assistant Recorder-backed statistics. Only those measured sources are included.`
+          :'Home Assistant Recorder · real mapped DHW energy only.';
 
-  heatPumpStatisticsPanel(){
+    const livePower=dhw.reduce((n,d)=>n+Math.max(0,Number(d?.power_w)||0),0);
+    const running=dhw.some(d=>d?.available!==false&&(Number(d?.power_w)||0)>10);
+    const tempDevice=dhw.find(d=>d?.temperature_entity&&d?.temperature_available&&Number.isFinite(Number(d?.temperature_c)))
+      ||dhw.find(d=>d?.temperature_entity);
+    const temperature=tempDevice&&tempDevice.temperature_available&&Number.isFinite(Number(tempDevice.temperature_c))
+      ?Number(tempDevice.temperature_c):null;
+    const tempState=tempDevice?.temperature_entity?this.s(tempDevice.temperature_entity):null;
+    const targetCandidates=[
+      tempState?.attributes?.target_temperature,
+      tempState?.attributes?.temperature_target,
+      tempState?.attributes?.setpoint,
+      tempState?.attributes?.target_temp,
+      tempDevice?.target_temperature,
+      tempDevice?.target_temperature_c
+    ].map(Number).filter(Number.isFinite);
+    const targetTemperature=targetCandidates.length?targetCandidates[0]:null;
+    const temperatureGap=(temperature!==null&&targetTemperature!==null)?targetTemperature-temperature:null;
+    const readyStatus=temperature===null
+      ?'Temperature unavailable'
+      :targetTemperature===null
+        ?'Temperature measured'
+        :temperature>=targetTemperature-.5
+          ?'At target'
+          :temperatureGap<=5
+            ?'Near target'
+            :'Heating reserve available';
+    const readyEvidence=temperature===null
+      ?'No mapped DHW temperature measurement is currently available.'
+      :targetTemperature===null
+        ?`${temperature.toFixed(1)} °C measured · no target temperature is exposed by the mapped Home Assistant entity.`
+        :`${temperature.toFixed(1)} °C measured · ${targetTemperature.toFixed(1)} °C target${temperatureGap>0?` · ${temperatureGap.toFixed(1)} °C remaining`:''}.`;
+
+    const deaRows=dhw
+      .map(d=>this.deaDeviceForRegisteredDevice(d))
+      .filter(Boolean)
+      .map(d=>(d?.periods||{}).today)
+      .filter(Boolean);
+    const deaSum=key=>deaRows.reduce((n,r)=>n+Math.max(0,Number(r?.[key])||0),0);
+    const attributedEnergy=deaRows.length?(deaSum('energy_kwh')||deaSum('total_kwh')):null;
+    const solarEnergy=deaRows.length?deaSum('solar_kwh'):null;
+    const batteryEnergy=deaRows.length?deaSum('battery_kwh'):null;
+    const gridEnergy=deaRows.length?deaSum('grid_kwh'):null;
+    const localEnergy=deaRows.length?(solarEnergy+batteryEnergy):null;
+    const sourceTotal=deaRows.length?Math.max(0,solarEnergy+batteryEnergy+gridEnergy):0;
+    const solarShare=sourceTotal>0?solarEnergy/sourceTotal*100:null;
+    const localShare=sourceTotal>0?localEnergy/sourceTotal*100:null;
+    const attributionEvidence=!dhw.length
+      ?'No registered DHW device.'
+      :!deaRows.length
+        ?'DEA source attribution is not available for the registered DHW device yet.'
+        :`DEA measured attribution · ${deaRows.length} registered DHW source${deaRows.length===1?'':'s'}.`;
+
+    const solarPower=Math.max(0,Number(this.value('sensor.aion_ems_zeus_solar_power'))||0);
+    const gridExport=Math.max(0,Number(this.value('sensor.aion_ems_zeus_grid_export_power'))||0);
+    const gridImport=Math.max(0,Number(this.value('sensor.aion_ems_zeus_grid_import_power'))||0);
+    const surplusAvailable=gridExport>150&&solarPower>150;
+    const guidance=!dhw.length
+      ?['Unavailable','Register a DHW / water-heater device before Zeus can provide DHW guidance.']
+      :running
+        ?[surplusAvailable?'Heating during solar surplus':'Heating now',
+           surplusAvailable
+             ?`DHW is drawing ${this.watts(livePower)} while the home exports ${this.watts(gridExport)}. Current measured conditions support solar-aligned heating.`
+             :`DHW is drawing ${this.watts(livePower)}. Zeus does not infer the energy source from live power alone; today’s DEA attribution is shown separately.`]
+        :surplusAvailable
+          ?['Solar window available',
+             `The home is currently exporting ${this.watts(gridExport)} with ${this.watts(solarPower)} solar production. DHW is not currently heating; this is a measured surplus opportunity, recommendation only.`]
+          :gridImport>150
+            ?['No solar-surplus signal',
+               `The home is currently importing ${this.watts(gridImport)}. Zeus does not recommend shifting DHW based on an unmeasured future surplus.`]
+            :['No strong live signal',
+               'Current grid flow does not establish a strong DHW timing opportunity. Zeus will not invent one.'];
+
+    const intelligenceRows=[
+      ['DHW state',running?'Heating':'Idle',running?`${this.watts(livePower)} measured live power`:'No material DHW power draw'],
+      ['Water temperature',temperature===null?'Unavailable':`${temperature.toFixed(1)} °C`,readyEvidence],
+      ['Readiness',readyStatus,readyEvidence],
+      ['Today solar share',solarShare===null?'Unavailable':`${solarShare.toFixed(1)}%`,attributionEvidence],
+      ['Today local-energy share',localShare===null?'Unavailable':`${localShare.toFixed(1)}%`,attributionEvidence],
+      ['Timing guidance',guidance[0],guidance[1]]
+    ];
+
+    return `<section class="page dhw-statistics-page"><article class="panel spaced">
+      <div class="section-title"><div><span>STATISTICS · DHW</span><h2>DHW energy history</h2><small>${this.esc(evidence)}</small></div><ha-icon icon="mdi:water-boiler"></ha-icon></div>
+      <div class="energy-statistics-grid">${rows.map(([label,key,icon])=>`<div class="energy-statistics-card"><ha-icon icon="${icon}"></ha-icon><div><span>${label}</span><b>${this.kwh(sum(key))}</b><small>DHW consumption</small></div></div>`).join('')}</div>
+
+      <div class="section-title" style="margin-top:22px"><div><span>DHW · INTELLIGENCE</span><h2>Hot-water performance & planning</h2><small>Measured DHW entities, Recorder energy and DEA source attribution only. Recommendation only; Zeus does not control the water heater.</small></div><ha-icon icon="mdi:water-thermometer-outline"></ha-icon></div>
+      <div class="energy-statistics-grid">${intelligenceRows.map(([label,value,note])=>`<div class="energy-statistics-card"><ha-icon icon="mdi:${label==='Water temperature'?'thermometer-water':label==='Readiness'?'check-decagram-outline':label.includes('share')?'chart-donut':label==='Timing guidance'?'weather-sunny-alert':'water-boiler'}"></ha-icon><div><span>${this.esc(label)}</span><b>${this.esc(String(value))}</b><small>${this.esc(note)}</small></div></div>`).join('')}</div>
+
+      <div class="section-title" style="margin-top:22px"><div><span>DHW · SOURCE EVIDENCE</span><h2>Today’s measured energy sources</h2><small>${this.esc(attributionEvidence)}</small></div><ha-icon icon="mdi:transit-connection-variant"></ha-icon></div>
+      <div class="energy-statistics-grid">
+        <div class="energy-statistics-card"><ha-icon icon="mdi:solar-power"></ha-icon><div><span>Solar</span><b>${solarEnergy===null?'Unavailable':this.kwh(solarEnergy)}</b><small>${solarShare===null?'Waiting for DEA evidence':`${solarShare.toFixed(1)}% of attributed DHW supply`}</small></div></div>
+        <div class="energy-statistics-card"><ha-icon icon="mdi:battery-high"></ha-icon><div><span>Battery</span><b>${batteryEnergy===null?'Unavailable':this.kwh(batteryEnergy)}</b><small>Measured DEA battery support</small></div></div>
+        <div class="energy-statistics-card"><ha-icon icon="mdi:transmission-tower"></ha-icon><div><span>Grid</span><b>${gridEnergy===null?'Unavailable':this.kwh(gridEnergy)}</b><small>Measured DEA grid attribution</small></div></div>
+        <div class="energy-statistics-card"><ha-icon icon="mdi:lightning-bolt-outline"></ha-icon><div><span>Attributed total</span><b>${attributedEnergy===null?'Unavailable':this.kwh(attributedEnergy)}</b><small>Registered DHW demand represented by DEA</small></div></div>
+      </div>
+    </article></section>`;
+  } heatPumpStatisticsPanel(){
     const isHeatPumpDevice=d=>{
       const text=[d?.type,d?.category,d?.role,d?.name,d?.friendly_name].filter(Boolean).join(' ').toLowerCase().replaceAll('_',' ');
       return text.includes('heat pump')||text.includes('heatpump');
@@ -3930,7 +4042,8 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const liveAvailable=heatPumps.some(d=>d?.available!==false);
     const livePower=heatPumps.reduce((a,d)=>a+Math.max(0,Number(d?.power_w)||0),0);
     const runtime=heatPumps.reduce((a,d)=>a+Math.max(0,Number(d?.runtime_today_minutes)||0),0);
-    const peak=heatPumps.reduce((a,d)=>Math.max(a,Math.max(0,Number(d?.peak_power_today_w)||0)),0);
+    const recordedPeak=heatPumps.reduce((a,d)=>Math.max(a,Math.max(0,Number(d?.peak_power_today_w)||0)),0);
+    const peak=heatPumps.length===1?Math.max(recordedPeak,livePower):recordedPeak;
     const running=heatPumps.some(d=>d?.available!==false&&(Number(d?.power_w)||0)>10);
     const status=!heatPumps.length?'Unavailable':!liveAvailable?'Unavailable':running?'Running':'Idle';
 
@@ -3953,7 +4066,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       ?'Collecting completed days'
       :Math.abs(deltaPct)<0.5
         ?'Same as weekly average'
-        :`${deltaPct>0?'+':''}${Math.round(deltaPct)}% vs completed-day average this week`;
+        :`${deltaPct>0?'+':''}${Math.round(deltaPct)}% vs weekly average`;
 
     const liveRows=[
       ['Status',status,'mdi:state-machine'],
@@ -3961,13 +4074,99 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       ['Runtime today',heatPumps.length?this.duration(runtime):'Unavailable','mdi:timer-outline'],
       [heatPumps.length>1?'Highest device peak':'Peak today',heatPumps.length?this.watts(peak):'Unavailable','mdi:chart-line']
     ];
+    const directCopDevices=heatPumps.filter(d=>d?.cop_entity);
+    const validCopValues=directCopDevices.map(d=>{const st=this.s(d.cop_entity);if(st&&!['unknown','unavailable',''].includes(String(st.state).toLowerCase())){const n=Number(st.state);if(Number.isFinite(n))return n;}if(d?.cop_available===true&&d?.cop!==null&&d?.cop!==undefined&&Number.isFinite(Number(d.cop)))return Number(d.cop);return null;}).filter(v=>v!==null);
+    const currentCop=validCopValues.length?(validCopValues.reduce((a,b)=>a+b,0)/validCopValues.length):null;
+    const copEvidence=!directCopDevices.length?'No COP sensor mapped':currentCop===null?'Mapped COP sensor currently unavailable':'Direct Home Assistant COP sensor';
+
+    const weatherContext=this.s('sensor.aion_ems_zeus_weather_context')?.attributes||{};
+    const weatherEntityId=String(
+      weatherContext.weather_entity
+      || weatherContext.entity_id
+      || weatherContext.source_entity
+      || ''
+    ).trim();
+    const weatherEntity=weatherEntityId?this.s(weatherEntityId):null;
+    const directWeatherTemp=weatherEntity?.attributes?.temperature;
+    const contextTemp=weatherContext.temperature
+      ?? weatherContext.current_temperature
+      ?? weatherContext.outdoor_temperature
+      ?? weatherContext.temperature_c;
+    const outdoorTempRaw=Number(
+      directWeatherTemp!==undefined&&directWeatherTemp!==null
+        ? directWeatherTemp
+        : contextTemp
+    );
+    const outdoorTemp=Number.isFinite(outdoorTempRaw)?outdoorTempRaw:null;
+    const outdoorUnit=String(
+      weatherEntity?.attributes?.temperature_unit
+      || weatherContext.temperature_unit
+      || '°C'
+    );
+
+    const copOutdoorContext=currentCop===null
+      ?'COP context unavailable'
+      :outdoorTemp===null
+        ?(currentCop===0?'COP 0.00 · Heat Pump currently inactive or no efficiency ratio available':'Outdoor temperature unavailable')
+        :currentCop===0
+          ?`COP 0.00 · ${outdoorTemp.toFixed(1)} ${outdoorUnit} outdoor · inactive COP state`
+          :`COP ${currentCop.toFixed(2)} at ${outdoorTemp.toFixed(1)} ${outdoorUnit} outdoor`;
+
+    const copAverage=key=>{
+      const values=directCopDevices.map(d=>Number(d?.[key])).filter(v=>Number.isFinite(v)&&v>0);
+      return values.length?(values.reduce((a,b)=>a+b,0)/values.length):null;
+    };
+    const copBuckets=key=>directCopDevices.reduce((sum,d)=>sum+Math.max(0,Number(d?.[key])||0),0);
+    const copHistoryRows=[
+      ['Today average','cop_today_average','cop_today_bucket_count','mdi:gauge','active'],
+      ['This week average','cop_week_average','cop_week_bucket_count','mdi:calendar-week-outline','active'],
+      ['This month average','cop_month_average','cop_month_bucket_count','mdi:calendar-month-outline','withheld'],
+      ['This year average','cop_year_average','cop_year_bucket_count','mdi:calendar-outline','withheld']
+    ];
+    const copHistoryReady=directCopDevices.some(d=>d?.cop_history_method==='ha_recorder_statistics_active_mean');
+    const copHistoryStatus=directCopDevices.map(d=>d?.cop_history_status).find(Boolean)||null;
+    const copHistoryEvidence=!directCopDevices.length
+      ?'No COP sensor mapped.'
+      :copHistoryStatus?.status==='Recorder COP statistics unavailable'
+        ?`Recorder COP statistics unavailable${copHistoryStatus?.error?`: ${copHistoryStatus.error}`:''}`
+        :copHistoryReady
+          ?'Home Assistant Recorder statistics · active COP only. Today/Week use positive 5-minute evidence; Month/Year stay unavailable when hourly statistics could be diluted by inactive COP=0 time.'
+          :'Collecting Home Assistant Recorder COP statistics.';
+
+    const todayCopAverage=copAverage('cop_today_average');
+    const todayCopBuckets=copBuckets('cop_today_bucket_count');
+    const copPerformanceDelta=(currentCop!==null&&currentCop>0&&todayCopAverage!==null&&todayCopAverage>0)
+      ?((currentCop-todayCopAverage)/todayCopAverage)*100
+      :null;
+    const copPerformanceStatus=currentCop===null
+      ?'Unavailable'
+      :currentCop<=0
+        ?'Inactive'
+        :todayCopAverage===null||todayCopBuckets<2
+          ?'Collecting evidence'
+          :copPerformanceDelta>=15
+            ?'Above today average'
+            :copPerformanceDelta<=-15
+              ?'Below today average'
+              :'Near today average';
+    const copPerformanceEvidence=currentCop===null
+      ?'Direct COP sensor unavailable'
+      :currentCop<=0
+        ?`COP ${currentCop.toFixed(2)} · Heat Pump currently inactive`
+        :todayCopAverage===null||todayCopBuckets<2
+          ?`COP ${currentCop.toFixed(2)} · waiting for sufficient active Recorder COP evidence`
+          :`COP ${currentCop.toFixed(2)} · Today avg ${todayCopAverage.toFixed(2)} · ${copPerformanceDelta>=0?'+':''}${copPerformanceDelta.toFixed(0)}% vs today${outdoorTemp===null?'':` · ${outdoorTemp.toFixed(1)} ${outdoorUnit} outdoor`}`;
+
     const intelligenceRows=[
+      ['COP performance',copPerformanceStatus,copPerformanceEvidence],
+      ['Current COP',currentCop===null?'Unavailable':currentCop.toFixed(2),copEvidence],
+      ['COP & outdoor',outdoorTemp===null?'Unavailable':`${outdoorTemp.toFixed(1)} ${outdoorUnit}`,copOutdoorContext],
       ['Today electricity cost',todayCost===null?'Unavailable':`${currency} ${todayCost.toFixed(2)}`,'Configured import tariff'],
       ['This week electricity cost',weekCost===null?'Unavailable':`${currency} ${weekCost.toFixed(2)}`,'Measured Heat Pump electricity × tariff'],
       ['Today vs recent week',comparison,priorDayAverage===null?'Requires at least one completed day this week':`Completed-day average ${this.kwh(priorDayAverage)}`]
     ];
 
-    return `<section class="page heat-pump-statistics-page"><article class="panel spaced"><div class="section-title"><div><span>STATISTICS · HEAT PUMP</span><h2>Heat Pump energy history</h2><small>${this.esc(evidence)}</small></div><ha-icon icon="mdi:heat-pump-outline"></ha-icon></div><div class="energy-statistics-grid">${rows.map(([label,key,icon])=>`<div class="energy-statistics-card"><ha-icon icon="${icon}"></ha-icon><div><span>${label}</span><b>${this.kwh(sum(key))}</b><small>Heat Pump consumption</small></div></div>`).join('')}</div><div class="section-title" style="margin-top:22px"><div><span>HEAT PUMP · LIVE</span><h2>Operating evidence</h2><small>Existing registered-device measurements only.</small></div><ha-icon icon="mdi:heat-pump"></ha-icon></div><div class="energy-statistics-grid">${liveRows.map(([label,value,icon])=>`<div class="energy-statistics-card"><ha-icon icon="${icon}"></ha-icon><div><span>${this.esc(label)}</span><b>${this.esc(String(value))}</b><small>${label==='Status'?'Live device state':'Measured today'}</small></div></div>`).join('')}</div><div class="section-title" style="margin-top:22px"><div><span>HEAT PUMP · INTELLIGENCE</span><h2>Cost & comparison</h2><small>Measured consumption with configured tariff evidence. No COP or thermal output is inferred.</small></div><ha-icon icon="mdi:home-analytics"></ha-icon></div><div class="energy-statistics-grid">${intelligenceRows.map(([label,value,note])=>`<div class="energy-statistics-card"><ha-icon icon="mdi:${label.includes('cost')?'cash-multiple':'compare-horizontal'}"></ha-icon><div><span>${this.esc(label)}</span><b>${this.esc(String(value))}</b><small>${this.esc(note)}</small></div></div>`).join('')}</div></article></section>`;
+    return `<section class="page heat-pump-statistics-page"><article class="panel spaced"><div class="section-title"><div><span>STATISTICS · HEAT PUMP</span><h2>Heat Pump energy history</h2><small>${this.esc(evidence)}</small></div><ha-icon icon="mdi:heat-pump-outline"></ha-icon></div><div class="energy-statistics-grid">${rows.map(([label,key,icon])=>`<div class="energy-statistics-card"><ha-icon icon="${icon}"></ha-icon><div><span>${label}</span><b>${this.kwh(sum(key))}</b><small>Heat Pump consumption</small></div></div>`).join('')}</div><div class="section-title" style="margin-top:22px"><div><span>HEAT PUMP · LIVE</span><h2>Operating evidence</h2><small>Existing registered-device measurements only.</small></div><ha-icon icon="mdi:heat-pump"></ha-icon></div><div class="energy-statistics-grid">${liveRows.map(([label,value,icon])=>`<div class="energy-statistics-card"><ha-icon icon="${icon}"></ha-icon><div><span>${this.esc(label)}</span><b>${this.esc(String(value))}</b><small>${label==='Status'?'Live device state':'Measured today'}</small></div></div>`).join('')}</div><div class="section-title" style="margin-top:22px"><div><span>HEAT PUMP · COP</span><h2>Real COP history</h2><small>${this.esc(copHistoryEvidence)}</small></div><ha-icon icon="mdi:gauge"></ha-icon></div><div class="energy-statistics-grid">${copHistoryRows.map(([label,valueKey,countKey,icon,mode])=>{const value=copAverage(valueKey),count=copBuckets(countKey);const note=mode==='withheld'?'Withheld · hourly statistics can include inactive COP=0 time':count>0?`${count} Recorder ${count===1?'bucket':'buckets'} · active-period average COP`:'Waiting for active Recorder COP evidence';return `<div class="energy-statistics-card"><ha-icon icon="${icon}"></ha-icon><div><span>${this.esc(label)}</span><b>${value===null?'Unavailable':value.toFixed(2)}</b><small>${this.esc(note)}</small></div></div>`}).join('')}</div><div class="section-title" style="margin-top:22px"><div><span>HEAT PUMP · INTELLIGENCE</span><h2>Performance, cost & comparison</h2><small>Self-comparison from measured COP and Recorder evidence. No manufacturer efficiency curve, expected COP or thermal output is inferred.</small></div><ha-icon icon="mdi:home-analytics"></ha-icon></div><div class="energy-statistics-grid">${intelligenceRows.map(([label,value,note])=>`<div class="energy-statistics-card ${label==='Today vs recent week'?'heat-pump-comparison-card':''}"><ha-icon icon="mdi:${label==='COP performance'?'chart-line':label==='Current COP'?'gauge':label==='COP & outdoor'?'thermometer-lines':label.includes('cost')?'cash-multiple':'compare-horizontal'}"></ha-icon><div><span>${this.esc(label)}</span><b class="${label==='Today vs recent week'?'heat-pump-comparison-value':''}">${this.esc(String(value))}</b><small>${this.esc(note)}</small></div></div>`).join('')}</div></article></section>`;
   }
 
   statisticsHubPage(){
@@ -4330,6 +4529,170 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       <div class="grid analytics-full-width-stack"><article class="panel"><div class="section-title"><div><span>RELATIONSHIPS</span><h2>Energy balance</h2></div><ha-icon icon="mdi:chart-scatter-plot"></ha-icon></div><div class="confidence-grid energy-balance-grid"><article><span>Solar / demand</span><b>${(ratio*100).toFixed(0)}%</b></article><article><span>Self-sufficiency</span><b>${Number.isFinite(selfSuff)?`${selfSuff.toFixed(0)}%`:'—'}</b></article><article><span>Grid import</span><b>${this.kwh(imp)}</b></article><article><span>Grid export</span><b>${this.kwh(exp)}</b></article></div></article>
       <article class="panel"><div class="section-title"><div><span>COMPARISON</span><h2>Today versus selected daily average</h2></div><ha-icon icon="mdi:compare-horizontal"></ha-icon></div><div class="confidence-grid daily-comparison-grid"><article><span>Today solar</span><b>${this.kwh(today.solar_energy_kwh)}</b></article><article><span>Today demand</span><b>${this.kwh(today.house_energy_kwh)}</b></article><article><span>${this.periodLabel(period)} daily solar</span><b>${this.kwh(selectedSolarAverage)}</b></article><article><span>${this.periodLabel(period)} daily demand</span><b>${this.kwh(selectedDemandAverage)}</b></article></div></article></div>
       <article class="panel spaced"><div class="section-title"><div><span>DEVICE RANKING</span><h2>Registered load consumption</h2></div><small>${this.periodLabel(period)} · measured energy</small></div><div class="device-finance-list analytics-device-list">${rows.length?rows.map((x,i)=>{const pct=Math.max(0,Math.min(100,(Number(x.energy_kwh)||0)/maxLoad*100));return `<article class="device-finance-row"><div class="device-finance-rank ${i<3?'top-rank':''}">${i+1}</div><div class="device-finance-name"><b>${this.esc(x.name||x.friendly_name||'Registered load')}</b></div><div class="device-finance-value">${this.kwh(x.energy_kwh)}</div><div class="device-finance-percent">${pct.toFixed(0)}%</div><div class="device-finance-bar"><i style="width:${Math.max(2,pct)}%"></i></div></article>`}).join(''):'<div class="empty">Registered-load history will appear after measured samples are available.</div>'}</div></article></section>`;
+  }
+
+
+  deaDeviceForRegisteredDevice(device){
+    const rows=Array.isArray(this._deaData?.devices)?this._deaData.devices:[];
+    if(!device||!rows.length)return null;
+    const ids=[device.id,device.device_id].filter(v=>v!==undefined&&v!==null).map(v=>String(v));
+    let match=rows.find(row=>ids.includes(String(row?.id??row?.device_id??'')));
+    if(match)return match;
+    const power=String(device.power_entity||'').trim();
+    if(power){
+      match=rows.find(row=>{
+        const periods=row?.periods||{};
+        return Object.values(periods).some(period=>String(period?.power_entity||'').trim()===power);
+      });
+      if(match)return match;
+    }
+    const energy=String(device.energy_entity||'').trim();
+    if(energy){
+      match=rows.find(row=>{
+        const periods=row?.periods||{};
+        return Object.values(periods).some(period=>String(period?.energy_entity||'').trim()===energy);
+      });
+      if(match)return match;
+    }
+    return null;
+  }
+
+  evFlexibleLoadIntelligencePanel(){
+    this.ensureDEAData();
+    const liveDevices=this.deviceData();
+    const registryDevices=this.s('sensor.aion_ems_zeus_registry_summary')?.attributes?.devices||[];
+    const analyticsDevices=this.s('sensor.aion_ems_zeus_device_analytics')?.attributes?.devices||[];
+    const liveMap=new Map(liveDevices.map(d=>[String(d.id),d]));
+    const analyticsMap=new Map(analyticsDevices.map(d=>[String(d.id),d]));
+    const all=(registryDevices.length?registryDevices:liveDevices).map(d=>({...d,...(liveMap.get(String(d.id))||{}),...(analyticsMap.get(String(d.id))||{})}));
+    const isFlexible=d=>{
+      const type=String(d?.type||d?.category||d?.role||'').toLowerCase().replaceAll('-','_').replaceAll(' ','_');
+      const text=[type,d?.name,d?.friendly_name,d?.category,d?.role].filter(Boolean).join(' ').toLowerCase();
+      return ['ev_charger','dishwasher','washing_machine','dryer','smart_plug'].includes(type)
+        ||/\b(ev charger|car charger|vehicle charger|dishwasher|washing machine|dryer|tumble dryer|flexible load)\b/.test(text);
+    };
+    const flex=all.filter(isFlexible);
+    const ev=flex.filter(d=>{
+      const type=String(d?.type||d?.category||d?.role||'').toLowerCase();
+      const text=[type,d?.name,d?.friendly_name].filter(Boolean).join(' ').toLowerCase();
+      return type==='ev_charger'||/\b(ev|car|vehicle)\b.*\b(charger|charging)\b/.test(text);
+    });
+    const sum=(list,key)=>list.reduce((n,d)=>n+Math.max(0,Number(d?.[key])||0),0);
+    const livePower=sum(flex,'power_w'),evPower=sum(ev,'power_w'),todayEnergy=sum(flex,'energy_today_kwh'),weekEnergy=sum(flex,'energy_week_kwh');
+    const active=flex.filter(d=>d?.available!==false&&(Number(d?.power_w)||0)>10);
+    const evActive=ev.filter(d=>d?.available!==false&&(Number(d?.power_w)||0)>10);
+
+    const deaDevices=Array.isArray(this._deaData?.devices)?this._deaData.devices:[];
+    const deaMatches=flex.map(d=>({device:d,dea:this.deaDeviceForRegisteredDevice(d)}));
+    const deaEligible=flex.filter(d=>Boolean(d?.power_entity));
+    const deaRows=deaMatches.filter(x=>x.dea).map(x=>(x.dea?.periods||{}).today).filter(Boolean);
+    const deaSum=key=>deaRows.reduce((n,r)=>n+Math.max(0,Number(r?.[key])||0),0);
+    const attributed=deaRows.length?(deaSum('energy_kwh')||deaSum('total_kwh')):null;
+    const solar=deaRows.length?deaSum('solar_kwh'):null;
+    const battery=deaRows.length?deaSum('battery_kwh'):null;
+    const grid=deaRows.length?deaSum('grid_kwh'):null;
+    const local=deaRows.length?(solar+battery):null;
+    const sourceTotal=deaRows.length?solar+battery+grid:0;
+    const solarShare=sourceTotal>0?solar/sourceTotal*100:null;
+    const localShare=sourceTotal>0?local/sourceTotal*100:null;
+
+    const finance=this.s('sensor.aion_ems_zeus_finance_summary')?.attributes||{};
+    const tariff=Number(finance.import_tariff),currency=String(finance.currency||'CHF');
+    const localValue=(local!==null&&Number.isFinite(tariff))?local*Math.max(0,tariff):null;
+    const gridCost=(grid!==null&&Number.isFinite(tariff))?grid*Math.max(0,tariff):null;
+
+    const solarPower=Math.max(0,Number(this.value('sensor.aion_ems_zeus_solar_power'))||0);
+    const gridExport=Math.max(0,Number(this.value('sensor.aion_ems_zeus_grid_export_power'))||0);
+    const gridImport=Math.max(0,Number(this.value('sensor.aion_ems_zeus_grid_import_power'))||0);
+    const liveSurplus=solarPower>150&&gridExport>150;
+
+    const plan=this.planningContext();
+    const forecastSurplus=Math.max(0,Number(plan.expectedExport)||0);
+    const forecastWindow=forecastSurplus>3?'Midday solar window':'No verified surplus window';
+    const forecastEvidence=forecastSurplus>3
+      ?`${this.kwh(forecastSurplus)} forecast export remains after household demand and available battery headroom.`
+      :'The current forecast does not establish a material export surplus after household demand and battery headroom.';
+
+    let guidanceTitle='Collecting flexible-load evidence',guidanceNote='Register an EV charger or other flexible load before Zeus can provide load-specific guidance.';
+    if(flex.length){
+      if(active.length){
+        if(liveSurplus){
+          guidanceTitle='Flexible load running during solar surplus';
+          guidanceNote=`${active.length} flexible load${active.length===1?' is':'s are'} active at ${this.watts(livePower)} while the home exports ${this.watts(gridExport)}. This is measured solar-aligned operation.`;
+        }else if(gridImport>150){
+          guidanceTitle='Flexible load running while importing';
+          guidanceNote=`${active.length} flexible load${active.length===1?' is':'s are'} active at ${this.watts(livePower)} while the home imports ${this.watts(gridImport)}. Zeus reports the measured overlap without assuming it should be stopped.`;
+        }else{
+          guidanceTitle='Flexible load active';
+          guidanceNote=`${active.length} flexible load${active.length===1?' is':'s are'} drawing ${this.watts(livePower)}. Current grid flow does not establish a strong surplus or import signal.`;
+        }
+      }else if(liveSurplus){
+        guidanceTitle='Solar surplus available';
+        guidanceNote=`The home is exporting ${this.watts(gridExport)} and no registered flexible load is currently active. This is a measured opportunity window; recommendation only.`;
+      }else if(forecastSurplus>3){
+        guidanceTitle='Forecast solar opportunity';
+        guidanceNote=`No flexible load is active now. ${forecastEvidence} Zeus suggests reviewing the midday window; no device is controlled automatically.`;
+      }else{
+        guidanceTitle='No strong timing signal';
+        guidanceNote='No registered flexible load is active and current measured/forecast evidence does not establish a strong solar-surplus opportunity.';
+      }
+    }
+
+    const evidence=!flex.length
+      ?'No registered EV charger or flexible load is currently available.'
+      :!deaEligible.length
+        ?`${flex.length} registered flexible load${flex.length===1?'':'s'} · none currently has a mapped power entity required by DEA.`
+        :!deaRows.length
+          ?`${flex.length} registered flexible load${flex.length===1?'':'s'} · ${deaEligible.length} DEA-eligible · DEA returned ${Array.isArray(this._deaData?.devices)?this._deaData.devices.length:0} device row${Array.isArray(this._deaData?.devices)&&this._deaData.devices.length===1?'':'s'}${this._deaData?.version?` (DEA ${this.esc(this._deaData.version)})`:''}${this._deaData?.registry_diagnostics?` · classifier ${Number(this._deaData.registry_diagnostics.classified_consuming_loads)||0}/${Number(this._deaData.registry_diagnostics.registered_with_power_entity)||0}`:''}.`
+          :`${flex.length} registered flexible load${flex.length===1?'':'s'} · DEA measured source attribution available for ${deaRows.length} load${deaRows.length===1?'':'s'} today.`;
+
+    const cards=[
+      ['Registered flexible loads',String(flex.length),`${ev.length} EV charger${ev.length===1?'':'s'} · ${active.length} active`,'mdi:ev-station'],
+      ['Live flexible power',this.watts(livePower),evActive.length?`EV charging component ${this.watts(evPower)}`:'Measured registered-load power','mdi:flash'],
+      ['Energy today',this.kwh(todayEnergy),'Registered flexible-load energy','mdi:counter'],
+      ['Energy this week',this.kwh(weekEnergy),'Registered flexible-load Recorder energy','mdi:calendar-week-outline'],
+      ['Solar share today',solarShare===null?'Unavailable':`${solarShare.toFixed(1)}%`,deaRows.length?'DEA measured attribution':'Waiting for DEA evidence','mdi:solar-power'],
+      ['Local-energy share',localShare===null?'Unavailable':`${localShare.toFixed(1)}%`,deaRows.length?'Solar + battery support':'Waiting for DEA evidence','mdi:home-battery-outline'],
+      ['Avoided-grid value',localValue===null?'Unavailable':`${currency} ${localValue.toFixed(2)}`,localValue===null?'Configured tariff + DEA evidence required':`${this.kwh(local)} local support × configured import tariff`,'mdi:cash-plus'],
+      ['Grid-attributed cost',gridCost===null?'Unavailable':`${currency} ${gridCost.toFixed(2)}`,gridCost===null?'Configured tariff + DEA evidence required':`${this.kwh(grid)} grid attribution × configured import tariff`,'mdi:cash-minus'],
+    ];
+
+    const sourceCards=[
+      ['Solar',solar,'mdi:solar-power'],
+      ['Battery',battery,'mdi:battery-high'],
+      ['Grid',grid,'mdi:transmission-tower'],
+      ['Attributed total',attributed,'mdi:transit-connection-variant']
+    ];
+
+    const loadRows=flex.slice().sort((a,b)=>(Number(b?.power_w)||0)-(Number(a?.power_w)||0)).map(d=>{
+      const dea=this.deaDeviceForRegisteredDevice(d);
+      const r=(dea?.periods||{}).today||null;
+      const s=r?Math.max(0,Number(r.solar_kwh)||0):null,b=r?Math.max(0,Number(r.battery_kwh)||0):null,g=r?Math.max(0,Number(r.grid_kwh)||0):null;
+      const deaNote=r
+        ?`Today: solar ${this.kwh(s)} · battery ${this.kwh(b)} · grid ${this.kwh(g)}`
+        :!d?.power_entity
+          ?'Today: DEA unavailable · no mapped power entity'
+          :`Today: DEA source attribution collecting · ${this.esc(d.power_entity)}`;
+      return `<div class="energy-statistics-card"><ha-icon icon="${this.icon(d.type)}"></ha-icon><div><span>${this.esc(d.name||d.id)}</span><b>${this.watts(d.power_w)}</b><small>${deaNote}</small></div></div>`;
+    }).join('');
+
+    return `<article class="panel spaced flexible-load-intelligence-panel">
+      <div class="section-title"><div><span>EV & FLEXIBLE LOADS</span><h2>Charging & flexible-load intelligence</h2><small>${this.esc(evidence)}</small></div><ha-icon icon="mdi:ev-station"></ha-icon></div>
+      <div class="energy-statistics-grid">${cards.map(([label,value,note,icon])=>`<div class="energy-statistics-card"><ha-icon icon="${icon}"></ha-icon><div><span>${this.esc(label)}</span><b>${this.esc(value)}</b><small>${this.esc(note)}</small></div></div>`).join('')}</div>
+
+      <div class="section-title" style="margin-top:22px"><div><span>MEASURED SOURCE MIX</span><h2>Where flexible-load energy came from today</h2><small>DEA attribution only. Zeus does not infer source mix from instantaneous power.</small></div><ha-icon icon="mdi:chart-donut"></ha-icon></div>
+      <div class="energy-statistics-grid">${sourceCards.map(([label,value,icon])=>`<div class="energy-statistics-card"><ha-icon icon="${icon}"></ha-icon><div><span>${label}</span><b>${value===null?'Unavailable':this.kwh(value)}</b><small>${deaRows.length?'Measured DEA attribution':'Waiting for DEA evidence'}</small></div></div>`).join('')}</div>
+
+      <div class="section-title" style="margin-top:22px"><div><span>FLEXIBLE LOADS</span><h2>Registered-load evidence</h2><small>Device names and measurements remain exactly as registered in Home Assistant.</small></div><ha-icon icon="mdi:format-list-bulleted"></ha-icon></div>
+      <div class="energy-statistics-grid">${loadRows||'<div class="empty">No registered EV charger or flexible load is available yet.</div>'}</div>
+
+      <div class="section-title" style="margin-top:22px"><div><span>PLANNING · RECOMMENDATION ONLY</span><h2>${this.esc(guidanceTitle)}</h2><small>${this.esc(guidanceNote)}</small></div><ha-icon icon="mdi:lightbulb-on-outline"></ha-icon></div>
+      <div class="energy-statistics-grid">
+        <div class="energy-statistics-card"><ha-icon icon="mdi:weather-sunny"></ha-icon><div><span>Live solar surplus</span><b>${liveSurplus?'Available':'Not established'}</b><small>Solar ${this.watts(solarPower)} · Grid export ${this.watts(gridExport)}</small></div></div>
+        <div class="energy-statistics-card"><ha-icon icon="mdi:clock-outline"></ha-icon><div><span>Forecast window</span><b>${this.esc(forecastWindow)}</b><small>${this.esc(forecastEvidence)}</small></div></div>
+        <div class="energy-statistics-card"><ha-icon icon="mdi:shield-check-outline"></ha-icon><div><span>Control mode</span><b>Recommendation only</b><small>Zeus does not start, stop or schedule devices automatically.</small></div></div>
+      </div>
+    </article>`;
   }
 
   planningContext(){
@@ -6358,6 +6721,10 @@ aion-ems-device-manager{display:block!important;width:100%!important;max-width:n
 .energy-statistics-card span,.energy-statistics-card small{display:block;color:var(--muted)}
 .energy-statistics-card span{font-size:12px}
 .energy-statistics-card b{display:block;margin:6px 0 4px;font-size:22px;line-height:1.15;white-space:nowrap}
+.heat-pump-comparison-card>div{min-width:0}
+.energy-statistics-card b.heat-pump-comparison-value{font-size:18px;line-height:1.18;white-space:normal;overflow-wrap:break-word;word-break:normal;max-width:100%}
+.energy-statistics-card small{white-space:normal;overflow-wrap:break-word}
+@media(max-width:1180px){.energy-statistics-card b.heat-pump-comparison-value{font-size:17px}}
 .energy-statistics-card small{font-size:11px}
 .battery-analytics-page .battery-performance-panel{margin-top:24px!important}
 .memory-page .similar-day-grid{margin-bottom:24px!important}
@@ -9405,3 +9772,39 @@ if(!customElements.get('aion-ems-zeus-command-center')) customElements.define('a
 /* v14.0.0-alpha.22.18.1.76 — Heat Pump Comparison Polish */
 
 /* v14.0.0-alpha.22.18.1.77 — Heat Pump Comparison Label Fit */
+
+/* v14.0.0-alpha.22.18.1.79 — Direct Heat Pump COP Sensor Support */
+
+/* v14.0.0-alpha.22.18.1.80 — Heat Pump Comparison Headline Fit */
+
+/* v14.0.0-alpha.22.18.1.81 — COP Zero-State & Device Details Fix */
+
+/* v14.0.0-alpha.22.18.1.82 — Registry Metadata Merge + Direct COP State Read */
+
+/* v14.0.0-alpha.22.18.1.83 — Heat Pump Comparison Card Typography Fit */
+
+/* v14.0.0-alpha.22.18.1.87 — Heat Pump COP + Outdoor Temperature Context */
+
+/* v14.0.0-alpha.22.18.1.88 — Heat Pump Peak Today Consistency Fix */
+
+/* v14.0.0-alpha.22.18.1.89 — Real Recorder Statistics COP History */
+
+/* v14.0.0-alpha.22.18.1.90 — PeriodWindow COP history hotfix */
+
+/* v14.0.0-alpha.22.18.1.91 — COP long-period evidence gate */
+
+/* v14.0.0-alpha.22.18.1.92 — Heat Pump measured COP self-comparison intelligence */
+
+/* v14.0.0-alpha.22.18.1.104 — DHW Intelligence Phase 2 + Switzerland kiosk branding */
+
+/* v14.0.0-alpha.22.18.1.105 — EV & Flexible Load Intelligence Phase 1 */
+
+/* v14.0.0-alpha.22.18.1.106 — DEA Attribution Integration Fix: async loading + page rerender + robust registered-device resolver */
+
+/* v14.0.0-alpha.22.18.1.107 — EV/Flexible DEA registry-metadata matching fix */
+
+/* v14.0.0-alpha.22.18.1.108 — DEA backend registry-mapping authority fix */
+
+/* v14.0.0-alpha.22.18.1.109 — DEA websocket on-demand refresh + payload diagnostics */
+
+/* v14.0.0-alpha.22.18.1.110 — explicit end-use load classifier authority fix */

@@ -29,7 +29,17 @@ async def _websocket_device_energy_attribution(hass, connection, msg) -> None:
     if core is None:
         connection.send_error(msg["id"], "not_ready", "AION EMS is not ready")
         return
-    connection.send_result(msg["id"], core.device_energy_attribution.summary())
+    try:
+        # Full DEA detail is requested by interactive Zeus pages.  Refresh it
+        # against the current Registry + Recorder evidence first so the websocket
+        # never returns a stale startup snapshot after device/mapping changes.
+        await core.device_analytics.async_refresh_recorder_energy()
+        core.device_analytics.refresh()
+        payload = await core.device_energy_attribution.async_refresh()
+    except Exception as err:
+        connection.send_error(msg["id"], "dea_refresh_failed", str(err))
+        return
+    connection.send_result(msg["id"], payload)
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/ha_energy_import_preview"})
@@ -172,7 +182,7 @@ async def _async_register_frontend(hass: HomeAssistant, version: str) -> None:
         webcomponent_name="aion-ems-zeus-dashboard",
         sidebar_title="AION EMS Energy Flow",
         sidebar_icon="mdi:home-lightning-bolt",
-        module_url=f"{_FRONTEND_URL}?v={version}&build=zeus-1400-alpha4-weather-style-scope",
+        module_url=f"{_FRONTEND_URL}?v={version}&build=zeus-110-dea-load-classifier-fix",
         config={"version": version, "domain": DOMAIN},
         require_admin=False,
     )
@@ -185,7 +195,7 @@ async def _async_register_frontend(hass: HomeAssistant, version: str) -> None:
         webcomponent_name="aion-ems-zeus-command-center",
         sidebar_title=None,
         sidebar_icon=None,
-        module_url=f"{_FRONTEND_URL}?v={version}&build=zeus-24-command-center-full-viewport",
+        module_url=f"{_FRONTEND_URL}?v={version}&build=zeus-89-command-center-full-viewport",
         config={"version": version, "domain": DOMAIN, "dedicated_kiosk": True},
         require_admin=False,
     )

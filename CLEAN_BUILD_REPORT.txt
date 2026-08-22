@@ -1,0 +1,4 @@
+AION EMS Zeus v14.0.0-alpha.22.18.1.58
+Source baseline: v14.0.0-alpha.22.18.1.57 (user-confirmed official baseline)
+Scope: Remove stray compact/tablet header A pseudo-element only; preserve header controls and all other Zeus behavior.
+Packaging: Current .58 BASELINE/RELEASE_NOTES only; obsolete top-level release texts excluded.

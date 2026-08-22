@@ -3792,6 +3792,8 @@ class DeviceAnalyticsEngine:
         self.last = {"status": "Waiting", "devices": []}
         self._recorder_days: dict[str, dict[str, float]] = {}
         self._recorder_status: dict[str, Any] = {"status": "Not loaded", "entity_count": 0, "row_count": 0}
+        self._cop_statistics: dict[str, dict[str, Any]] = {}
+        self._cop_statistics_status: dict[str, Any] = {"status": "Not loaded", "entity_count": 0, "row_count": 0}
 
 
     async def async_refresh_recorder_energy(self) -> None:
@@ -3805,6 +3807,7 @@ class DeviceAnalyticsEngine:
         if not entity_ids:
             self._recorder_days = {}
             self._recorder_status = {"status": "No mapped device energy entities", "entity_count": 0, "row_count": 0}
+            await self._async_refresh_cop_statistics()
             return
         try:
             now = dt_util.now()
@@ -3858,6 +3861,133 @@ class DeviceAnalyticsEngine:
             self._recorder_status = {
                 "status": "Recorder statistics unavailable", "entity_count": len(entity_ids),
                 "row_count": 0, "error": f"{type(err).__name__}: {err}",
+            }
+
+        await self._async_refresh_cop_statistics()
+
+    async def _async_refresh_cop_statistics(self) -> None:
+        """Load direct Heat Pump COP statistics from Home Assistant Recorder."""
+        devices = [
+            d for d in self.registry.data.get("devices", [])
+            if str(d.get("type") or "") == "heat_pump"
+            and str(d.get("cop_entity") or "").strip()
+        ]
+        entity_ids = list(dict.fromkeys(str(d.get("cop_entity")).strip() for d in devices))
+        if not entity_ids:
+            self._cop_statistics = {}
+            self._cop_statistics_status = {
+                "status": "No mapped Heat Pump COP entities",
+                "entity_count": 0,
+                "row_count": 0,
+            }
+            return
+
+        try:
+            now = dt_util.now()
+            windows = canonical_period_windows(now)
+            week_start = getattr(windows.get("week"), "start", None) or dt_util.start_of_local_day(now - timedelta(days=7))
+            year_start = getattr(windows.get("year"), "start", None) or dt_util.start_of_local_day(now.replace(month=1, day=1))
+
+            short_response = await self.hass.services.async_call(
+                "recorder", "get_statistics",
+                {
+                    "statistic_ids": entity_ids,
+                    "start_time": week_start,
+                    "end_time": now + timedelta(minutes=1),
+                    "period": "5minute",
+                    "types": ["mean", "min", "max"],
+                },
+                blocking=True, return_response=True,
+            )
+            long_response = await self.hass.services.async_call(
+                "recorder", "get_statistics",
+                {
+                    "statistic_ids": entity_ids,
+                    "start_time": year_start,
+                    "end_time": now + timedelta(minutes=1),
+                    "period": "hour",
+                    "types": ["mean", "min", "max"],
+                },
+                blocking=True, return_response=True,
+            )
+
+            short_raw = (short_response or {}).get("statistics", short_response or {})
+            long_raw = (long_response or {}).get("statistics", long_response or {})
+            result: dict[str, dict[str, Any]] = {}
+            total_rows = 0
+
+            def active_average(rows: list[dict[str, Any]], start: datetime, end: datetime) -> tuple[float | None, int]:
+                values: list[float] = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    stamp = self._statistics_start_datetime(row.get("start"))
+                    if stamp is None:
+                        continue
+                    local_stamp = dt_util.as_local(stamp)
+                    if local_stamp < start or local_stamp >= end:
+                        continue
+                    mean = self._num_stat(row.get("mean"))
+                    maximum = self._num_stat(row.get("max"))
+                    if mean is None or maximum is None or mean <= 0 or maximum <= 0:
+                        continue
+                    values.append(mean)
+                if not values:
+                    return None, 0
+                return round(sum(values) / len(values), 2), len(values)
+
+            for entity_id in entity_ids:
+                short_rows = [r for r in list((short_raw or {}).get(entity_id) or []) if isinstance(r, dict)]
+                long_rows = [r for r in list((long_raw or {}).get(entity_id) or []) if isinstance(r, dict)]
+                total_rows += len(short_rows) + len(long_rows)
+                entity_periods: dict[str, Any] = {}
+
+                for period in ("today", "week"):
+                    window = windows.get(period)
+                    start = getattr(window, "start", None)
+                    end = min(getattr(window, "end", now) or now, now)
+                    avg, count = active_average(short_rows, start, end) if start else (None, 0)
+                    entity_periods[period] = {"average": avg, "bucket_count": count, "period": "5minute"}
+
+                for period in ("month", "year"):
+                    window = windows.get(period)
+                    start = getattr(window, "start", None)
+                    end = min(getattr(window, "end", now) or now, now)
+
+                    # Home Assistant long-term hourly measurement means can be
+                    # diluted by COP=0 inactive time inside the same hour. Zeus
+                    # must not label that diluted hour mean as an active COP.
+                    #
+                    # Until a future canonical active-only long-period source is
+                    # available, Month/Year intentionally remain unavailable.
+                    # We still count positive Recorder hourly rows as evidence
+                    # maturity so the UI can explain why the value is withheld.
+                    _, evidence_count = active_average(long_rows, start, end) if start else (None, 0)
+                    entity_periods[period] = {
+                        "average": None,
+                        "bucket_count": evidence_count,
+                        "period": "hour",
+                        "status": "withheld_inactive_dilution_risk",
+                    }
+
+                result[entity_id] = entity_periods
+
+            self._cop_statistics = result
+            self._cop_statistics_status = {
+                "status": "Ready",
+                "entity_count": len(entity_ids),
+                "row_count": total_rows,
+                "source": "Home Assistant Recorder statistics",
+                "method": "Positive 5-minute Recorder mean buckets for Today/Week; Month/Year withheld because hourly means can include inactive COP=0 time.",
+                "zero_policy": "COP 0.00 remains valid live state and is excluded from active-period averages.",
+            }
+        except Exception as err:
+            self._cop_statistics = {}
+            self._cop_statistics_status = {
+                "status": "Recorder COP statistics unavailable",
+                "entity_count": len(entity_ids),
+                "row_count": 0,
+                "error": f"{type(err).__name__}: {err}",
             }
 
     @staticmethod
@@ -4262,6 +4392,37 @@ class DeviceAnalyticsEngine:
                         temperature_available = True
                     except (TypeError, ValueError):
                         pass
+            power_entity = str(device.get("power_entity") or "").strip() or None
+            current_power_w = 0.0
+            if power_entity:
+                power_state = self.hass.states.get(power_entity)
+                if power_state and str(power_state.state).strip().lower() not in {"unknown", "unavailable", "none", ""}:
+                    try:
+                        current_power_w = max(0.0, float(power_state.state))
+                        power_unit = str(power_state.attributes.get("unit_of_measurement") or "W").strip().lower()
+                        if power_unit in {"kw", "kilowatt", "kilowatts"}:
+                            current_power_w *= 1000.0
+                        elif power_unit in {"mw", "megawatt", "megawatts"}:
+                            current_power_w *= 1000000.0
+                    except (TypeError, ValueError):
+                        current_power_w = 0.0
+            stored_peak_w = max(0.0, float(row.get("peak_power_w", 0) or 0))
+            effective_peak_w = max(stored_peak_w, current_power_w)
+
+            cop_entity = str(device.get("cop_entity") or "").strip() or None
+            cop_value = None
+            cop_available = False
+            if cop_entity:
+                cop_state = self.hass.states.get(cop_entity)
+                if cop_state and str(cop_state.state).strip().lower() not in {"unknown", "unavailable", "none", ""}:
+                    try:
+                        parsed_cop = float(cop_state.state)
+                        if parsed_cop >= 0:
+                            cop_value = round(parsed_cop, 2)
+                            cop_available = True
+                    except (TypeError, ValueError):
+                        pass
+
             devices.append({
                 "id": device_id,
                 "name": device.get("name") or device_id,
@@ -4272,6 +4433,20 @@ class DeviceAnalyticsEngine:
                 "temperature_entity": temperature_entity,
                 "temperature_c": temperature_c,
                 "temperature_available": temperature_available,
+                "cop_entity": cop_entity,
+                "cop": cop_value,
+                "cop_available": cop_available,
+                "cop_method": "direct_home_assistant_sensor" if cop_entity else None,
+                "cop_history_method": "ha_recorder_statistics_active_mean" if cop_entity and cop_entity in self._cop_statistics else None,
+                "cop_history_status": dict(self._cop_statistics_status) if cop_entity else None,
+                "cop_today_average": ((self._cop_statistics.get(cop_entity) or {}).get("today") or {}).get("average") if cop_entity else None,
+                "cop_week_average": ((self._cop_statistics.get(cop_entity) or {}).get("week") or {}).get("average") if cop_entity else None,
+                "cop_month_average": ((self._cop_statistics.get(cop_entity) or {}).get("month") or {}).get("average") if cop_entity else None,
+                "cop_year_average": ((self._cop_statistics.get(cop_entity) or {}).get("year") or {}).get("average") if cop_entity else None,
+                "cop_today_bucket_count": ((self._cop_statistics.get(cop_entity) or {}).get("today") or {}).get("bucket_count") if cop_entity else 0,
+                "cop_week_bucket_count": ((self._cop_statistics.get(cop_entity) or {}).get("week") or {}).get("bucket_count") if cop_entity else 0,
+                "cop_month_bucket_count": ((self._cop_statistics.get(cop_entity) or {}).get("month") or {}).get("bucket_count") if cop_entity else 0,
+                "cop_year_bucket_count": ((self._cop_statistics.get(cop_entity) or {}).get("year") or {}).get("bucket_count") if cop_entity else 0,
                 "energy_today_kwh": round(energy, 3),
                 "energy_week_kwh": round(week_energy, 3),
                 "energy_month_kwh": round(month_energy, 3),
@@ -4284,7 +4459,8 @@ class DeviceAnalyticsEngine:
                 "runtime_week_minutes": round(float(period["week_runtime"]), 1),
                 "runtime_month_minutes": round(float(period["month_runtime"]), 1),
                 "runtime_year_minutes": round(float(period["year_runtime"]), 1),
-                "peak_power_today_w": round(float(row.get("peak_power_w", 0) or 0), 1),
+                "peak_power_today_w": round(effective_peak_w, 1),
+                "peak_power_source": "max(stored_today_peak,current_live_power)",
                 "estimated_cost_today": None,
                 "sample_count": int(row.get("sample_count", 0) or 0),
                 "method": energy_method,
