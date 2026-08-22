@@ -14,6 +14,9 @@ The project is built around a simple principle:
 Zeus is designed to use real Home Assistant entities, Energy configuration and Recorder history wherever possible rather than generating values simply to populate a dashboard.
 
 ---
+💬 **Home Assistant Community:**  
+https://community.home-assistant.io/t/aion-ems-zeus-energy-management-intelligence-for-home-assistant/1021982
+---
 
 # Features
 
