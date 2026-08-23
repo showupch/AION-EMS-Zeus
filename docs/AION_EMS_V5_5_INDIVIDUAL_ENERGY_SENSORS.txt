@@ -1,0 +1,21 @@
+AION EMS v5.5 Individual Energy Flow Sensors
+===========================================
+
+New sensors:
+- sensor.aion_ems_zeus_solar_power
+- sensor.aion_ems_zeus_house_power
+- sensor.aion_ems_zeus_grid_import_power
+- sensor.aion_ems_zeus_grid_export_power
+- sensor.aion_ems_zeus_battery_power
+- sensor.aion_ems_zeus_battery_soc
+- sensor.aion_ems_zeus_ev_power
+- sensor.aion_ems_zeus_heat_pump_power
+- sensor.aion_ems_zeus_water_heater_power
+- sensor.aion_ems_zeus_known_major_loads_power
+
+Purpose:
+Expose the Energy Flow snapshot as normal Home Assistant numeric sensors.
+
+Safety:
+- Read-only
+- No device control

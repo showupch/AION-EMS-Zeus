@@ -1,0 +1,26 @@
+AION EMS v6.1 Device Manager Cards UI
+=====================================
+
+Frontend-only upgrade over v6.0.2.
+
+New UI:
+- Overview metrics
+- Ready device cards
+- Blocked device cards
+- Imported device cards
+- Build Review button
+- Dry Run Import button
+- Import Ready Devices button
+- Remove device button
+- Refresh Energy Flow button
+
+Install:
+1. Copy custom_components/aion_ems_zeus to:
+/config/custom_components/aion_ems_zeus
+
+2. Copy www/aion_ems_zeus/device_manager.js to:
+/config/www/aion_ems_zeus/device_manager.js
+
+3. Clear browser cache if the old JSON page still appears.
+
+4. Restart Home Assistant.

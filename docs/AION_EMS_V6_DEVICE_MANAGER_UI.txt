@@ -1,0 +1,32 @@
+AION EMS v6.0 Device Manager UI Foundation
+==========================================
+
+This is the first step toward a Helios-like Device Manager UI.
+
+New:
+- Sidebar panel registration: AION EMS
+- Frontend file: www/aion_ems_zeus/device_manager.js
+- Services:
+  - aion_ems_zeus.device_manager_build_review
+  - aion_ems_zeus.device_manager_import_ready
+  - aion_ems_zeus.device_manager_remove_device
+
+Important:
+Copy the frontend JS to:
+/config/www/aion_ems_zeus/device_manager.js
+
+The custom integration files go to:
+/config/custom_components/aion_ems_zeus
+
+Then restart Home Assistant fully.
+
+Current UI capability:
+- Build import review
+- Dry-run import
+- Import ready system devices
+- View registry and diagnostics JSON
+
+Next UI step:
+- Proper cards per device
+- dropdown room/group/priority/category
+- edit existing devices

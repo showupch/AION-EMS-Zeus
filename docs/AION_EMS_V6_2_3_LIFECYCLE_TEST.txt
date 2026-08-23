@@ -1,0 +1,36 @@
+AION EMS v6.3.0 Lifecycle Test
+================================
+
+Safe reload test
+----------------
+1. Install v6.3.0.
+2. Restart Home Assistant.
+3. Confirm all seven Registry devices remain.
+4. Reload AION EMS from Devices & services.
+5. Confirm:
+   - Sidebar returns.
+   - Services return.
+   - Registry devices remain.
+   - Data Lake remains.
+
+Clean uninstall test
+--------------------
+Only perform this after creating a full Home Assistant backup.
+
+1. Remove AION EMS from Devices & services.
+2. Confirm the sidebar disappears.
+3. Confirm sensor.aion_ems_zeus_* entities disappear.
+4. Confirm AION EMS services disappear.
+5. Confirm these storage files are removed:
+   - .storage/aion_ems_zeus.registry
+   - .storage/aion_ems_zeus.data_lake
+6. Confirm this frontend file is removed:
+   - www/aion_ems_zeus/device_manager.js
+7. Restart Home Assistant and verify no restored AION EMS entities remain.
+
+Reinstall test
+--------------
+1. Copy the package files again.
+2. Restart Home Assistant.
+3. Add AION EMS through Devices & services.
+4. Confirm it starts with a new empty Registry and Data Lake.

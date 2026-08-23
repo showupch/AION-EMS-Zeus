@@ -1,0 +1,8 @@
+AION EMS Zeus 6.3.0 - Manual Entity Mapping
+
+- Entity mappings are selected and saved manually from Device Manager.
+- Discovery suggestions are advisory only and never activate or overwrite mappings.
+- Mappings are stored in the Zeus Registry under entity_mappings.
+- Test, Save, and Clear controls validate existence, availability, device class, units, and circular AION output sources.
+- Existing AION EMS output entity IDs remain unchanged.
+- Generic registered devices use the same strict source validation.

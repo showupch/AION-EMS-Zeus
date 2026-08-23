@@ -1,0 +1,26 @@
+AION EMS v5.4 Energy Flow Snapshot
+==================================
+
+New:
+- EnergyFlowEngine
+- sensor.aion_ems_zeus_energy_flow
+- aion_ems_zeus.refresh_energy_flow
+- Dashboard: AION_EMS_v5_4_Energy_Flow_Snapshot.yaml
+
+Purpose:
+Create a read-only EMS energy flow snapshot from Real Energy Mapping.
+
+Fields:
+- solar_power
+- house_power
+- grid_import_power
+- grid_export_power
+- battery_power
+- battery_soc
+- ev_power
+- heat_pump_power
+- water_heater_power
+
+Safety:
+- Read-only
+- No device control

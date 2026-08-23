@@ -1,0 +1,19 @@
+AION EMS Zeus 6.3.0 Test Report
+
+PASS - Python source syntax/AST validation
+PASS - Python compileall
+PASS - Frontend JavaScript syntax (node --check)
+PASS - manifest version is 6.3.0
+PASS - displayed/core version is 6.3.0
+PASS - valid power entity accepted
+PASS - wrong device class rejected
+PASS - incompatible unit rejected
+PASS - unavailable entity rejected
+PASS - missing entity rejected
+PASS - circular AION output source rejected
+PASS - non-numeric state/connected mappings accepted when available
+PASS - registry-backed manual mapping refresh
+PASS - discovery suggestions exclude AION output entities
+PASS - existing output sensor entity IDs unchanged
+
+Note: Runtime installation in a live Home Assistant instance was not available in this environment; package-level and isolated logic tests passed.

@@ -1,0 +1,24 @@
+AION EMS v5.2 Smart Discovery Rules
+===================================
+
+Purpose:
+Fix false appliance matches.
+
+Before:
+dishwasher/washing/dryer could match generic power sensors because "power" added score.
+
+Now:
+Appliance categories require explicit appliance keyword matches.
+
+Expected result:
+- dishwasher_candidates should be empty unless you have dishwasher/spuelmaschine/etc.
+- washing_machine_candidates should be empty unless washer/waschmaschine exists.
+- dryer_candidates should be empty unless dryer/trockner exists.
+
+System categories still work:
+- solar
+- battery
+- grid
+- EV
+- heat pump
+- water heater

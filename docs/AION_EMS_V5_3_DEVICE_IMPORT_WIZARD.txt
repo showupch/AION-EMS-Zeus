@@ -1,0 +1,22 @@
+AION EMS v5.3 Device Import Wizard Preview
+==========================================
+
+New:
+- DeviceImportWizard engine
+- sensor.aion_ems_zeus_device_import_wizard
+- aion_ems_zeus.refresh_device_import_review
+- aion_ems_zeus.import_reviewed_devices
+- Dashboard: AION_EMS_v5_3_Device_Import_Wizard.yaml
+
+Features:
+- Discovered devices
+- One-click dry run
+- Room assignment defaults
+- Group assignment defaults
+- Category and priority defaults
+- Validation before import
+
+Safety:
+- dry_run true by default
+- Registry write only
+- No device control

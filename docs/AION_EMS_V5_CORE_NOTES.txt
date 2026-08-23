@@ -1,0 +1,35 @@
+AION EMS v5.0 Core Clean Foundation
+===================================
+
+This release is a clean rebuild, not a patch over the alpha branch.
+
+Goals:
+- Centralized constants
+- Clean service registration
+- Stable engine lifecycle
+- No helper entities
+- Recorder-safe sensors
+- Device import services available
+- Data Lake auto-capture
+- Capability report
+
+Install:
+Copy custom_components/aion_ems_zeus to:
+/config/custom_components/aion_ems_zeus
+
+Dashboard:
+dashboards/AION_EMS_v5_Core_Dashboard.yaml
+
+Recommended test order:
+1. Restart Home Assistant.
+2. Check sensor.aion_ems_zeus_capability_report.
+3. Run aion_ems_zeus.refresh_capability_report.
+4. Run aion_ems_zeus.refresh_entity_discovery.
+5. Run aion_ems_zeus.import_recommended_devices with dry_run: true.
+6. If correct, run dry_run: false.
+7. Let Data Lake collect snapshots.
+
+Safety:
+- No autonomous device control.
+- No Helios overwrite.
+- Registry writes only when explicit services are called.
