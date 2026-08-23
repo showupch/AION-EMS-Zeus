@@ -334,16 +334,17 @@ def _scheduler_preview_attributes(core) -> dict[str, Any]:
             "currency": row.get("currency"),
             "confidence_percent": row.get("confidence_percent"),
             "score": row.get("score"),
+            "evidence_rank_score": row.get("evidence_rank_score"),
             "quantification_supported": row.get("quantification_supported"),
         }
 
     # UI/Copilot only require the ranked leaders and tomorrow's leading plan.
     # Counts remain authoritative even when these presentation lists are capped.
-    order = [x for x in (compact_row(r) for r in list(data.get("recommended_order") or [])[:8]) if x]
-    tomorrow_plan = [x for x in (compact_row(r) for r in list(data.get("tomorrow_plan") or [])[:5]) if x]
+    order = [x for x in (compact_row(r) for r in list(data.get("recommended_order") or [])[:6]) if x]
+    tomorrow_plan = [x for x in (compact_row(r) for r in list(data.get("tomorrow_plan") or [])[:4]) if x]
 
     roles = []
-    for row in list(data.get("role_plan") or [])[:8]:
+    for row in list(data.get("role_plan") or [])[:4]:
         if not isinstance(row, dict):
             continue
         roles.append({
@@ -376,7 +377,7 @@ def _scheduler_preview_attributes(core) -> dict[str, Any]:
     }
 
     qualification = []
-    for row in list(data.get("qualification_diagnostics") or [])[:10]:
+    for row in list(data.get("qualification_diagnostics") or [])[:6]:
         if not isinstance(row, dict):
             continue
         missing = list(dict.fromkeys(
@@ -388,22 +389,16 @@ def _scheduler_preview_attributes(core) -> dict[str, Any]:
             "quantification_supported": row.get("quantification_supported"),
             "profile_source": row.get("profile_source"),
             "historical_active_days": row.get("historical_active_days"),
+            "historical_maturity_percent": row.get("historical_maturity_percent"),
             "historical_typical_energy_kwh": row.get("historical_typical_energy_kwh"),
             "historical_typical_runtime_minutes": row.get("historical_typical_runtime_minutes"),
             "historical_typical_power_w": row.get("historical_typical_power_w"),
+            "historical_energy_relative_spread": row.get("historical_energy_relative_spread"),
+            "historical_runtime_relative_spread": row.get("historical_runtime_relative_spread"),
+            "historical_power_relative_spread": row.get("historical_power_relative_spread"),
             "aligned_recorder_runtime_days": row.get("historical_aligned_recorder_runtime_days"),
             "aligned_datalake_runtime_days": row.get("historical_aligned_datalake_runtime_days"),
-            "power_entity": row.get("power_entity"),
-            "power_available": row.get("power_entity_available"),
-            "energy_entity": row.get("energy_entity"),
-            "energy_available": row.get("energy_entity_available"),
-            "recorder_days": row.get("recorder_energy_day_count"),
-            "lake_energy_days": row.get("data_lake_energy_day_count"),
-            "lake_runtime_days": row.get("data_lake_runtime_day_count"),
-            "lake_combined_days": row.get("data_lake_combined_profile_day_count"),
-            "source_status": row.get("source_status"),
-            "source_blockers": list(row.get("source_blocking_reasons") or [])[:3],
-            "missing_evidence": missing[:2],
+            "missing_evidence": missing[:1],
         })
 
     return {
@@ -437,12 +432,17 @@ def _scheduler_preview_attributes(core) -> dict[str, Any]:
         "currency": data.get("currency"),
         "tariff_aware": data.get("tariff_aware"),
         "forecast_confidence": data.get("forecast_confidence"),
+        "recommendation_ranking_method": data.get("recommendation_ranking_method"),
         "summary": data.get("summary"),
         "limitations": list(data.get("limitations") or [])[:4],
-        "candidate_diagnostics": diagnostics,
+        "candidate_diagnostics": {
+            "registry_enabled_device_count": diagnostics.get("registry_enabled_device_count"),
+            "classified_flexible_device_count": diagnostics.get("classified_flexible_device_count"),
+            "all_candidates_blocked_by_constraints": diagnostics.get("all_candidates_blocked_by_constraints"),
+        },
         "safety": data.get("safety"),
         "recorder_safe": True,
-        "sensor_payload": "compact",
+        "sensor_payload": "compact_v2",
     }
 
 

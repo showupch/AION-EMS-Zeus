@@ -1,6 +1,6 @@
 # AION EMS Zeus — HACS Foundation
 
-Version: `14.0.0-alpha.22.18.1.110`
+Version: `14.0.0-alpha.22.18.1.78`
 
 This repository is prepared for installation as a **HACS custom repository**.
 

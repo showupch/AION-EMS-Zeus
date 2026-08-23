@@ -31,20 +31,38 @@ def is_consuming_load(device: dict[str, Any]) -> bool:
 
     device_type = str(device.get("type") or "").strip().lower().replace("-", "_").replace(" ", "_")
     role = str(device.get("role") or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if device_type in _EXPLICIT_LOAD_TYPES or role in _EXPLICIT_LOAD_TYPES:
-        return True
 
-    # Explicit source/generation types remain excluded even if their names contain
-    # ordinary appliance words.
+    # Strong source identity is authoritative even when an older registry entry
+    # still carries a generic/custom load type. This prevents inverters such as
+    # Fronius Symo from entering load rankings or DEA consuming-load sets.
+    identity_text = " ".join(
+        str(device.get(k) or "") for k in ("name", "friendly_name", "manufacturer", "model")
+    ).lower().replace("-", " ")
+    strong_source_identity = (
+        "fronius" in identity_text
+        or "inverter" in identity_text
+        or "photovoltaic" in identity_text
+        or "solar inverter" in identity_text
+        or "pv inverter" in identity_text
+        or "grid meter" in identity_text
+        or "smart meter" in identity_text
+    )
+    if strong_source_identity:
+        return False
+
+    # Explicit source/generation classification also wins.
     source_type_text = " ".join(
         str(device.get(k) or "") for k in ("type", "role", "category")
     ).lower().replace("-", " ")
     if any(token in source_type_text for token in _SOURCE_TOKENS):
         return False
 
-    # For otherwise unclassified devices, use descriptive metadata as a final
-    # safety filter against inverters/meters/generation equipment.
+    # Explicit end-use type remains authoritative against generic HA metadata
+    # such as a device_class of "power meter".
+    if device_type in _EXPLICIT_LOAD_TYPES or role in _EXPLICIT_LOAD_TYPES:
+        return True
+
     metadata_text = " ".join(
-        str(device.get(k) or "") for k in ("device_class", "name", "manufacturer", "model")
+        str(device.get(k) or "") for k in ("device_class", "name", "friendly_name", "manufacturer", "model")
     ).lower().replace("-", " ")
     return not any(token in metadata_text for token in _SOURCE_TOKENS)

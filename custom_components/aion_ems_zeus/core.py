@@ -250,6 +250,7 @@ class AionCore:
         await self.analytics.async_refresh_ha_energy_battery()
         await self.observation_knowledge.async_load()
         await self.intelligence_memory.async_load()
+        await self.decision_engine.async_load()
         await self.opportunity_learning.async_load()
         await self.planning_engine.async_load()
         await self.integration_hub.async_discover_ha_mounts()
@@ -454,9 +455,9 @@ class AionCore:
             ("knowledge_v2", self.knowledge_v2),
             ("intelligence_memory", self.intelligence_memory),
             ("knowledge_timeline", self.knowledge_timeline),
+            ("decision_engine", self.decision_engine),
             ("opportunity_learning", self.opportunity_learning),
             ("adaptive_advisor", self.adaptive_advisor),
-            ("decision_engine", self.decision_engine),
             ("scenario_simulator", self.scenario_simulator),
             ("prediction_accuracy", self.prediction_accuracy),
             ("home_profile", self.home_profile),

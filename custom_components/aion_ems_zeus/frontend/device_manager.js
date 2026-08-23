@@ -335,7 +335,6 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 @container (max-width:620px){.battery-summary-panel .battery-performance-grid{grid-template-columns:1fr!important}.battery-history-bars{height:165px!important;min-height:165px!important}.battery-bar-pair{height:112px!important}}
 
 
-
 @media(max-width:760px){
   .app{display:block!important;min-height:100dvh!important}
   .sidebar{position:sticky!important;top:0!important;z-index:50!important;width:100%!important;height:auto!important;min-height:0!important;padding:0!important;border-right:0!important;border-bottom:1px solid var(--line)!important;background:color-mix(in srgb,var(--sidebar) 96%,transparent)!important;backdrop-filter:blur(14px)!important;overflow:visible!important}
@@ -384,7 +383,6 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .room-tabs{display:flex;gap:8px;margin:0 0 16px}.room-tabs button{padding:10px 18px;border-radius:999px}.room-tabs button.selected{background:var(--accent2);color:#fff;border-color:var(--accent2)}
 .domain-finance-panel .domain-finance-grid{align-items:stretch!important;grid-auto-rows:1fr!important}.domain-finance-panel .domain-finance-card{height:100%!important;min-height:132px!important;display:flex!important;flex-direction:column!important}.domain-finance-panel .domain-finance-card small{margin-top:auto!important}
 .briefing-kpi-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:16px 0}.briefing-kpi{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px;display:grid;gap:7px}.briefing-kpi ha-icon{color:var(--accent2)}.briefing-kpi span{color:var(--muted);font-size:12px}.briefing-kpi strong{font-size:21px}.briefing-color-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}.briefing-card{position:relative;overflow:hidden;border-left:4px solid var(--accent2)!important}.briefing-card>ha-icon{position:absolute;right:18px;top:18px;opacity:.45}.briefing-blue{border-left-color:#48a8ff!important}.briefing-cyan{border-left-color:#22d3ee!important}.briefing-violet{border-left-color:#a78bfa!important}.briefing-amber{border-left-color:#fbbf24!important}.briefing-green{border-left-color:#34d399!important}.briefing-purple{border-left-color:#c084fc!important}.briefing-slate{border-left-color:#94a3b8!important}@media(max-width:1050px){.briefing-kpi-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:680px){.briefing-kpi-grid,.briefing-color-grid{grid-template-columns:1fr!important}.room-tabs{position:sticky;top:64px;z-index:3;background:var(--bg);padding:8px 0}}
-
 
 
 /* v14.0.0-alpha.4.2.1: Weather responsive hardening */
@@ -516,7 +514,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       hyper_analytics:[...live,'sensor.aion_ems_zeus_historical_analytics','sensor.aion_ems_zeus_historical_chart_data','sensor.aion_ems_zeus_hyper_analytics','sensor.aion_ems_zeus_observation_knowledge','sensor.aion_ems_zeus_reasoning_explain','sensor.aion_ems_zeus_zeus_brain','sensor.aion_ems_zeus_finance_summary','sensor.aion_ems_zeus_forecast','sensor.aion_ems_zeus_device_analytics'],
       finance:['sensor.aion_ems_zeus_finance_summary','sensor.aion_ems_zeus_grid_cost_today','sensor.aion_ems_zeus_export_revenue_today','sensor.aion_ems_zeus_solar_value_today','sensor.aion_ems_zeus_net_benefit_today'],
       forecast:['sensor.aion_ems_zeus_forecast','sensor.aion_ems_zeus_forecast_today','sensor.aion_ems_zeus_forecast_tomorrow','sensor.aion_ems_zeus_predictive_battery'],
-      planning:[...live,'sensor.aion_ems_zeus_planning_engine','sensor.aion_ems_zeus_forecast','sensor.aion_ems_zeus_finance_summary','sensor.aion_ems_zeus_daily_briefing','sensor.aion_ems_zeus_historical_analytics','sensor.aion_ems_zeus_historical_chart_data','sensor.aion_ems_zeus_intelligence_engine','sensor.aion_ems_zeus_device_analytics'],
+      planning:[...live,'sensor.aion_ems_zeus_planning_engine','sensor.aion_ems_zeus_forecast','sensor.aion_ems_zeus_finance_summary','sensor.aion_ems_zeus_daily_briefing','sensor.aion_ems_zeus_historical_analytics','sensor.aion_ems_zeus_historical_chart_data','sensor.aion_ems_zeus_intelligence_engine','sensor.aion_ems_zeus_device_analytics','sensor.aion_ems_zeus_device_energy_attribution'],
       intelligence:['sensor.aion_ems_zeus_ai_energy_advisor','sensor.aion_ems_zeus_intelligence_engine','sensor.aion_ems_zeus_scheduler_preview','sensor.aion_ems_zeus_forecast','sensor.aion_ems_zeus_daily_briefing','sensor.aion_ems_zeus_home_efficiency','sensor.aion_ems_zeus_learning_preview','sensor.aion_ems_zeus_planning_engine','sensor.aion_ems_zeus_prediction_accuracy'],
       statistics_hub:[...live,'sensor.aion_ems_zeus_historical_analytics','sensor.aion_ems_zeus_historical_chart_data','sensor.aion_ems_zeus_historical_explorer_recent','sensor.aion_ems_zeus_historical_explorer_year','sensor.aion_ems_zeus_consumption_intelligence_evidence','sensor.aion_ems_zeus_finance_summary','sensor.aion_ems_zeus_device_analytics'],
       reports:['sensor.aion_ems_zeus_historical_analytics','sensor.aion_ems_zeus_historical_chart_data','sensor.aion_ems_zeus_finance_summary','sensor.aion_ems_zeus_daily_briefing','sensor.aion_ems_zeus_device_analytics'],
@@ -626,10 +624,35 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
   copilotEvidenceType(source='',id=''){const t=`${source} ${id}`.toLowerCase();if(/forecast|predictive/.test(t))return 'FORECAST';if(/weather history|history|period|statistics|analytics/.test(t))return 'HISTORY';if(/learning|season/.test(t))return 'LEARNED';if(/recommendation|advisor|scheduler|performance_improve|flexible|ev_charge/.test(t))return 'RECOMMENDATION';if(/energy flow|live|canonical finance|accounting|device analytics|diagnostic|registry/.test(t))return 'LIVE / MEASURED';return 'ZEUS EVIDENCE';}
   copilotAnswerMode(q={}){const t=`${q.id||''} ${q.source||''} ${q.question||''}`.toLowerCase();return /recommendation|advisor|scheduler|performance_improve|flexible|should i|when should|what should|ev_charge/.test(t)?'Recommendation only':'Explanation only';}
   copilotAnswerEvidence(q={}){const source=q.source||'Zeus';const type=q.evidence_type||this.copilotEvidenceType(source,q.id||'');return {type,source,mode:q.mode||this.copilotAnswerMode(q)};}
-  copilotAnswerMarkup(q){if(!q)return '<p>Copilot will select the most relevant live explanation and show its supporting evidence here.</p>';const e=this.copilotAnswerEvidence(q),confidence=q.confidence??'—';return `<div class="copilot-answer-block"><span>ANSWER</span><p>${this.esc(this.humanizeAnswer(q.answer))}</p></div><div class="copilot-answer-evidence"><div><span>EVIDENCE</span><b>${this.esc(e.type)}</b><small>${this.esc(e.source)}</small></div><div><span>CONFIDENCE</span><b>${this.esc(confidence)}${confidence==='—'?'':'%'}</b><small>Evidence strength for this answer</small></div><div><span>MODE</span><b>${this.esc(e.mode)}</b><small>${e.mode==='Recommendation only'?'Zeus does not control equipment':'Evidence-based explanation'}</small></div></div>`;}
+  normalizeCopilotDisplayText(v){
+    let text=String(v??'');
+    for(let i=0;i<3;i++){
+      const next=text
+        .replace(/&amp;#x20;|&#x20;|&amp;#32;|&#32;|&amp;nbsp;|&nbsp;|&amp;#160;|&#160;/gi,' ')
+        .replace(/\u00a0/g,' ');
+      if(next===text)break;
+      text=next;
+    }
+    return text
+      .replace(/\*\*([^*]+)\*\*/g,'$1')
+      .replace(/[ \t]{2,}/g,' ')
+      .replace(/\s+([,.;:!?])/g,'$1')
+      .trim();
+  }
+  copilotAnswerMarkup(q){
+    if(!q)return '<p>Copilot will select the most relevant live explanation and show its supporting evidence here.</p>';
+    const e=this.copilotAnswerEvidence(q),confidence=q.confidence??'—';
+    const answer=this.normalizeCopilotDisplayText(this.humanizeAnswer(q.answer));
+    const evidenceType=this.normalizeCopilotDisplayText(e.type);
+    const evidenceSource=this.normalizeCopilotDisplayText(e.source);
+    const mode=this.normalizeCopilotDisplayText(e.mode);
+    const confidenceText=confidence==='—'?'—':`${confidence}%`;
+    return `<div class="copilot-answer-block"><span>ANSWER</span><p data-copilot-answer>${this.esc(answer)}</p></div><div class="copilot-answer-evidence"><div><span>EVIDENCE</span><b data-copilot-evidence-type>${this.esc(evidenceType)}</b><small data-copilot-evidence-source>${this.esc(evidenceSource)}</small></div><div><span>CONFIDENCE</span><b data-copilot-confidence>${this.esc(confidenceText)}</b><small>Evidence strength for this answer</small></div><div><span>MODE</span><b data-copilot-mode>${this.esc(mode)}</b><small>${mode==='Recommendation only'?'Zeus does not control equipment':'Evidence-based explanation'}</small></div></div>`;
+  }
 
   humanizeAnswer(v){
     if(v==null)return '';
+    if(typeof v==='string')v=v.replace(/&#x20;|&#32;|&nbsp;/gi,' ');
     if(typeof v==='object'){
       const start=v.start||v.start_time||v.from,end=v.end||v.end_time||v.to,power=v.expected_surplus_power_w??v.surplus_power_w??v.power_w;
       if(start||end||power!=null){
@@ -794,7 +817,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       mission_opportunities:{renderer:'missionControlPage',args:['opportunities']},mission_simulator:{renderer:'scenarioSimulatorPage'},
       mission_accuracy:{renderer:'predictionAccuracyPage'},mission_seasonal:{renderer:'seasonalIntelligencePage'},
       mission_timeline:{renderer:'missionControlPage',args:['timeline']},mission_explainability:{renderer:'missionControlPage',args:['explainability']},
-      mission_history:{renderer:'missionControlPage',args:['history']},dashboard_builder:{renderer:'dashboardBuilderPage'},
+      mission_history:{label:'Recommendation History',icon:'mdi:history',section:'energy',renderer:'missionControlPage',args:['history'],note:'Measured outcomes and evidence from past Zeus recommendations'},dashboard_builder:{renderer:'dashboardBuilderPage'},
       advisor:{renderer:'advisorPage'},optimizer:{renderer:'optimizerPage'},scheduler:{renderer:'schedulerPage'},
       seasons:{renderer:'seasonsPage'},recommendations:{renderer:'recommendationsPage'},kiosk:{renderer:'kioskPage'},command_center:{renderer:'commandCenterPage'},
       notifications:{renderer:'notificationsPage'}
@@ -873,9 +896,10 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const today=this.planningTodayPage();
     const scenarios=this.planningScenariosPage();
     const intelligence=this.planningIntelligenceSummary();
+    const opportunities=this.wholeHomeOpportunityPanel();
     const flexible=this.evFlexibleLoadIntelligencePanel();
     const embed=x=>String(x||'').replace(/^<section class="page([^"]*)">/,(_m,classes)=>`<section class="embedded-page${classes}">`);
-    return `<section style="padding-top:18px" class="page consolidated-plan-page"><div class="page-head"><div><span>ENERGY · PLAN</span><h1>Plan</h1><p>Today’s energy plan, recommendation-only scenarios and planning intelligence.</p></div></div><div class="consolidated-page-stack">${embed(today)}${embed(scenarios)}${intelligence}${flexible}</div></section>`;
+    return `<section style="padding-top:18px" class="page consolidated-plan-page"><div class="page-head"><div><span>ENERGY · PLAN</span><h1>Plan</h1><p>Today’s energy plan, recommendation-only scenarios and planning intelligence.</p></div><div class="page-head-actions"><button type="button" data-page="mission_history" class="outline-button"><ha-icon icon="mdi:history"></ha-icon> Recommendation History</button></div></div><div class="consolidated-page-stack">${embed(today)}${embed(scenarios)}${intelligence}${opportunities}${flexible}</div></section>`;
   }
   isHomeAssistantCompanionApp(){
     const ua=String(globalThis.navigator?.userAgent||'');
@@ -887,16 +911,16 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const canonical=this.resolvePageDefinition(this._page).id;
     const showKioskLauncher=!this.isHomeAssistantCompanionApp();
     const button=(id,child=true)=>{const d=registry[id];if(!d||d.conditional==='battery'&&!this.hasBattery())return '';const active=canonical===id;return `<button type="button" data-page="${id}" aria-label="Open ${this.esc(d.label)}" ${active?'aria-current="page"':''} class="${active?'active':''} ${child?'nav-child':''}"><ha-icon icon="${d.icon}"></ha-icon><span>${this.esc(d.label)}</span></button>`;};
-    const visibleIds=['daily_report','dashboard','executive_overview','briefing','energy_flow_intelligence','statistics_hub','finance','energy_status','energy_plan','weather_statistics','copilot',...this.navigationSections().flatMap(s=>s.pages)].filter((id,index,array)=>array.indexOf(id)===index);
+    const visibleIds=['daily_report','dashboard','executive_overview','briefing','energy_flow_intelligence','statistics_hub','finance','energy_status','energy_plan','mission_history','weather_statistics','copilot',...this.navigationSections().flatMap(s=>s.pages)].filter((id,index,array)=>array.indexOf(id)===index);
     const pageEntries=visibleIds.map(id=>{const d=registry[id];return [id,d.icon,d.label,d.note||''];});
     if(showKioskLauncher)pageEntries.push(['command_center','mdi:monitor-dashboard','Kiosk','Open the dedicated local Command Center kiosk']);
     let deviceEntries=[];try{deviceEntries=this.deviceData().slice(0,40).map(d=>['registered_devices',this.icon(d.type),d.name||d.id,`${d.type||'Device'} · ${d.room||'Unassigned'}`,d.id]);}catch(_e){}
     this._navSearchResults=[...pageEntries,...deviceEntries].map(([page,icon,label,note,device])=>`<button type="button" class="zeus-search-result" data-page="${page}" ${device?`data-search-device="${this.esc(device)}"`:''} data-search-text="${this.esc((label+' '+note).toLowerCase())}"><ha-icon icon="${icon}"></ha-icon><span><b>${this.esc(label)}</b><small>${this.esc(note)}</small></span></button>`).join('');
-    const activeSection=this.navigationSections().find(section=>section.pages.includes(canonical))?.id||((['daily_report','dashboard','executive_overview','briefing','energy_flow_intelligence','statistics_hub','finance','energy_status','energy_plan','weather_statistics','copilot'].includes(canonical))?'': 'energy');
+    const activeSection=this.navigationSections().find(section=>section.pages.includes(canonical))?.id||((['daily_report','dashboard','executive_overview','briefing','energy_flow_intelligence','statistics_hub','finance','energy_status','energy_plan','mission_history','weather_statistics','copilot'].includes(canonical))?'': 'energy');
     if(!this._mobileNavSection)this._mobileNavSection=activeSection;
     const group=section=>{const expanded=this._mobileNavSection===section.id;return `<div class="nav-group world-group ${section.id}-world ${expanded?'expanded':'collapsed'}" data-nav-group="${section.id}"><button type="button" class="nav-group-title" data-nav-section="${section.id}" aria-expanded="${expanded?'true':'false'}"><ha-icon icon="${section.icon}"></ha-icon><span>${section.label}</span><ha-icon class="nav-group-chevron" icon="mdi:chevron-down"></ha-icon></button><div class="nav-group-children">${section.pages.map(id=>button(id,true)).join('')}</div></div>`;};
     const kioskLauncher=showKioskLauncher?`<button type="button" data-open-command-center class="nav-child nav-kiosk-launch" aria-label="Open Kiosk"><ha-icon icon="mdi:monitor-dashboard"></ha-icon><span>Kiosk</span></button>`:'';
-    return `<nav aria-label="Zeus navigation"><div class="mobile-nav-search"><ha-icon icon="mdi:magnify"></ha-icon><input type="search" id="mobile-nav-search-input" placeholder="Go to page..." value="${this.esc(this._mobileNavQuery||'')}" aria-label="Search Zeus pages"></div><div class="nav-section welcome-section">${button('daily_report',true)}${button('dashboard',true)}${button('executive_overview',true)}${button('briefing',true)}${button('energy_flow_intelligence',true)}${button('statistics_hub',true)}${button('finance',true)}${button('energy_status',true)}${button('energy_plan',true)}${button('weather_statistics',true)}${button('copilot',true)}${kioskLauncher}</div><div class="nav-section">${this.navigationSections().map(group).join('')}</div><div class="sidebar-exit-wrap"><button type="button" class="sidebar-exit-button" data-exit-zeus aria-label="Exit Zeus and return to Home Assistant"><ha-icon icon="mdi:exit-to-app"></ha-icon><span>Exit to Home Assistant</span></button></div></nav>`;
+    return `<nav aria-label="Zeus navigation"><div class="mobile-nav-search"><ha-icon icon="mdi:magnify"></ha-icon><input type="search" id="mobile-nav-search-input" placeholder="Go to page..." value="${this.esc(this._mobileNavQuery||'')}" aria-label="Search Zeus pages"></div><div class="nav-section welcome-section">${button('daily_report',true)}${button('dashboard',true)}${button('executive_overview',true)}${button('briefing',true)}${button('energy_flow_intelligence',true)}${button('statistics_hub',true)}${button('finance',true)}${button('energy_status',true)}${button('energy_plan',true)}${button('mission_history',true)}${button('weather_statistics',true)}${button('copilot',true)}${kioskLauncher}</div><div class="nav-section">${this.navigationSections().map(group).join('')}</div><div class="sidebar-exit-wrap"><button type="button" class="sidebar-exit-button" data-exit-zeus aria-label="Exit Zeus and return to Home Assistant"><ha-icon icon="mdi:exit-to-app"></ha-icon><span>Exit to Home Assistant</span></button></div></nav>`;
   }
   zeusSearchPanel(){const results=this._navSearchResults||'';return `<div class="zeus-global-search ask-zeus-search"><ha-icon icon="mdi:magnify"></ha-icon><input id="zeus-global-search" type="search" autocomplete="off" placeholder="Find a page, device or setting…" aria-label="Find pages, devices and settings"><button type="button" id="clear-global-search" aria-label="Clear search"><ha-icon icon="mdi:close"></ha-icon></button><div class="zeus-search-results" id="zeus-search-results">${results}</div></div>`;}
   executiveOverviewPage(){
@@ -934,7 +958,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       <article class="panel eo-footer"><div class="eo-footer-copy"><span>DEEPER ANALYSIS</span><b>Need the evidence behind this summary?</b></div><div class="eo-footer-actions"><button type="button" class="outline-button" data-page="statistics_hub">Open Statistics</button><button type="button" class="outline-button" data-page="energy_plan">Open Energy Plan</button><button type="button" class="outline-button" data-page="briefing">Open Briefing</button></div></article>
     </section>`;
   }
-  homePage(){const a=this.s('sensor.aion_ems_zeus_energy_flow')?.attributes||{},t=this.today(),r=this.rec(),soc=this.value('sensor.aion_ems_zeus_battery_soc'),solar=this.value('sensor.aion_ems_zeus_solar_power')||0,home=this.value('sensor.aion_ems_zeus_house_power')||0,imp=this.value('sensor.aion_ems_zeus_grid_import_power')||0,exp=this.value('sensor.aion_ems_zeus_grid_export_power')||0,ch=this.value('sensor.aion_ems_zeus_battery_charge_power')||0,dis=this.value('sensor.aion_ems_zeus_battery_discharge_power')||0,quality=a.quality_score??this.s('sensor.aion_ems_zeus_data_quality')?.attributes?.quality_score??'—',gridLabel=imp>25?'Importing':exp>25?'Exporting':'Balanced',batteryLabel=ch>25?'Charging':dis>25?'Discharging':'Idle',mode=this.operatingSnapshot(solar,home,imp,exp,ch,dis),solarShare=this.contribution(Math.min(solar,home),home),batteryShare=this.contribution(Math.min(dis,home),home),gridShare=this.contribution(Math.min(imp,home),home),selfUse=Number(t.self_consumption_percent),autonomy=Number(t.self_sufficiency_percent),finance=this.s('sensor.aion_ems_zeus_finance_summary')?.attributes||{},saving=finance.savings_today??finance.estimated_savings_today??finance.today_savings,co2=t.co2_saved_kg??finance.co2_saved_today_kg;return `<section class="page home-page premium-home"><header class="home-header premium-header"><div><h1>${this.greeting()}</h1><p>Your home’s energy at a glance, with the most important information always within reach.</p></div><div class="home-head-actions"><div class="mode-badge ${mode.kind}"><ha-icon icon="${mode.icon}"></ha-icon><div><span>OPERATING MODE</span><b>${this.esc(mode.label)}</b><small>${this.esc(mode.detail)}</small></div></div>${this.isHomeAssistantCompanionApp()?'':`<button type="button" data-open-kiosk class="kiosk-launch"><ha-icon icon="mdi:monitor-dashboard"></ha-icon><span>Kiosk</span></button>`}<button type="button" data-page="health" class="quality-pill"><b>${this.esc(quality)}%</b><span>Data quality</span></button></div></header><section class="executive-strip">${this.premiumKpi('Self-consumption',Number.isFinite(selfUse)?`${selfUse.toFixed(0)}%`:'—','mdi:solar-power-variant','Solar used locally',selfUse)}${this.premiumKpi('Autonomy',Number.isFinite(autonomy)?`${autonomy.toFixed(0)}%`:'—','mdi:home-battery','Home supplied without grid',autonomy)}${this.premiumKpi('Today savings',this.money(saving),'mdi:cash-plus','Estimated energy value')}${this.premiumKpi('CO₂ avoided',Number.isFinite(Number(co2))?`${Number(co2).toFixed(1)} kg`:'—','mdi:leaf','Estimated today')}</section><section class="live-section"><div class="section-title"><div><span>LIVE NOW</span><h2>What your home is doing</h2></div><div class="live-badge"><i></i> LIVE</div></div><div class="live-kpis">${this.liveKpi('Solar',this.watts(solar),'mdi:white-balance-sunny','solar',solar>5?`Producing · ${solarShare.toFixed(0)}% of load`:'Idle')}${this.liveKpi('Consumption',this.watts(home),'mdi:home-lightning-bolt','load','Whole home')}${this.liveKpi('Grid',this.watts(imp||exp),'mdi:transmission-tower','grid',imp>25?`${gridShare.toFixed(0)}% of load`:gridLabel)}${this.liveKpi('Battery',soc===null?'—':`${soc.toFixed(1)}%`,'mdi:battery-high','battery',`${batteryLabel} · ${this.watts(ch||dis)}${dis>25?` · ${batteryShare.toFixed(0)}% of load`:''}`)}</div></section><section class="home-canvas premium-canvas"><div class="section-title"><div><span>ENERGY FLOW</span><h2>Live energy canvas</h2></div><button data-page="energy" class="text-button">Open Energy <ha-icon icon="mdi:arrow-right"></ha-icon></button></div><div class="canvas-stage"><div class="canvas-glow"></div><svg class="mobile-home-flow-svg" viewBox="0 0 360 760" preserveAspectRatio="none" aria-hidden="true"><path class="mobile-home-route solar ${solar>25?'active':''}" d="M180 152 L180 286"></path><path class="mobile-home-route battery ${ch+dis>25?'active':''}" d="M180 414 L84 536"></path><path class="mobile-home-route grid ${imp+exp>25?'active':''}" d="M180 414 L276 536"></path>${solar>25?`<circle class="mobile-home-particle solar" r="6"><animateMotion dur="${this.flowSpeed(solar)}s" repeatCount="indefinite" path="M180 152 L180 286"/></circle>`:''}${ch+dis>25?`<circle class="mobile-home-particle battery" r="6"><animateMotion dur="${this.flowSpeed(ch||dis)}s" repeatCount="indefinite" path="${ch>25?'M180 414 L84 536':'M84 536 L180 414'}"/></circle>`:''}${imp+exp>25?`<circle class="mobile-home-particle grid" r="6"><animateMotion dur="${this.flowSpeed(imp||exp)}s" repeatCount="indefinite" path="${imp>25?'M276 536 L180 414':'M180 414 L276 536'}"/></circle>`:''}</svg><div class="canvas-node canvas-solar ${solar>25?'active':''}"><ha-icon icon="mdi:white-balance-sunny"></ha-icon><span>Solar</span><b>${this.watts(solar)}</b><small>${solarShare.toFixed(0)}% contribution</small></div><div class="canvas-node canvas-home active"><ha-icon icon="mdi:home-lightning-bolt"></ha-icon><span>Home</span><b>${this.watts(home)}</b><small>Live demand</small></div><div class="canvas-node canvas-grid ${imp+exp>25?'active':''}"><ha-icon icon="mdi:transmission-tower"></ha-icon><span>Grid</span><b>${gridLabel} ${this.watts(imp||exp)}</b><small>${imp>25?`${gridShare.toFixed(0)}% contribution`:exp>25?'Surplus export':'Balanced'}</small></div><div class="canvas-node canvas-battery ${ch+dis>25?'active':''}"><ha-icon icon="mdi:battery-high"></ha-icon><span>Battery</span><b>${soc===null?'—':`${soc.toFixed(1)}%`}</b><small>${batteryLabel}${dis>25?` · ${batteryShare.toFixed(0)}% contribution`:''}</small></div><i class="canvas-path path-solar ${solar>25?'moving':''}" style="--flow-speed:${this.flowSpeed(solar)}s"></i><i class="canvas-path path-grid ${imp+exp>25?'moving':''} ${imp>25?'reverse':''}" style="--flow-speed:${this.flowSpeed(imp||exp)}s"></i><i class="canvas-path path-battery ${ch+dis>25?'moving':''} ${ch>25?'reverse':''}" style="--flow-speed:${this.flowSpeed(ch||dis)}s"></i><div class="contribution-legend"><span><i class="solar"></i>Solar ${solarShare.toFixed(0)}%</span><span><i class="battery"></i>Battery ${batteryShare.toFixed(0)}%</span><span><i class="grid"></i>Grid ${gridShare.toFixed(0)}%</span></div></div></section><div class="home-columns"><article class="panel today-panel"><div class="section-title"><div><span>TODAY</span><h2>Energy performance</h2></div><ha-icon icon="mdi:calendar-today"></ha-icon></div><div class="today-grid"><div><span>Generated</span><b>${this.kwh(t.solar_energy_kwh)}</b></div><div><span>Consumed</span><b>${this.kwh(t.house_energy_kwh)}</b></div><div><span>Imported</span><b>${this.kwh(t.grid_import_energy_kwh)}</b></div><div><span>Exported</span><b>${this.kwh(t.grid_export_energy_kwh)}</b></div><div><span>Self-consumption</span><b>${Number.isFinite(selfUse)?`${selfUse.toFixed(0)}%`:'—'}</b></div><div><span>Self-sufficiency</span><b>${Number.isFinite(autonomy)?`${autonomy.toFixed(0)}%`:'—'}</b></div></div></article><article class="panel recommendation"><div class="section-title"><div><span>RECOMMENDATION</span><h2>${this.esc(r.title)}</h2></div><ha-icon icon="mdi:lightbulb-on-outline"></ha-icon></div><p class="recommendation-reason">${this.esc(r.reason)}</p><div class="recommendation-grid"><div><span>Confidence</span><b>${this.esc(r.confidence)}${r.confidence==='—'?'':'%'}</b></div><div><span>Next opportunity</span><b>${this.esc(r.window)}</b></div><div><span>Estimated saving</span><b>${this.money(r.saving)}</b></div></div><button data-page="intelligence" class="text-button">Open Intelligence <ha-icon icon="mdi:arrow-right"></ha-icon></button></article></div></section>`;}
+  homePage(){const a=this.s('sensor.aion_ems_zeus_energy_flow')?.attributes||{},t=this.today(),r=this.rec(),soc=this.value('sensor.aion_ems_zeus_battery_soc'),solar=this.value('sensor.aion_ems_zeus_solar_power')||0,home=this.value('sensor.aion_ems_zeus_house_power')||0,imp=this.value('sensor.aion_ems_zeus_grid_import_power')||0,exp=this.value('sensor.aion_ems_zeus_grid_export_power')||0,ch=this.value('sensor.aion_ems_zeus_battery_charge_power')||0,dis=this.value('sensor.aion_ems_zeus_battery_discharge_power')||0,quality=a.quality_score??this.s('sensor.aion_ems_zeus_data_quality')?.attributes?.quality_score??'—',gridLabel=imp>25?'Importing':exp>25?'Exporting':'Balanced',batteryLabel=ch>25?'Charging':dis>25?'Discharging':'Idle',mode=this.operatingSnapshot(solar,home,imp,exp,ch,dis),solarShare=this.contribution(Math.min(solar,home),home),batteryShare=this.contribution(Math.min(dis,home),home),gridShare=this.contribution(Math.min(imp,home),home),selfUse=t.self_consumption_percent!==null&&t.self_consumption_percent!==undefined&&t.self_consumption_percent!==''&&Number.isFinite(Number(t.self_consumption_percent))?Number(t.self_consumption_percent):null,autonomy=t.self_sufficiency_percent!==null&&t.self_sufficiency_percent!==undefined&&t.self_sufficiency_percent!==''&&Number.isFinite(Number(t.self_sufficiency_percent))?Number(t.self_sufficiency_percent):null,finance=this.s('sensor.aion_ems_zeus_finance_summary')?.attributes||{},saving=finance.savings_today??finance.estimated_savings_today??finance.today_savings,co2=t.co2_saved_kg??finance.co2_saved_today_kg;return `<section class="page home-page premium-home"><header class="home-header premium-header"><div><h1>${this.greeting()}</h1><p>Your home’s energy at a glance, with the most important information always within reach.</p></div><div class="home-head-actions"><div class="mode-badge ${mode.kind}"><ha-icon icon="${mode.icon}"></ha-icon><div><span>OPERATING MODE</span><b>${this.esc(mode.label)}</b><small>${this.esc(mode.detail)}</small></div></div>${this.isHomeAssistantCompanionApp()?'':`<button type="button" data-open-kiosk class="kiosk-launch"><ha-icon icon="mdi:monitor-dashboard"></ha-icon><span>Kiosk</span></button>`}<button type="button" data-page="health" class="quality-pill"><b>${this.esc(quality)}%</b><span>Data quality</span></button></div></header><section class="executive-strip">${this.premiumKpi('Self-consumption',Number.isFinite(selfUse)?`${selfUse.toFixed(0)}%`:'—','mdi:solar-power-variant','Solar used locally',selfUse)}${this.premiumKpi('Autonomy',Number.isFinite(autonomy)?`${autonomy.toFixed(0)}%`:'—','mdi:home-battery','Home supplied without grid',autonomy)}${this.premiumKpi('Today savings',this.money(saving),'mdi:cash-plus','Estimated energy value')}${this.premiumKpi('CO₂ avoided',Number.isFinite(Number(co2))?`${Number(co2).toFixed(1)} kg`:'—','mdi:leaf','Estimated today')}</section><section class="live-section"><div class="section-title"><div><span>LIVE NOW</span><h2>What your home is doing</h2></div><div class="live-badge"><i></i> LIVE</div></div><div class="live-kpis">${this.liveKpi('Solar',this.watts(solar),'mdi:white-balance-sunny','solar',solar>5?`Producing · ${solarShare.toFixed(0)}% of load`:'Idle')}${this.liveKpi('Consumption',this.watts(home),'mdi:home-lightning-bolt','load','Whole home')}${this.liveKpi('Grid',this.watts(imp||exp),'mdi:transmission-tower','grid',imp>25?`${gridShare.toFixed(0)}% of load`:gridLabel)}${this.liveKpi('Battery',soc===null?'—':`${soc.toFixed(1)}%`,'mdi:battery-high','battery',`${batteryLabel} · ${this.watts(ch||dis)}${dis>25?` · ${batteryShare.toFixed(0)}% of load`:''}`)}</div></section><section class="home-canvas premium-canvas"><div class="section-title"><div><span>ENERGY FLOW</span><h2>Live energy canvas</h2></div><button data-page="energy" class="text-button">Open Energy <ha-icon icon="mdi:arrow-right"></ha-icon></button></div><div class="canvas-stage"><div class="canvas-glow"></div><svg class="mobile-home-flow-svg" viewBox="0 0 360 760" preserveAspectRatio="none" aria-hidden="true"><path class="mobile-home-route solar ${solar>25?'active':''}" d="M180 152 L180 286"></path><path class="mobile-home-route battery ${ch+dis>25?'active':''}" d="M180 414 L84 536"></path><path class="mobile-home-route grid ${imp+exp>25?'active':''}" d="M180 414 L276 536"></path>${solar>25?`<circle class="mobile-home-particle solar" r="6"><animateMotion dur="${this.flowSpeed(solar)}s" repeatCount="indefinite" path="M180 152 L180 286"/></circle>`:''}${ch+dis>25?`<circle class="mobile-home-particle battery" r="6"><animateMotion dur="${this.flowSpeed(ch||dis)}s" repeatCount="indefinite" path="${ch>25?'M180 414 L84 536':'M84 536 L180 414'}"/></circle>`:''}${imp+exp>25?`<circle class="mobile-home-particle grid" r="6"><animateMotion dur="${this.flowSpeed(imp||exp)}s" repeatCount="indefinite" path="${imp>25?'M276 536 L180 414':'M180 414 L276 536'}"/></circle>`:''}</svg><div class="canvas-node canvas-solar ${solar>25?'active':''}"><ha-icon icon="mdi:white-balance-sunny"></ha-icon><span>Solar</span><b>${this.watts(solar)}</b><small>${solarShare.toFixed(0)}% contribution</small></div><div class="canvas-node canvas-home active"><ha-icon icon="mdi:home-lightning-bolt"></ha-icon><span>Home</span><b>${this.watts(home)}</b><small>Live demand</small></div><div class="canvas-node canvas-grid ${imp+exp>25?'active':''}"><ha-icon icon="mdi:transmission-tower"></ha-icon><span>Grid</span><b>${gridLabel} ${this.watts(imp||exp)}</b><small>${imp>25?`${gridShare.toFixed(0)}% contribution`:exp>25?'Surplus export':'Balanced'}</small></div><div class="canvas-node canvas-battery ${ch+dis>25?'active':''}"><ha-icon icon="mdi:battery-high"></ha-icon><span>Battery</span><b>${soc===null?'—':`${soc.toFixed(1)}%`}</b><small>${batteryLabel}${dis>25?` · ${batteryShare.toFixed(0)}% contribution`:''}</small></div><i class="canvas-path path-solar ${solar>25?'moving':''}" style="--flow-speed:${this.flowSpeed(solar)}s"></i><i class="canvas-path path-grid ${imp+exp>25?'moving':''} ${imp>25?'reverse':''}" style="--flow-speed:${this.flowSpeed(imp||exp)}s"></i><i class="canvas-path path-battery ${ch+dis>25?'moving':''} ${ch>25?'reverse':''}" style="--flow-speed:${this.flowSpeed(ch||dis)}s"></i><div class="contribution-legend"><span><i class="solar"></i>Solar ${solarShare.toFixed(0)}%</span><span><i class="battery"></i>Battery ${batteryShare.toFixed(0)}%</span><span><i class="grid"></i>Grid ${gridShare.toFixed(0)}%</span></div></div></section><div class="home-columns"><article class="panel today-panel"><div class="section-title"><div><span>TODAY</span><h2>Energy performance</h2></div><ha-icon icon="mdi:calendar-today"></ha-icon></div><div class="today-grid"><div><span>Generated</span><b>${this.kwh(t.solar_energy_kwh)}</b></div><div><span>Consumed</span><b>${this.kwh(t.house_energy_kwh)}</b></div><div><span>Imported</span><b>${this.kwh(t.grid_import_energy_kwh)}</b></div><div><span>Exported</span><b>${this.kwh(t.grid_export_energy_kwh)}</b></div><div><span>Self-consumption</span><b>${Number.isFinite(selfUse)?`${selfUse.toFixed(0)}%`:'—'}</b></div><div><span>Self-sufficiency</span><b>${Number.isFinite(autonomy)?`${autonomy.toFixed(0)}%`:'—'}</b></div></div></article><article class="panel recommendation"><div class="section-title"><div><span>RECOMMENDATION</span><h2>${this.esc(r.title)}</h2></div><ha-icon icon="mdi:lightbulb-on-outline"></ha-icon></div><p class="recommendation-reason">${this.esc(r.reason)}</p><div class="recommendation-grid"><div><span>Confidence</span><b>${this.esc(r.confidence)}${r.confidence==='—'?'':'%'}</b></div><div><span>Next opportunity</span><b>${this.esc(r.window)}</b></div><div><span>Estimated saving</span><b>${this.money(r.saving)}</b></div></div><button data-page="intelligence" class="text-button">Open Intelligence <ha-icon icon="mdi:arrow-right"></ha-icon></button></article></div></section>`;}
   liveKpi(title,value,icon,kind,sub){return `<article class="live-kpi ${kind}"><div class="live-icon"><ha-icon icon="${icon}"></ha-icon></div><div><span>${this.esc(title)}</span><strong>${this.esc(value)}</strong><small>${this.esc(sub)}</small></div></article>`;}
   healthChip(name,id){const st=this.s(id),state=st?.state||'Unknown',good=/ready|healthy|ok|active|running/i.test(state);return `<div class="health-chip"><i class="${good?'good':'warn'}"></i><span>${this.esc(name)}</span><b>${this.esc(state)}</b></div>`;}
   greeting(){const h=new Date().getHours();return h<12?'Good morning':h<18?'Good afternoon':'Good evening';}
@@ -1111,16 +1135,19 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     }
     if(section==='history'){
       const decision=this.s('sensor.aion_ems_zeus_decision_engine')?.attributes||{};
+      const learning=this.s('sensor.aion_ems_zeus_opportunity_learning')?.attributes||{},outcome=learning.outcome_intelligence||{},adaptive=learning.adaptive_confidence||{},calibration=adaptive.category_calibration||{};
       const source=Array.isArray(decision.recommendation_history)?decision.recommendation_history:[];
       const active=Array.isArray(decision.opportunities)?decision.opportunities:[];
-      const merged=source.length?source:active;
-      const rows=(merged.length?merged:[{title:'No recommendation history yet',action:'Zeus is waiting for the first verified opportunity.',status:'Waiting',category:'Knowledge',expected_benefit:'No measured outcome yet',outcome_status:'Not measured',confidence_percent:0,updated_at:new Date().toISOString()}]).slice(0,40).map((x,i)=>{
-        const status=x.status||'Active', target=x.target_name?` · ${x.target_name}`:'';
+      const rows=(source.length?source:[{title:'No recommendation history yet',action:'Zeus is waiting for a genuine recommendation opportunity. Passive “keep monitoring” states are not stored here.',status:'Waiting',category:'Knowledge',expected_benefit:'No measured outcome yet',outcome_status:'Not measured',confidence_percent:0,updated_at:new Date().toISOString()}]).slice(0,40).map((x,i)=>{
+        const status=x.status||'Waiting', target=x.target_name?` · ${x.target_name}`:'';
         const d=new Date(x.resolved_at||x.updated_at||x.created_at); const when=Number.isNaN(d.getTime())?'Recent':d.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-        return `<article class="panel recommendation-history-card"><div class="history-card-head"><span class="history-status ${this.slug(status)}">${this.esc(status)}</span><small>${this.esc(when)}</small></div><h3>${this.esc(x.title||x.action||`Recommendation ${i+1}`)}</h3><p>${this.esc(x.action||'Recommendation recorded')}${this.esc(target)}</p><div class="history-metrics"><div><span>Category</span><b>${this.esc(x.category||'Energy')}</b></div><div><span>Confidence</span><b>${Number.isFinite(Number(x.confidence_percent))?`${Number(x.confidence_percent).toFixed(0)}%`:'—'}</b></div><div><span>Best window</span><b>${this.esc(x.best_window||'—')}</b></div><div><span>Expected benefit</span><b>${this.esc(x.expected_benefit||'Not estimated')}</b></div><div><span>Actual benefit</span><b>${this.esc(x.actual_benefit??'Not measurable')}</b></div><div><span>Outcome</span><b>${this.esc(x.outcome_status||'Not measured')}</b></div></div>${x.measurement_note?`<small class="history-note">${this.esc(x.measurement_note)}</small>`:''}</article>`;
+        const before=x.detected_context&&typeof x.detected_context==='object'?x.detected_context:null,after=x.resolved_context&&typeof x.resolved_context==='object'?x.resolved_context:null;
+        const evidenceLine=before?`<div class="history-outcome-evidence"><span>At detection: export ${this.watts(before.grid_export_w||0)} · import ${this.watts(before.grid_import_w||0)}${before.battery_soc_percent!=null?` · battery ${Number(before.battery_soc_percent).toFixed(0)}%`:''}</span>${after?`<span>At resolution: export ${this.watts(after.grid_export_w||0)} · import ${this.watts(after.grid_import_w||0)}${after.battery_soc_percent!=null?` · battery ${Number(after.battery_soc_percent).toFixed(0)}%`:''}</span>`:''}</div>`:'';
+        return `<article class="panel recommendation-history-card"><div class="history-card-head"><span class="history-status ${this.slug(status)}">${this.esc(status)}</span><small>${this.esc(when)}</small></div><h3>${this.esc(x.title||x.action||`Recommendation ${i+1}`)}</h3><p>${this.esc(x.action||'Recommendation recorded')}${this.esc(target)}</p><div class="history-metrics"><div><span>Category</span><b>${this.esc(x.category||'Energy')}</b></div><div><span>Confidence</span><b>${Number.isFinite(Number(x.confidence_percent))?`${Number(x.confidence_percent).toFixed(0)}%`:'—'}</b></div><div><span>Best window</span><b>${this.esc(x.best_window||'—')}</b></div><div><span>Expected benefit</span><b>${this.esc(x.expected_benefit||'Not estimated')}</b></div><div><span>Actual benefit</span><b>${this.esc(x.actual_benefit??'Not measurable')}</b></div><div><span>Outcome</span><b>${this.esc(x.outcome_status||'Not measured')}</b></div></div>${evidenceLine}${x.measurement_note?`<small class="history-note">${this.esc(x.measurement_note)}</small>`:''}</article>`;
       }).join('');
-      const counts=decision.history_counts||{};
-      return `<section class="page mission-control-page"><div class="page-head"><div><span>OPTIMIZER</span><h1><ha-icon icon="mdi:history"></ha-icon> Recommendation History</h1><p>Review advice over time without inventing outcomes Zeus cannot measure.</p></div><div class="live-badge"><i></i> READ ONLY</div></div><div class="history-summary-grid">${['Active','Completed','Expired','Ignored'].map(status=>`<article class="panel"><span>${status.toUpperCase()}</span><b>${this.esc(counts[status]??(status==='Active'?active.length:0))}</b></article>`).join('')}</div><div class="mission-filter-row"><span>All</span><span>Active</span><span>Completed</span><span>Expired</span><span>Ignored</span></div><div class="recommendation-history-grid">${rows}</div><article class="panel spaced mission-control-safety"><ha-icon icon="mdi:shield-check-outline"></ha-icon><div><b>Measured outcomes only</b><p>When Zeus cannot verify actual benefit, the result remains “Not measurable” rather than showing an estimate as fact.</p></div></article></section>`;
+      const counts=decision.history_counts||{},resolved=Number(outcome.resolved_count)||0,observed=Number(outcome.observed_system_response_count)||0,notMeasurable=Number(outcome.not_measurable_count)||0,quantified=Number(outcome.quantified_actual_benefit_count)||0,observedPct=Number(outcome.observed_response_percent),strength=outcome.evidence_strength||'No resolved outcomes yet';
+      const outcomePct=Number.isFinite(observedPct)?`${observedPct.toFixed(0)}%`:'—';
+      return `<section class="page mission-control-page"><div class="page-head"><div><span>ENERGY · PLAN</span><h1><ha-icon icon="mdi:history"></ha-icon> Recommendation History</h1><p>Review advice over time without inventing outcomes Zeus cannot measure.</p></div><div class="live-badge"><i></i> READ ONLY</div></div><div class="history-summary-grid">${['Active','Completed','Expired','Ignored'].map(status=>`<article class="panel"><span>${status.toUpperCase()}</span><b>${this.esc(counts[status]??(status==='Active'?active.length:0))}</b></article>`).join('')}</div><article class="panel spaced outcome-intelligence-panel"><div class="section-title"><div><span>OUTCOME INTELLIGENCE · PHASE 2</span><h2>What happened after Zeus recommendations</h2><small>${this.esc(strength)}</small></div><ha-icon icon="mdi:chart-timeline-variant-shimmer"></ha-icon></div><div class="outcome-intelligence-grid"><article class="outcome-intelligence-card"><span>RESOLVED</span><b>${resolved}</b><small>Recommendation lifecycles ended</small></article><article class="outcome-intelligence-card"><span>OBSERVED RESPONSE</span><b>${observed}</b><small>${outcomePct} of classified resolved outcomes</small></article><article class="outcome-intelligence-card"><span>NOT MEASURABLE</span><b>${notMeasurable}</b><small>No defensible measured attribution</small></article><article class="outcome-intelligence-card"><span>QUANTIFIED BENEFIT</span><b>${quantified}</b><small>Actual benefit measured, not estimated</small></article></div><p class="history-note"><b>Causality boundary:</b> ${this.esc(outcome.causality_boundary||'Observed changes are correlation only; Zeus does not claim causation.')}</p></article><article class="panel spaced adaptive-confidence-panel"><div class="section-title"><div><span>ADAPTIVE RECOMMENDATION CONFIDENCE · PHASE 1</span><h2>How outcome history may calibrate future confidence</h2><small>${this.esc(adaptive.rule||'Waiting for enough resolved outcome history.')}</small></div><ha-icon icon="mdi:tune-variant"></ha-icon></div><div class="adaptive-confidence-grid">${Object.keys(calibration).length?Object.entries(calibration).map(([category,c])=>`<article><span>${this.esc(category.toUpperCase())}</span><b>${Number(c.adjustment_points||0)>=0?'+':''}${Number(c.adjustment_points||0)} pts</b><small>${c.active?`${Number(c.resolved_count||0)} resolved outcomes support calibration`:`${Number(c.gate_remaining||0)} more resolved outcome${Number(c.gate_remaining||0)===1?'':'s'} required`}</small></article>`).join(''):`<article class="adaptive-confidence-empty"><span>LEARNING GATE</span><b>0 pts</b><small>No category has enough resolved outcomes yet. Confidence remains unchanged.</small></article>`}</div><p class="history-note"><b>Safety:</b> ${this.esc(adaptive.causality_boundary||'No confidence adjustment is applied without enough same-category outcome evidence.')} Passive observe/monitor states are excluded from adaptive learning.</p></article><div class="mission-filter-row"><span>All</span><span>Active</span><span>Completed</span><span>Expired</span><span>Ignored</span></div><div class="recommendation-history-grid">${rows}</div><article class="panel spaced mission-control-safety"><ha-icon icon="mdi:shield-check-outline"></ha-icon><div><b>Measured outcomes only</b><p>Only genuine recommendation opportunities are stored here. Passive “keep monitoring” states remain in Decision Intelligence and do not create history entries. When Zeus cannot verify actual benefit, the result remains “Not measurable” rather than showing an estimate as fact.</p></div></article></section>`;
     }
     if(section==='memory'){
       const memory=this.s('sensor.aion_ems_zeus_intelligence_memory')?.attributes||{};
@@ -1261,10 +1288,29 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       <article class="panel spaced mission-control-safety"><ha-icon icon="mdi:shield-check-outline"></ha-icon><div><b>Memory supports recommendations only</b><p>Learned patterns improve explanations and confidence. Zeus does not automatically control devices.</p></div></article></section>`;
   }
 
+  isSourceOrGenerationDevice(d){
+    if(!d||typeof d!=='object')return false;
+    if(d.hybrid_inverter===true)return true;
+    const type=String(d.type||'').trim().toLowerCase().replaceAll('-','_').replaceAll(' ','_');
+    const role=String(d.role||'').trim().toLowerCase().replaceAll('-','_').replaceAll(' ','_');
+    const category=String(d.category||'').trim().toLowerCase().replaceAll('-','_').replaceAll(' ','_');
+    const explicitSourceTypes=new Set(['solar','pv','solar_inverter','pv_inverter','inverter','hybrid_inverter','battery_inverter','generator','wind','wind_turbine','grid','grid_meter','smart_meter','energy_meter']);
+    if(explicitSourceTypes.has(type)||explicitSourceTypes.has(role)||explicitSourceTypes.has(category))return true;
+    const identity=[d.name,d.friendly_name,d.manufacturer,d.model].filter(Boolean).join(' ').toLowerCase();
+    if(/\bfronius\b|\binverter\b|\bphotovoltaic\b|\bpv inverter\b|\bsolar inverter\b|\bgrid meter\b|\bsmart meter\b/.test(identity))return true;
+    const mapped=[d.power_entity,d.energy_entity].filter(Boolean).join(' ').toLowerCase();
+    if(/(?:^|[._-])(solar|pv|inverter|grid_meter|smart_meter)(?:[._-]|$)/.test(mapped))return true;
+    return false;
+  }
+
   analyticsDeviceRows(period='today'){
     const attrs=this.s('sensor.aion_ems_zeus_device_analytics')?.attributes||{},devices=Array.isArray(attrs.devices)?attrs.devices:[];
     const key=({today:'energy_today_kwh',week:'energy_week_kwh',month:'energy_month_kwh',year:'energy_year_kwh',total:'energy_total_kwh'})[period]||'energy_today_kwh';
-    return devices.filter(d=>{const text=[d.type,d.category,d.role,d.device_class,d.name,d.friendly_name,d.manufacturer,d.model].filter(Boolean).join(' ').toLowerCase();return !/(inverter|solar|photovoltaic|smart meter|grid meter|energy meter|power meter|battery inverter|hybrid inverter|fronius hybrid|energy converter|power converter)/.test(text);}).map(d=>({...d,energy_kwh:Math.max(0,Number(d[key]??d.energy_kwh??0)||0)})).filter(d=>d.energy_kwh>0).sort((a,b)=>b.energy_kwh-a.energy_kwh);
+    return devices
+      .filter(d=>!this.isSourceOrGenerationDevice(d))
+      .map(d=>({...d,energy_kwh:Math.max(0,Number(d[key]??d.energy_kwh??0)||0)}))
+      .filter(d=>d.energy_kwh>0)
+      .sort((a,b)=>b.energy_kwh-a.energy_kwh);
   }
 
   scenarioSimulatorPage(){
@@ -1714,7 +1760,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const finance=this.s('sensor.aion_ems_zeus_finance_summary')?.attributes||{},cur=finance.currency||'CHF';
     const devicePeriodKey=({today:'energy_today_kwh',week:'energy_week_kwh',month:'energy_month_kwh',year:'energy_year_kwh'})[period]||'energy_today_kwh';
     const devicePeriodTitle=({today:'Top consumers today',week:'Top consumers · last 7 days',month:'Top consumers this month',year:'Top consumers this year'})[period]||'Top consumers today';
-    const devices=(this.s('sensor.aion_ems_zeus_device_analytics')?.attributes?.devices||[]).filter(d=>{const type=String(d.type||d.category||'').toLowerCase(),name=String(d.name||d.id||'').toLowerCase();return !['solar','solar_inverter','inverter','pv','battery','grid','grid_meter','meter','energy_meter'].includes(type)&&!/(fronius|inverter|solar inverter|pv inverter|grid meter|smart meter|battery)/i.test(name);}).slice().sort((a,b)=>(Number(b[devicePeriodKey])||0)-(Number(a[devicePeriodKey])||0)).slice(0,6);
+    const devices=(this.s('sensor.aion_ems_zeus_device_analytics')?.attributes?.devices||[]).filter(d=>!this.isSourceOrGenerationDevice(d)).slice().sort((a,b)=>(Number(b[devicePeriodKey])||0)-(Number(a[devicePeriodKey])||0)).slice(0,6);
     const briefing=this.s('sensor.aion_ems_zeus_daily_briefing')?.attributes||{},forecast=this.s('sensor.aion_ems_zeus_forecast')?.attributes||{};
     const battery=this.s('sensor.aion_ems_zeus_predictive_battery')?.attributes||{},eff=this.s('sensor.aion_ems_zeus_home_efficiency')?.attributes||{};
     const seasonal=this.s('sensor.aion_ems_zeus_seasonal_analysis','sensor.aion_ems_zeus_energy_topology')?.attributes||{},weather=this.s('sensor.aion_ems_zeus_weather_context')?.attributes||{};
@@ -1848,7 +1894,17 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const weatherIcon=/rain|shower|pour/i.test(condition)?'mdi:weather-rainy':/cloud/i.test(condition)?'mdi:weather-partly-cloudy':/sun|clear/i.test(condition)?'mdi:weather-sunny':'mdi:weather-partly-cloudy';
     const temp=Number(weather.temperature),humidity=Number(weather.humidity),wind=Number(weather.wind_speed),cloud=Number(weather.cloud_coverage);
     const days=Array.isArray(forecast.daily_forecast)?forecast.daily_forecast.slice(0,3):[];
-    const expected24=Number(forecast.expected_solar_next_24h_kwh),expected48=Number(forecast.expected_solar_following_24h_kwh),selfUse=Number(today.self_consumption_percent),selfSuff=Number(today.self_sufficiency_percent);
+    const expected24=Number(forecast.expected_solar_next_24h_kwh),expected48=Number(forecast.expected_solar_following_24h_kwh);
+    const rawSelfUse=today.self_consumption_percent,rawSelfSuff=today.self_sufficiency_percent;
+    const canonicalSelfUse=rawSelfUse!==null&&rawSelfUse!==undefined&&rawSelfUse!==''&&Number.isFinite(Number(rawSelfUse))?Number(rawSelfUse):null;
+    const canonicalSelfSuff=rawSelfSuff!==null&&rawSelfSuff!==undefined&&rawSelfSuff!==''&&Number.isFinite(Number(rawSelfSuff))?Number(rawSelfSuff):null;
+    // Measured day-to-date fallback uses the same canonical definitions as the backend:
+    // self-consumption = (solar generation - grid export) / solar generation.
+    // self-sufficiency = (house demand - grid import) / house demand.
+    // Never coerce missing/null evidence to 0%.
+    const measuredSelfUse=tSolar>0?Math.max(0,Math.min(100,(tSolar-tExp)/tSolar*100)):null;
+    const measuredSelfSuff=tHome>0?Math.max(0,Math.min(100,(tHome-tImp)/tHome*100)):null;
+    const selfUse=canonicalSelfUse??measuredSelfUse,selfSuff=canonicalSelfSuff??measuredSelfSuff;
     const maxForecast=Math.max(1,...days.map(d=>Number(d.expected_solar_kwh)||0));
     const forecastBars=days.length?days.map(d=>`<div class="zk42-fbar"><i style="height:${Math.max(14,Math.min(100,(Number(d.expected_solar_kwh)||0)/maxForecast*100))}%"></i><span>${this.esc(d.label||String(d.date||'').slice(5)||'Day')}</span><b>${this.kwh(d.expected_solar_kwh)}</b></div>`).join(''):'<div class="zk42-collecting">Forecast collecting</div>';
     const dayGridNet=tExp-tImp,dayGridDependency=tHome>0?Math.max(0,Math.min(100,tImp/tHome*100)):null;
@@ -2163,6 +2219,10 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
   advisorPage(){const a=this.s('sensor.aion_ems_zeus_ai_energy_advisor')?.attributes||{},b=this.s('sensor.aion_ems_zeus_predictive_battery')?.attributes||{},l=this.s('sensor.aion_ems_zeus_learning_preview')?.attributes||{},recs=Array.isArray(a.recommendations)?a.recommendations:[],qs=Array.isArray(a.questions)?a.questions:[],ctx=a.live_context||{};return `<section class="page advisor-page"><div class="page-head"><div><span>ADVISOR 3.0</span><h1>${this.esc(a.headline||'Energy Advisor')}</h1><p>${this.esc(a.explanation||'Zeus combines live energy, forecasts, scenarios, prediction accuracy and measured history.')}</p></div><div class="badge">Advice only</div></div><div class="intel-grid zeus-kpi-grid"><article class="panel intel-card"><span>EFFICIENCY</span><b>${this.esc(a.today_score??'—')}%</b><p>Transparent home score</p></article><article class="panel intel-card"><span>TOMORROW SOLAR</span><b>${this.kwh(a.forecast_tomorrow_kwh)}</b><p>Weather and history adjusted</p></article><article class="panel intel-card"><span>LEARNING</span><b>${this.esc(a.learning_confidence_percent??0)}%</b><p>${this.esc(l.seasonal_history_months??0)} seasonal month profiles</p></article><article class="panel intel-card"><span>BATTERY PLAN</span><b>${this.esc(b.recommended_reserve_percent??'—')}%</b><p>${this.esc(b.strategy||'Collecting')}</p></article></div><article class="panel spaced"><div class="section-title"><div><span>LIVE EXPLANATION</span><h2>Why Zeus recommends this</h2></div><ha-icon icon="mdi:lightbulb-on-outline"></ha-icon></div>${(()=>{const why=this.advisorExplanation(ctx,a,b);return `<div class="advisor-explanation"><h3>${this.esc(why.headline)}</h3><p>${this.esc(why.text)}</p><ul>${why.bullets.map(x=>`<li>${this.esc(x)}</li>`).join('')}</ul></div>`;})()}<div class="supporting-data-title">Supporting live data</div><div class="today-grid"><div><span>Solar</span><b>${this.watts(ctx.solar_w)}</b></div><div><span>Home</span><b>${this.watts(ctx.home_w)}</b></div><div><span>Grid import</span><b>${this.watts(ctx.grid_import_w)}</b></div><div><span>Grid export</span><b>${this.watts(ctx.grid_export_w)}</b></div><div><span>Battery SOC</span><b>${ctx.battery_soc_percent==null?'—':this.esc(ctx.battery_soc_percent)+'%'}</b></div></div></article><article class="panel spaced advisor-opportunities-panel"><div class="section-title"><div><span>ADVISOR INTELLIGENCE V1</span><h2>Today's opportunities</h2></div><ha-icon icon="mdi:target-account"></ha-icon></div><p class="advisor-opportunities-intro">Prioritized recommendation-only actions, scored by expected impact, confidence and timing.</p>${recs.length?`<div class="advisor-opportunity-grid">${recs.slice(0,6).map((r,index)=>{const target=r.device_name||r.target||r.friendly_name||'';const action=r.action||'';const generic=/^(run now|consider now|delay|hold)$/i.test(String(r.title||''));const title=(!generic&&r.title)?r.title:(target?`${action||'Recommendation'} — ${target}`:'Energy opportunity');const confidenceRaw=Number(r.confidence_percent??r.confidence);const confidence=Number.isFinite(confidenceRaw)?Math.max(0,Math.min(100,confidenceRaw)):null;const window=this.displayWindow(r.best_window||r.window||r.execution_window);const benefit=r.expected_benefit||r.benefit||r.expected_gain||'Evaluating';const energyBenefit=r.expected_energy_benefit_kwh??r.energy_benefit_kwh??r.expected_gain_kwh;const savings=r.expected_savings_chf??r.savings_chf??r.financial_benefit_chf;const priority=String(r.priority||r.urgency||'Normal');const impact=/high|critical|urgent/i.test(priority)?'High':(/low/i.test(priority)?'Low':'Medium');const historical=r.historical_context||r.similar_day_context||r.seasonal_context||'';return `<div class="advisor-opportunity-card impact-${impact.toLowerCase()}"><div class="advisor-opportunity-head"><span class="advisor-rank">${index+1}</span><div><b>${this.esc(title)}</b>${target?`<small>${this.esc(target)}</small>`:''}</div><em>${impact} impact</em></div><p>${this.esc(r.reason||r.why_now||'Zeus identified this as the strongest verified opportunity.')}</p>${historical?`<p class="advisor3-context">${this.esc(historical)}</p>`:''}<div class="advisor-score-grid"><div><span>Window</span><b>${this.esc(window)}</b></div><div><span>Confidence</span><b>${confidence==null?'Learning':confidence.toFixed(0)+'%'}</b></div><div><span>Energy</span><b>${energyBenefit==null?'—':Number(energyBenefit).toFixed(2)+' kWh'}</b></div><div><span>Savings</span><b>${savings==null?this.esc(benefit):'CHF '+Number(savings).toFixed(2)}</b></div></div><small class="advisor-only-note">Recommendation only · Zeus never executes this action automatically.</small></div>`;}).join('')}</div>`:'<div class="advisor-balanced-state"><ha-icon icon="mdi:check-decagram-outline"></ha-icon><div><b>No action required</b><p>The energy system is balanced. Zeus will surface a scored opportunity when one is supported by live and historical evidence.</p></div></div>'}</article><article class="panel spaced"><div class="section-title"><div><span>PREDICTIVE BATTERY</span><h2>${this.esc(b.strategy||'Collecting')}</h2></div><b>${this.esc(b.recommended_reserve_percent??'—')}% reserve</b></div><p>${this.esc(b.reason||'Battery context is being evaluated.')}</p><div class="today-grid zeus-kpi-grid predictive-kpi-grid"><div><span>Tomorrow forecast</span><b>${this.kwh(b.forecast_tomorrow_kwh)}</b></div><div><span>Learned daily demand</span><b>${this.kwh(b.learned_home_day_kwh)}</b></div><div><span>Forecast / demand</span><b>${this.esc(b.forecast_to_demand_ratio??'—')}×</b></div><div><span>Recommended action</span><b>${this.esc(b.recommended_action||'Monitor')}</b></div></div></article><article class="panel spaced"><div class="section-title"><div><span>ASK ZEUS</span><h2>Common energy questions</h2></div></div><div class="report-card-grid">${qs.map(q=>`<div><b>${this.esc(q.question)}</b><p>${this.esc(this.humanizeAnswer(q.answer))}</p></div>`).join('')}</div></article></section>`;}
   
   resolveCopilotFollowup(previousQuestion,rawQuestion){
+    const currentText=String(rawQuestion||'').toLowerCase();
+    const explicitNewTopic=/\b(whole\s*home|opportunity|ranking|profile\s*maturity|evidence\s*profile|what\s*has\s*zeus\s*learned|recommendation\s+outcome|outcome\s+history|adaptive\s+(?:recommendation\s+)?confidence|confidence\s+changed|why\s*#?1|why\s*number\s*1)\b/.test(currentText);
+    if(explicitNewTopic)return null;
+
     const previous=String(previousQuestion||'').trim(),raw=String(rawQuestion||'').trim();
     if(!previous||!raw)return raw||previous;
     const lead=/^(?:and|what about|how about|and what|then|also)\s*/i,clean=raw.replace(lead,'').trim();
@@ -2264,6 +2324,9 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
   resolveCopilotIIQuestion(rawText,forcedOptimizationIntent=''){
     const original=String(rawText||'').trim(),text=original.toLowerCase().replace(/[?.,!]/g,' ');
     if(!text.trim())return null;
+    const explicitWholeHomeIntent=/\b(whole\s*home|best\s*opportunit|top\s*opportunit|current\s*#?1\s*opportunit|why\s*(is|does)\s*(the\s*)?(current\s*)?#?1\s*opportunit|why\s*#?1|why\s*number\s*1|what\s*would\s*change.*rank|opportunity\s*ranking)\b/.test(text);
+    const explicitOutcomeLearningIntent=/\b(has\s+zeus\s+learned\s+from\s+(its|the)\s+recommendations?|what\s+happened\s+after\s+(your|zeus'?s|the)\s+recommendations?|are\s+(your|zeus'?s|the)\s+recommendations?\s+(getting\s+better|improving)|recommendation\s+outcomes?|outcome\s+history|adaptive\s+(recommendation\s+)?confidence|why\s+did\s+(your|zeus'?s|the)\s+confidence\s+change|has\s+(your|zeus'?s|the)\s+confidence\s+changed|what\s+did\s+zeus\s+learn\s+from\s+outcomes?)\b/.test(text);
+    const explicitProfileLearningIntent=!explicitOutcomeLearningIntent&&/\b(what\s*(has|did)\s*zeus\s*(learn|learned)|profile\s*maturity|evidence\s*profile|how\s*close.*evidence|promotion\s*(candidate|gate)|aligned\s*active\s*day|washing\s*machine.*learn)\b/.test(text);
     const has=(re)=>re.test(text);
     const period=has(/\b(total|lifetime|all\s*time|overall)\b/)?'total':has(/\b(year|yearly|this\s*year|ytd)\b/)?'year':has(/\b(month|monthly|this\s*month)\b/)?'month':has(/\b(week|weekly|this\s*week|7\s*days?)\b/)?'week':'today';
     const periodLabel=({today:'today',week:'this week',month:'this month',year:'this year',total:'total'})[period];
@@ -2302,6 +2365,112 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       has(/\b(battery|battery\s*support)\b/)?'battery':
       has(/\b(grid)\b/)?'grid':
       has(/\b(consumption|consume|consumed|usage|used|energy|kwh)\b/)?'energy':'summary';
+
+    // .140 — Outcome Learning and Adaptive Confidence use the same
+    // Opportunity Learning authority shown in Recommendation History.
+    if(explicitOutcomeLearningIntent){
+      const learning=this.s('sensor.aion_ems_zeus_opportunity_learning')?.attributes||{};
+      const outcome=learning.outcome_intelligence||{},adaptive=learning.adaptive_confidence||{};
+      const calibration=adaptive.category_calibration||{};
+      const resolved=Number(outcome.resolved_count)||0;
+      const observed=Number(outcome.observed_system_response_count)||0;
+      const notMeasurable=Number(outcome.not_measurable_count)||0;
+      const quantified=Number(outcome.quantified_actual_benefit_count)||0;
+      const observedPct=Number(outcome.observed_response_percent);
+      const activeCalibration=Object.entries(calibration)
+        .filter(([,c])=>c&&c.active===true)
+        .map(([category,c])=>({category,points:Number(c.adjustment_points)||0,resolved:Number(c.resolved_count)||0}));
+      const waitingCalibration=Object.entries(calibration)
+        .filter(([,c])=>!c||c.active!==true)
+        .map(([category,c])=>({category,remaining:Number(c?.gate_remaining)||0,resolved:Number(c?.resolved_count)||0}));
+      const asksConfidence=/\b(confidence|getting\s+better|improving|adaptive)\b/.test(text);
+      const asksOutcome=/\b(outcome|what\s+happened|after.*recommendation|learned\s+from)\b/.test(text);
+
+      let answer='';
+      if(resolved===0){
+        answer='Zeus has not yet learned from any genuine resolved recommendation outcomes. Recommendation History currently has no resolved advisory/action lifecycle, so adaptive recommendation confidence remains unchanged at 0 points.';
+        answer+=` Zeus requires at least ${Number(adaptive.minimum_resolved_per_category)||3} resolved outcomes in the same genuine category before any confidence calibration can begin.`;
+      }else{
+        answer=`Zeus has ${resolved} resolved recommendation outcome${resolved===1?'':'s'} in its outcome-learning history. ${observed} showed an observed system response and ${notMeasurable} remained not measurable`;
+        if(Number.isFinite(observedPct))answer+=`, so ${observedPct.toFixed(0)}% of classified resolved outcomes currently show an observed response`;
+        answer+=`. ${quantified} outcome${quantified===1?' has':'s have'} a genuinely measured actual benefit.`;
+        if(activeCalibration.length){
+          answer+=' Adaptive confidence is currently active for '+activeCalibration.map(x=>`${x.category} (${x.points>=0?'+':''}${x.points} points from ${x.resolved} resolved outcomes)`).join(', ')+'.';
+        }else{
+          answer+=' No recommendation category has yet passed the minimum same-category evidence gate for adaptive confidence.';
+        }
+      }
+
+      if(asksConfidence){
+        if(activeCalibration.length){
+          answer+=' Confidence changes are deliberately small and bounded to ±4 points; the current Decision Engine remains authoritative.';
+        }else if(waitingCalibration.length){
+          const nearest=waitingCalibration.slice().sort((a,b)=>a.remaining-b.remaining)[0];
+          answer+=` The closest category is ${nearest.category}, which still needs ${nearest.remaining} more resolved outcome${nearest.remaining===1?'':'s'} before calibration can activate.`;
+        }else if(resolved===0){
+          answer+=' There is therefore no historical confidence adjustment to explain yet.';
+        }
+      }
+
+      if(asksOutcome&&resolved>0){
+        answer+=` Evidence maturity is ${String(outcome.evidence_strength||'building').toLowerCase()}.`;
+      }
+      answer+=' Observed system responses are correlation evidence only: Zeus does not claim that a recommendation caused the measured change, and passive observe/monitor states are excluded from this learning.';
+      return {
+        question:original,
+        answer,
+        source:'Opportunity Learning · Outcome Intelligence & Adaptive Confidence',
+        confidence:resolved>=10?90:resolved>=3?80:resolved>0?65:60,
+        mode:'Explanation only'
+      };
+    }
+
+    // .125 — Copilot consumes the same shared cross-domain authority
+    // used by Energy Plan. No duplicate opportunity score path is created.
+    const opportunityCopilotIntent=explicitWholeHomeIntent||
+      has(/\b(what\s*should\s*i\s*do|what\s*should\s*we\s*do|why\s*(is|does).*(battery|dhw|flexible|washing|export).*(first|ahead|lead))\b/);
+    if(opportunityCopilotIntent){
+      const evidence=this.wholeHomeOpportunityEvidence(),rows=evidence.rows||[],leader=evidence.leader,runner=evidence.runner,gap=evidence.gap;
+      if(!leader){
+        return {question:original,answer:'Zeus does not currently have a cross-domain opportunity that passes the Phase 2 evidence gates. It will not invent a whole-home action.',source:'Whole-Home Opportunity Engine · Shared Phase 2 Evidence Authority',confidence:55};
+      }
+      const asksChange=has(/\b(change|would\s*change|ranking\s*change|move\s*up|move\s*down)\b/);
+      const asksWhy=has(/\b(why|reason|explain|ahead|lead|first|number\s*1|#?1)\b/);
+      let answer=`The current whole-home #1 opportunity is ${leader.domain}: ${leader.title}. Its presentation score is ${leader.score.toFixed(0)}`;
+      if(runner&&gap!=null)answer+=`, ${gap.toFixed(0)} points ahead of ${runner.domain}`;
+      answer+='.';
+      if(asksWhy||!asksChange){
+        const drivers=Array.isArray(leader.drivers)?leader.drivers:[];
+        if(drivers.length)answer+=` It leads because the validated evidence currently shows ${drivers.join(', ')}.`;
+        answer+=` ${leader.boundary}`;
+      }
+      if(asksChange){
+        const changes=Array.isArray(leader.changes)?leader.changes:[];
+        if(changes.length)answer+=` The ranking could change if ${changes.map(x=>String(x).replace(/\.$/,'').replace(/^If /,'').replace(/^A /,'a ')).join('; or ')}.`;
+      }
+      if(rows.length>1)answer+=` Current order: ${rows.map((r,i)=>`${i+1}) ${r.domain} ${r.score.toFixed(0)}`).join('; ')}.`;
+      answer+=' These are recommendation-only presentation scores from the same authority shown in Energy Plan; Copilot does not create another score or control equipment.';
+      return {question:original,answer,source:'Whole-Home Opportunity Engine · Shared Phase 2 Evidence Authority',confidence:Math.max(55,Math.min(100,Number(evidence.forecastConfidence||70)))};
+    }
+
+    const learningCopilotIntent=!explicitWholeHomeIntent&&(explicitProfileLearningIntent||
+      has(/\b(profile\s*qualification|measured\s*profile|historical\s*profile)\b/));
+    if(learningCopilotIntent){
+      const sch=this.s('sensor.aion_ems_zeus_scheduler_preview')?.attributes||{},q=Array.isArray(sch.qualification_diagnostics)?sch.qualification_diagnostics:[],authority=this.flexibleLoadCandidateAuthority();
+      const valid=q.filter(row=>authority.names.has(String(row?.device_name||'').trim().toLowerCase()));
+      if(!valid.length)return {question:original,answer:'Zeus does not yet expose flexible-load evidence-profile diagnostics in the current Scheduler Preview.',source:'Scheduler Preview · Flexible Load Evidence Profiles',confidence:55};
+      const sorted=valid.slice().sort((a,b)=>(Number(b?.historical_active_days)||0)-(Number(a?.historical_active_days)||0));
+      const top=sorted[0],days=Number(top?.historical_active_days)||0,remaining=Math.max(0,5-days),maturity=Number(top?.historical_maturity_percent)||Math.min(100,days/5*100);
+      const spreads=[top?.historical_energy_relative_spread,top?.historical_runtime_relative_spread,top?.historical_power_relative_spread].map(Number).filter(Number.isFinite);
+      const maxSpread=spreads.length?Math.max(...spreads):null;
+      let answer=`The most mature measured flexible-load profile is ${top.device_name}: ${days}/5 aligned active days (${maturity.toFixed(0)}% maturity).`;
+      if(remaining>0)answer+=` It needs ${remaining} more aligned active day${remaining===1?'':'s'} before the day-count gate.`;
+      if(maxSpread!=null)answer+=` Its current maximum relative spread is ${(maxSpread*100).toFixed(0)}% against the existing 60% stability limit.`;
+      if(top.quantification_supported===true)answer+=' Its profile is evidence-backed for Scheduler quantification.';
+      else answer+=' It remains evidence-gated; passing the day-count threshold does not override stability.';
+      answer+=' Zeus does not infer appliance availability, need-to-run, EV SOC or charging need from this history.';
+      return {question:original,answer,source:'Scheduler Preview · Flexible Load Evidence Profiles',confidence:75};
+    }
 
     // Adaptive Energy Optimization Foundation 15.0.0: evidence-first
     // opportunity quantification. Values are read from the canonical
@@ -4557,8 +4726,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     return null;
   }
 
-  evFlexibleLoadIntelligencePanel(){
-    this.ensureDEAData();
+  flexibleLoadCandidateAuthority(){
     const liveDevices=this.deviceData();
     const registryDevices=this.s('sensor.aion_ems_zeus_registry_summary')?.attributes?.devices||[];
     const analyticsDevices=this.s('sensor.aion_ems_zeus_device_analytics')?.attributes?.devices||[];
@@ -4571,7 +4739,66 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       return ['ev_charger','dishwasher','washing_machine','dryer','smart_plug'].includes(type)
         ||/\b(ev charger|car charger|vehicle charger|dishwasher|washing machine|dryer|tumble dryer|flexible load)\b/.test(text);
     };
-    const flex=all.filter(isFlexible);
+    const devices=all.filter(isFlexible);
+    return {
+      devices,
+      ids:new Set(devices.map(d=>String(d?.id??d?.device_id??''))),
+      names:new Set(devices.map(d=>String(d?.name||d?.friendly_name||'').trim().toLowerCase()).filter(Boolean)),
+    };
+  }
+
+
+  wholeHomeOpportunityEvidence(){
+    // Shared authority for both Energy Plan and Copilot. This is the only
+    // Phase-2 cross-domain presentation-score path.
+    const n=(v,f=0)=>{const x=Number(v);return Number.isFinite(x)?x:f;};
+    const solar=n(this.s('sensor.aion_ems_zeus_solar_power')?.state),home=n(this.s('sensor.aion_ems_zeus_house_power')?.state);
+    const gridExport=n(this.s('sensor.aion_ems_zeus_grid_export_power')?.state),soc=n(this.s('sensor.aion_ems_zeus_battery_soc')?.state,NaN);
+    const scheduler=this.s('sensor.aion_ems_zeus_scheduler_preview')?.attributes||{},ranked=Array.isArray(scheduler.recommended_order)?scheduler.recommended_order:[];
+    const flexibleAuthority=this.flexibleLoadCandidateAuthority();
+    const flexibleRanked=ranked.filter(r=>{
+      const id=String(r?.device_id??''),name=String(r?.device_name||'').trim().toLowerCase();
+      return flexibleAuthority.ids.has(id)||flexibleAuthority.names.has(name);
+    });
+    const flexTop=flexibleRanked[0]||null;
+    const forecastConfidence=n(scheduler.forecast_confidence,0),finance=this.s('sensor.aion_ems_zeus_finance_summary')?.attributes||{};
+    const importTariff=n(finance.import_tariff,NaN),exportTariff=n(finance.export_tariff,NaN),currency=String(finance.currency||'CHF');
+    const registry=this.s('sensor.aion_ems_zeus_registry_summary')?.attributes?.devices||[];
+    const dhw=registry.find(d=>{const t=String(d?.type||d?.category||d?.role||'').toLowerCase().replaceAll('-','_').replaceAll(' ','_');return ['water_heater','dhw','hot_water'].includes(t)||/\b(dhw|hot water|water heater|boiler)\b/.test(String(d?.name||'').toLowerCase());})||null;
+    const analytics=this.s('sensor.aion_ems_zeus_device_analytics')?.attributes?.devices||[],dhwA=dhw?analytics.find(d=>String(d?.id)===String(dhw?.id)):null,dhwPower=n(dhwA?.power_w??dhw?.power_w,0);
+    const tempEntity=dhw?.temperature_entity||dhw?.water_temperature_entity||dhw?.current_temperature_entity,dhwTemp=tempEntity?n(this.s(tempEntity)?.state,NaN):NaN;
+    const localSurplus=Math.max(0,solar-home),exportSurplus=Math.max(0,gridExport),surplus=Math.max(localSurplus,exportSurplus),ops=[];
+
+    if(flexTop){
+      const solarPct=n(flexTop.solar_coverage_percent),conf=n(flexTop.confidence_percent),quant=flexTop.quantification_supported===true;
+      ops.push({domain:'Flexible load',title:`Shift ${flexTop.device_name||'top flexible load'} into its ranked window`,icon:'mdi:calendar-clock-outline',score:Math.min(100,45+solarPct*.25+conf*.15+(quant?15:0)),evidence:quant?'Evidence-backed profile':'Assumption-limited profile',detail:`${this.displayWindow({start:flexTop.suggested_start,end:flexTop.suggested_end})} · ${solarPct.toFixed(0)}% forecast solar · ${conf.toFixed(0)}% confidence`,value:flexTop.estimated_saving!=null?this.money(flexTop.estimated_saving,flexTop.currency||currency):'Value not quantified',boundary:'Ranking does not prove the appliance or EV needs to run.',drivers:[`${solarPct.toFixed(0)}% forecast solar`,`${conf.toFixed(0)}% recommendation confidence`,quant?'qualified profile':'assumption-limited profile'],changes:[quant?'A weaker forecast solar window would reduce this opportunity.':'A qualified measured profile would strengthen this opportunity.','A lower-ranked Scheduler window would reduce its cross-domain priority.'],device_name:flexTop.device_name||'',quantification_supported:quant});
+    }
+    if(surplus>250){
+      const headroom=Number.isFinite(soc)?Math.max(0,100-soc):null,meaningfulExport=exportSurplus>=250,sourceLabel=meaningfulExport?'measured grid export':'local solar surplus',valueBasis=meaningfulExport?exportSurplus:localSurplus;
+      ops.push({domain:'Battery / surplus',title:meaningfulExport?(headroom===null||headroom>5?'Preserve battery headroom before sustained export':'Use available surplus before additional export'):(headroom===null||headroom>5?'Preserve battery headroom for local solar surplus':'Local solar surplus is available'),icon:'mdi:home-battery-outline',score:Math.min(100,55+Math.min(surplus/100,25)+forecastConfidence*.12),evidence:`Live measured ${sourceLabel} + forecast context`,detail:`Solar ${this.watts(solar)} · local surplus ${this.watts(localSurplus)} · grid export ${this.watts(exportSurplus)}${Number.isFinite(soc)?` · battery ${soc.toFixed(0)}%`:''}`,value:Number.isFinite(importTariff)?`${this.money((valueBasis/1000)*Math.max(importTariff-(Number.isFinite(exportTariff)?exportTariff:0),0),currency)} per ${meaningfulExport?'export':'local-surplus'} hour differential`:'Tariff value unavailable',boundary:meaningfulExport?'Opportunity only; measured export does not authorize battery control.':'Opportunity only; local solar surplus is not the same as measured grid export and does not authorize battery control.',drivers:[meaningfulExport?`${this.watts(exportSurplus)} measured export`:`${this.watts(localSurplus)} local solar surplus`,Number.isFinite(soc)?`${soc.toFixed(0)}% battery SOC`:'battery SOC unavailable',`${forecastConfidence.toFixed(0)}% forecast confidence`],changes:[meaningfulExport?'If measured export falls below the opportunity threshold, this rank weakens.':'If local solar surplus disappears, this rank weakens.',Number.isFinite(soc)&&soc>=95?'Battery headroom is already limited.':'Higher battery SOC reduces available headroom.']});
+    }
+    if(dhw){
+      const idle=dhwPower<50,window=surplus>250&&idle;
+      ops.push({domain:'DHW',title:window?'DHW solar timing window is available':'DHW timing evidence is collecting',icon:'mdi:water-thermometer-outline',score:window?Math.min(100,50+Math.min(surplus/120,25)+forecastConfidence*.1):25,evidence:'Registered DHW + live surplus'+(Number.isFinite(dhwTemp)?' + measured temperature':''),detail:`${idle?'No material DHW draw':'DHW currently drawing '+this.watts(dhwPower)}${Number.isFinite(dhwTemp)?` · ${dhwTemp.toFixed(1)} °C`:''}`,value:'Recommendation-only timing opportunity',boundary:'No target temperature or heating need is inferred.',drivers:[window?`${this.watts(surplus)} current surplus`:'solar timing window not established',idle?'DHW currently idle':`DHW draw ${this.watts(dhwPower)}`,Number.isFinite(dhwTemp)?`${dhwTemp.toFixed(1)} °C measured water temperature`:'water temperature unavailable'],changes:['If DHW starts heating, the timing opportunity weakens.','If the solar-surplus window disappears, this opportunity weakens.','A configured target/need signal would improve decision evidence but is never inferred.']});
+    }
+    if(exportSurplus>250)ops.push({domain:'Export avoidance',title:'Redirect measured export only where a qualified load opportunity exists',icon:'mdi:transmission-tower-export',score:Math.min(100,48+Math.min(exportSurplus/120,30)+forecastConfidence*.1),evidence:'Live measured grid export',detail:`${this.watts(exportSurplus)} currently exported`,value:Number.isFinite(importTariff)&&Number.isFinite(exportTariff)?`${this.money((exportSurplus/1000)*Math.max(importTariff-exportTariff,0),currency)} import/export spread per hour`:'Tariff spread unavailable',boundary:'Export alone is not proof that any device should run.',drivers:[`${this.watts(exportSurplus)} measured grid export`,Number.isFinite(importTariff)&&Number.isFinite(exportTariff)?`${this.money(Math.max(importTariff-exportTariff,0),currency)}/kWh import/export spread`:'tariff spread unavailable'],changes:['If measured export falls below the opportunity threshold, export avoidance drops out.','A qualified load opportunity is required before export can support a device recommendation.']});
+
+    ops.sort((a,b)=>b.score-a.score);
+    const rows=ops.slice(0,4),leader=rows[0]||null,runner=rows[1]||null,gap=leader&&runner?Math.max(0,leader.score-runner.score):null;
+    return {rows,leader,runner,gap,forecastConfidence,localSurplus,exportSurplus,soc,currency};
+  }
+
+  wholeHomeOpportunityPanel(){
+    const {rows,leader,runner,gap}=this.wholeHomeOpportunityEvidence();
+    const leaderDrivers=Array.isArray(leader?.drivers)?leader.drivers:[],leaderChanges=Array.isArray(leader?.changes)?leader.changes:[];
+    const comparisonRows=rows.slice(1).map((o,i)=>{const behind=Math.max(0,(leader?.score||0)-o.score),strongest=Array.isArray(o.drivers)&&o.drivers.length?o.drivers[0]:'Evidence context available';return `<article class="cross-domain-compare-card"><span>#${i+2} · ${this.esc(o.domain)}</span><b>${o.score.toFixed(0)}</b><small>${behind.toFixed(0)} points behind #1</small><p>${this.esc(strongest)}</p></article>`;}).join('');
+    return `<article class="panel spaced whole-home-opportunity-panel"><div class="section-title"><div><span>WHOLE-HOME OPPORTUNITY ENGINE · PHASE 2</span><h2>Best opportunities across validated domains</h2><small>${rows.length?`${rows.length} evidence-gated opportunities ranked now`:'No cross-domain opportunity is established yet'}</small></div><ha-icon icon="mdi:vector-combine"></ha-icon></div>${leader?`<article class="whole-home-opportunity-hero"><div><span>BEST CURRENT OPPORTUNITY</span><h3>${this.esc(leader.title)}</h3><p>${this.esc(leader.evidence)} · ${this.esc(leader.detail)}</p><small>${this.esc(leader.boundary)}</small></div><div><b>${leader.score.toFixed(0)}</b><span>Opportunity score</span></div></article>`:'<div class="empty">Zeus is waiting for enough validated cross-domain evidence.</div>'}<div class="whole-home-opportunity-grid">${rows.map((o,i)=>`<article><div class="whole-home-opportunity-head"><ha-icon icon="${o.icon}"></ha-icon><span>#${i+1} · ${this.esc(o.domain)}</span></div><b>${this.esc(o.title)}</b><p>${this.esc(o.detail)}</p><small>${this.esc(o.evidence)}</small><em>${this.esc(o.value)}</em><small>${this.esc(o.boundary)}</small></article>`).join('')}</div>${leader?`<div class="section-title cross-domain-explain-title"><div><span>CROSS-DOMAIN DECISION EXPLANATION</span><h2>Why #1 leads — and what could change it</h2><small>${runner&&gap!=null?`${this.esc(leader.domain)} leads ${this.esc(runner.domain)} by ${gap.toFixed(0)} points`:'Only one opportunity is currently ranked'}</small></div><ha-icon icon="mdi:source-branch"></ha-icon></div><div class="cross-domain-explain-grid"><article><span>WHY IT LEADS</span><h3>${this.esc(leader.domain)}</h3>${leaderDrivers.length?`<ul>${leaderDrivers.map(x=>`<li>${this.esc(x)}</li>`).join('')}</ul>`:'<p>No additional driver detail is established.</p>'}</article><article><span>WHAT WOULD CHANGE THE RANKING</span><h3>Evidence conditions</h3>${leaderChanges.length?`<ul>${leaderChanges.map(x=>`<li>${this.esc(x)}</li>`).join('')}</ul>`:'<p>No change condition is established.</p>'}</article></div><div class="cross-domain-compare-grid">${comparisonRows}</div>`:''}<div class="data-note" style="margin-top:12px"><b>Phase 2 boundary:</b> Explanation is derived from the same Phase 1 presentation scores and validated domain evidence. It does not create another score, infer device need, or control equipment. Unsupported benefit remains explicitly unquantified.</div></article>`;
+  }
+
+  evFlexibleLoadIntelligencePanel(){
+    this.ensureDEAData();
+    const flexibleAuthority=this.flexibleLoadCandidateAuthority();
+    const flex=flexibleAuthority.devices;
     const ev=flex.filter(d=>{
       const type=String(d?.type||d?.category||d?.role||'').toLowerCase();
       const text=[type,d?.name,d?.friendly_name].filter(Boolean).join(' ').toLowerCase();
@@ -4676,6 +4903,225 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       return `<div class="energy-statistics-card"><ha-icon icon="${this.icon(d.type)}"></ha-icon><div><span>${this.esc(d.name||d.id)}</span><b>${this.watts(d.power_w)}</b><small>${deaNote}</small></div></div>`;
     }).join('');
 
+    // Phase 2 — ranked recommendation windows.
+    // Scheduler remains recommendation-only and is evidence-gated.  Zeus does
+    // not infer appliance availability, EV SOC, required charge, or a mandatory
+    // runtime. Unsupported quantified profiles are shown as limited planning
+    // evidence rather than presented as facts.
+    const scheduler=this.s('sensor.aion_ems_zeus_scheduler_preview')?.attributes||{};
+    const rankedRaw=Array.isArray(scheduler.recommended_order)?scheduler.recommended_order:[];
+    const flexibleIds=new Set(flex.map(d=>String(d?.id??d?.device_id??'')));
+    const flexibleNames=new Set(flex.map(d=>String(d?.name||d?.friendly_name||'').trim().toLowerCase()).filter(Boolean));
+    const ranked=rankedRaw.filter(r=>{
+      const id=String(r?.device_id??'');
+      const name=String(r?.device_name||'').trim().toLowerCase();
+      return flexibleIds.has(id)||flexibleNames.has(name);
+    }).slice(0,6);
+    const supportedRanked=ranked.filter(r=>r?.quantification_supported===true);
+    const limitedRanked=ranked.filter(r=>r?.quantification_supported!==true);
+    const tomorrowRaw=Array.isArray(scheduler.tomorrow_plan)?scheduler.tomorrow_plan:[];
+    const tomorrowRanked=tomorrowRaw.filter(r=>{
+      const id=String(r?.device_id??'');
+      const name=String(r?.device_name||'').trim().toLowerCase();
+      return flexibleIds.has(id)||flexibleNames.has(name);
+    }).slice(0,4);
+    const qualification=Array.isArray(scheduler.qualification_diagnostics)?scheduler.qualification_diagnostics:[];
+    const qualificationFor=name=>qualification.find(q=>String(q?.device_name||'').trim().toLowerCase()===String(name||'').trim().toLowerCase())||null;
+    const fmtWindow=(start,end)=>{
+      if(!start)return 'No verified window';
+      const a=new Date(start),b=end?new Date(end):null;
+      if(Number.isNaN(a.getTime()))return this.displayWindow(start);
+      const day=a.toLocaleDateString([], {weekday:'short'});
+      const at=a.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+      const bt=b&&!Number.isNaN(b.getTime())?b.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
+      return `${day} ${at}${bt?`–${bt}`:''}`;
+    };
+    const rankedRows=ranked.map((r,i)=>{
+      const supported=r?.quantification_supported===true;
+      const q=qualificationFor(r?.device_name);
+      const evidence=supported
+        ?(q?.profile_source==='device_analytics_historical_profile'
+          ?`Measured historical profile${q?.historical_active_days!=null?` · ${q.historical_active_days} active day(s)`:''}`
+          :'Registered planning profile')
+        :(q?.missing_evidence?.length
+          ?`Limited: ${q.missing_evidence.join(' · ')}`
+          :'Limited planning profile · more measured history required');
+      const saving=r?.estimated_saving==null?'Tariff value unavailable':`${this.money(r.estimated_saving,r.currency||currency)} potential tariff spread`;
+      const evidenceScore=r?.evidence_rank_score==null?null:Number(r.evidence_rank_score);
+      const evidenceRankLine=evidenceScore==null
+        ?'Original Scheduler ranking'
+        :`Evidence-aware rank ${evidenceScore.toFixed(1)} · base Scheduler ${Number(r?.score??0).toFixed(1)} · detailed components runtime-only`;
+      const dea=this.deaDeviceForRegisteredDevice(flex.find(d=>String(d?.id??d?.device_id??'')===String(r?.device_id??''))||flex.find(d=>String(d?.name||'').trim().toLowerCase()===String(r?.device_name||'').trim().toLowerCase()));
+      const today=(dea?.periods||{}).today||null;
+      const todaySource=today
+        ?`Today DEA: solar ${this.kwh(Math.max(0,Number(today.solar_kwh)||0))} · battery ${this.kwh(Math.max(0,Number(today.battery_kwh)||0))} · grid ${this.kwh(Math.max(0,Number(today.grid_kwh)||0))}`
+        :'Today DEA evidence collecting';
+      return `<div class="schedule-row">
+        <div class="schedule-index">${this.esc(r?.planning_rank??i+1)}</div>
+        <div class="device-icon"><ha-icon icon="${this.icon(r?.device_type)}"></ha-icon></div>
+        <div class="schedule-main"><b>${this.esc(r?.device_name||r?.device_id||'Flexible load')}</b><span>${this.esc(fmtWindow(r?.suggested_start,r?.suggested_end))}</span><small>${this.esc(evidence)} · ${this.esc(todaySource)}</small><small class="evidence-rank-line">${this.esc(evidenceRankLine)}</small></div>
+        <div class="schedule-stats"><span>${r?.expected_energy_kwh!=null?this.kwh(r.expected_energy_kwh):'Energy not established'}</span><b>${r?.solar_coverage_percent!=null?`${Number(r.solar_coverage_percent).toFixed(0)}% forecast solar`:'Solar coverage collecting'}</b><small>${this.esc(saving)}</small></div>
+        <div class="schedule-confidence">${r?.confidence_percent!=null?`${this.esc(r.confidence_percent)}%`:'—'}</div>
+      </div>`;
+    }).join('');
+    const tomorrowRows=tomorrowRanked.map((r,i)=>`<div class="energy-statistics-card"><ha-icon icon="${this.icon(r?.device_type)}"></ha-icon><div><span>${this.esc(r?.device_name||r?.device_id||'Flexible load')}</span><b>${this.esc(fmtWindow(r?.suggested_start,r?.suggested_end))}</b><small>${r?.solar_coverage_percent!=null?`${Number(r.solar_coverage_percent).toFixed(0)}% forecast solar`:''}${r?.quantification_supported===true?' · evidence-backed':' · assumption-limited'}</small></div></div>`).join('');
+    const topRank=ranked[0]||null;
+    const phase2Headline=!flex.length
+      ?'No flexible loads registered'
+      :!ranked.length
+        ?'Waiting for a verified forecast window'
+        :`${this.esc(topRank.device_name||topRank.device_id||'Flexible load')} ranks first`;
+    const phase2Note=!ranked.length
+      ?'Zeus has not produced a ranked Scheduler opportunity for the registered flexible loads yet.'
+      :`${fmtWindow(topRank.suggested_start,topRank.suggested_end)} · ${topRank.solar_coverage_percent!=null?Number(topRank.solar_coverage_percent).toFixed(0)+'% forecast solar coverage':'solar coverage collecting'} · recommendation only.`;
+    const schedulerEvidence=`${ranked.length} ranked · ${supportedRanked.length} evidence-backed · ${limitedRanked.length} assumption-limited`;
+
+    // .120 Decision Intelligence is presentation-side and consumes compact_v2.
+    // It does not create another Scheduler score or expand Recorder attributes.
+    const decisionRows=ranked.slice(0,3);
+    const leader=decisionRows[0]||null;
+    const runnerUp=decisionRows[1]||null;
+    const qForRank=r=>qualificationFor(r?.device_name);
+    const maturityFor=r=>Math.max(0,Math.min(100,Number(qForRank(r)?.historical_maturity_percent)||0));
+    const scoreFor=r=>Number(r?.evidence_rank_score??r?.score??0)||0;
+    const leaderQ=qForRank(leader);
+    const runnerQ=qForRank(runnerUp);
+    const leaderReasons=[];
+    if(leader){
+      if(leader?.quantification_supported===true)leaderReasons.push('qualified device profile');
+      else if(maturityFor(leader)>0)leaderReasons.push(`${maturityFor(leader).toFixed(0)}% measured-profile maturity`);
+      if(Number(leader?.solar_coverage_percent)>=90)leaderReasons.push(`${Number(leader.solar_coverage_percent).toFixed(0)}% forecast solar coverage`);
+      if(leader?.estimated_saving!=null)leaderReasons.push(`${this.money(leader.estimated_saving,leader.currency||currency)} quantified tariff opportunity`);
+      if(Number(leader?.confidence_percent)>0)leaderReasons.push(`${Number(leader.confidence_percent).toFixed(0)}% recommendation confidence`);
+    }
+    const decisionGap=leader&&runnerUp?scoreFor(leader)-scoreFor(runnerUp):null;
+    const decisionHeadline=!leader
+      ?'No ranked decision available'
+      :!runnerUp
+        ?`${this.esc(leader.device_name||'Leading load')} is the only ranked candidate`
+        :`${this.esc(leader.device_name||'Leading load')} leads ${this.esc(runnerUp.device_name||'the next candidate')}`;
+    const decisionWhy=!leader
+      ?'Zeus is waiting for a ranked Scheduler opportunity.'
+      :leaderReasons.length
+        ?leaderReasons.join(' · ')
+        :'The canonical Scheduler score is currently the only ranking evidence.';
+    const compareRows=decisionRows.map((r,i)=>{
+      const q=qForRank(r);
+      const maturity=Math.max(0,Math.min(100,Number(q?.historical_maturity_percent)||0));
+      const supported=r?.quantification_supported===true;
+      const rankScore=scoreFor(r);
+      const source=supported?'Evidence-backed':maturity?`${maturity.toFixed(0)}% profile maturity`:'Assumption-limited';
+      const gap=i===0?'Leader':`${Math.max(0,scoreFor(leader)-rankScore).toFixed(1)} pts behind`;
+      return `<article class="decision-compare-card"><span>#${i+1} · ${this.esc(r?.device_name||r?.device_id||'Flexible load')}</span><b>${rankScore.toFixed(1)}</b><small>${this.esc(gap)} · ${this.esc(source)}</small><small>${r?.solar_coverage_percent!=null?`${Number(r.solar_coverage_percent).toFixed(0)}% forecast solar`:''}${r?.confidence_percent!=null?` · ${Number(r.confidence_percent).toFixed(0)}% confidence`:''}</small></article>`;
+    }).join('');
+
+    const deaAuthorityReady=Boolean(this._deaData)&&!this._deaLoading;
+    const deaMatchedCount=deaMatches.filter(x=>Boolean(x.dea)).length;
+    const deaTodayCount=deaMatches.filter(x=>Boolean((x.dea?.periods||{}).today)).length;
+    const deaCoverageDenominator=deaEligible.length||flex.length;
+    const deaAuditValue=this._deaLoading&&!this._deaData?'Loading':`${deaMatchedCount}/${deaCoverageDenominator}`;
+    const deaAuditNote=this._deaLoading&&!this._deaData
+      ?'Refreshing canonical DEA authority'
+      :deaMatchedCount
+        ?`${deaMatchedCount} registered load${deaMatchedCount===1?'':'s'} matched to canonical DEA · ${deaTodayCount} with today period evidence`
+        :this._deaError
+          ?`Canonical DEA unavailable: ${this._deaError}`
+          :'No registered flexible load currently matches canonical DEA';
+
+    const releaseReadiness=this.s('sensor.aion_ems_zeus_release_readiness')?.attributes||{};
+    const releaseReadinessPercent=Number(releaseReadiness.readiness_percent);
+    const releaseReadinessStatus=String(releaseReadiness.status||'Collecting');
+    const releaseFailedChecks=Number(releaseReadiness.failed_check_count)||0;
+    const releaseIssues=Array.isArray(releaseReadiness.issues)?releaseReadiness.issues:[];
+    const releaseIssueSummary=releaseIssues.length
+      ?releaseIssues.map(x=>`${String(x?.name||'Readiness check')}: ${String(x?.detail||'Needs review')}`).join(' · ')
+      :'All current release-readiness checks pass.';
+    const qualityGate=this.s('sensor.aion_ems_zeus_intelligence_quality_gate')?.attributes||{};
+    const qualityIssues=Array.isArray(qualityGate.issues)?qualityGate.issues:[];
+    const qualityIssueSummary=qualityIssues.length
+      ?qualityIssues.map(x=>`${String(x?.engine||'engine')}: ${String(x?.status||'Unknown')} — ${String(x?.detail||'No detail')}`).join(' · ')
+      :'No Intelligence Quality Gate engine issues are reported.';
+
+    const profileRows=flex.map(d=>{
+      const q=qualificationFor(d?.name||d?.friendly_name);
+      const supported=q?.quantification_supported===true;
+      const source=String(q?.profile_source||'').trim();
+      const activeDays=Math.max(0,Number(q?.historical_active_days)||0);
+      const maturity=Math.max(0,Math.min(100,Number(q?.historical_maturity_percent)||Math.min(100,activeDays/5*100)));
+      const energy=q?.historical_typical_energy_kwh;
+      const runtime=q?.historical_typical_runtime_minutes;
+      const power=q?.historical_typical_power_w;
+      const freq=q?.historical_active_day_frequency_percent;
+      const energySpread=q?.historical_energy_relative_spread;
+      const runtimeSpread=q?.historical_runtime_relative_spread;
+      const powerSpread=q?.historical_power_relative_spread;
+      const histConfidence=q?.historical_confidence_percent;
+      const missing=Array.isArray(q?.historical_missing_evidence)?q.historical_missing_evidence:[];
+      const recorderDays=Math.max(0,Number(q?.aligned_recorder_runtime_days)||0);
+      const lakeDays=Math.max(0,Number(q?.aligned_datalake_runtime_days)||0);
+      const isRegistered=source==='registered_energy_requirement'||source==='registered_power_and_runtime';
+      const daysRemaining=Math.max(0,5-activeDays);
+      const maxSpread=Math.max(
+        Number.isFinite(Number(energySpread))?Number(energySpread):0,
+        Number.isFinite(Number(runtimeSpread))?Number(runtimeSpread):0,
+        Number.isFinite(Number(powerSpread))?Number(powerSpread):0
+      );
+      const stabilityKnown=[energySpread,runtimeSpread,powerSpread].some(v=>v!==null&&v!==undefined&&Number.isFinite(Number(v)));
+      const stableEnough=stabilityKnown&&maxSpread<=0.60;
+      const state=supported?(isRegistered?'Registered profile':'Evidence-backed'):(activeDays?'Building profile':'Collecting');
+      const profileSource=isRegistered
+        ?'Registered planning evidence'
+        :activeDays
+          ?`Measured active-day history · ${activeDays}/5 minimum days${daysRemaining?` · ${daysRemaining} day${daysRemaining===1?'':'s'} remaining`:''}`
+          :'Waiting for aligned measured active days';
+      const metrics=[
+        energy!=null?`Typical energy ${this.kwh(energy)}`:null,
+        runtime!=null?`Typical runtime ${Math.round(Number(runtime))} min`:null,
+        power!=null?`Typical power ${this.watts(power)}`:null,
+      ].filter(Boolean).join(' · ');
+      const sourceLine=isRegistered
+        ?'Scheduler may quantify from the registered profile.'
+        :`${recorderDays} Recorder-aligned day(s) · ${lakeDays} Data-Lake-aligned day(s)${freq!=null?` · active ${Number(freq).toFixed(0)}% of observed days`:''}`;
+      const stabilityLine=isRegistered
+        ?'Stability gate not required for registered direct evidence.'
+        :!activeDays
+          ?'Stability gate: waiting for measured active-day evidence.'
+          :stabilityKnown
+            ?`Stability gate: ${stableEnough?'within limit':'too variable'} · max relative spread ${(maxSpread*100).toFixed(0)}% / 60% limit${histConfidence!=null?` · profile confidence ${Math.round(Number(histConfidence))}%`:''}`
+            :'Stability gate: collecting enough aligned observations.';
+      const readinessLine=supported
+        ?'Promotion gate satisfied.'
+        :isRegistered
+          ?'Direct registered evidence available.'
+          :missing.length
+            ?`Not ready: ${missing.join(' · ')}`
+            :daysRemaining
+              ?`Not ready: ${daysRemaining} more aligned active day${daysRemaining===1?'':'s'} required.`
+              :'Not ready: stability qualification still required.';
+      const type=String(d?.type||d?.category||d?.role||'').toLowerCase();
+      const isEv=type.includes('ev')||/charger/.test(type);
+      const boundary=isEv?'EV SOC and charging need are not inferred.':'Availability and need-to-run are not inferred.';
+      return `<article class="device-profile-card">
+        <div class="device-profile-head"><div class="device-icon"><ha-icon icon="${this.icon(d?.type)}"></ha-icon></div><div><span>${this.esc(d?.name||d?.friendly_name||'Flexible load')}</span><b>${this.esc(state)}</b></div><em class="${supported?'ok':'learning'}">${supported?'READY':`${Math.round(maturity)}%`}</em></div>
+        <div class="device-profile-meter"><i style="width:${supported?100:Math.max(3,maturity)}%"></i></div>
+        <p>${this.esc(profileSource)}</p>
+        <small>${this.esc(metrics||sourceLine)}</small>
+        ${metrics?`<small>${this.esc(sourceLine)}</small>`:''}
+        <small class="profile-readiness ${supported?'ready':''}">${this.esc(readinessLine)}</small>
+        <small>${this.esc(stabilityLine)}</small>
+        <small>${this.esc(boundary)}</small>
+      </article>`;
+    }).join('');
+    const profileSupported=flex.filter(d=>qualificationFor(d?.name||d?.friendly_name)?.quantification_supported===true).length;
+    const profileBuilding=flex.filter(d=>{const q=qualificationFor(d?.name||d?.friendly_name);return q&&q.quantification_supported!==true&&(Number(q.historical_active_days)||0)>0;}).length;
+    const promotionCandidates=flex.map(d=>({device:d,q:qualificationFor(d?.name||d?.friendly_name)}))
+      .filter(x=>x.q&&x.q.quantification_supported!==true&&(Number(x.q.historical_active_days)||0)>0)
+      .sort((a,b)=>(Number(b.q.historical_active_days)||0)-(Number(a.q.historical_active_days)||0));
+    const nextPromotion=promotionCandidates[0]||null;
+    const nextPromotionText=nextPromotion
+      ?`${nextPromotion.device?.name||nextPromotion.device?.friendly_name||'Flexible load'} · ${Math.max(0,5-(Number(nextPromotion.q?.historical_active_days)||0))} aligned active day${Math.max(0,5-(Number(nextPromotion.q?.historical_active_days)||0))===1?'':'s'} remaining before the day-count gate`
+      :'No measured profile is currently approaching qualification.';
+
     return `<article class="panel spaced flexible-load-intelligence-panel">
       <div class="section-title"><div><span>EV & FLEXIBLE LOADS</span><h2>Charging & flexible-load intelligence</h2><small>${this.esc(evidence)}</small></div><ha-icon icon="mdi:ev-station"></ha-icon></div>
       <div class="energy-statistics-grid">${cards.map(([label,value,note,icon])=>`<div class="energy-statistics-card"><ha-icon icon="${icon}"></ha-icon><div><span>${this.esc(label)}</span><b>${this.esc(value)}</b><small>${this.esc(note)}</small></div></div>`).join('')}</div>
@@ -4692,7 +5138,44 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
         <div class="energy-statistics-card"><ha-icon icon="mdi:clock-outline"></ha-icon><div><span>Forecast window</span><b>${this.esc(forecastWindow)}</b><small>${this.esc(forecastEvidence)}</small></div></div>
         <div class="energy-statistics-card"><ha-icon icon="mdi:shield-check-outline"></ha-icon><div><span>Control mode</span><b>Recommendation only</b><small>Zeus does not start, stop or schedule devices automatically.</small></div></div>
       </div>
-    </article>`;
+
+      <div class="section-title" style="margin-top:24px"><div><span>FLEXIBLE LOAD SCHEDULING · PHASE 2</span><h2>Evidence-aware recommendation ranking</h2><small>${this.esc(schedulerEvidence)} · original Scheduler score remains fallback</small></div><ha-icon icon="mdi:calendar-clock-outline"></ha-icon></div>
+      <article class="planning-hero panel" style="margin-top:12px"><div><span>BEST CURRENT PLANNING SIGNAL</span><h2>${phase2Headline}</h2><p>${this.esc(phase2Note)}</p></div><div class="planning-score"><b>${topRank?.confidence_percent!=null?this.esc(topRank.confidence_percent):'—'}</b><span>Confidence</span></div></article>
+      ${rankedRows?`<div class="schedule-list" style="margin-top:14px">${rankedRows}</div>`:'<div class="empty" style="margin-top:14px">No evidence-backed or assumption-limited Scheduler window is available yet. Zeus will keep collecting forecast and device-history evidence.</div>'}
+
+      <div class="section-title" style="margin-top:22px"><div><span>DECISION INTELLIGENCE · .120</span><h2>Why this recommendation ranks first</h2><small>Explanation from the same compact evidence used by the ranked Scheduler view</small></div><ha-icon icon="mdi:scale-balance"></ha-icon></div>
+      <article class="decision-intelligence-hero">
+        <div><span>LEADING DECISION</span><h3>${decisionHeadline}</h3><p>${this.esc(decisionWhy)}</p>${decisionGap!=null?`<small>Evidence-aware lead: ${decisionGap.toFixed(1)} points. A small gap means the alternatives are effectively close.</small>`:''}</div>
+        <ha-icon icon="mdi:head-lightbulb-outline"></ha-icon>
+      </article>
+      <div class="decision-compare-grid">${compareRows||'<div class="empty">No ranked candidates are available to compare yet.</div>'}</div>
+      <div class="data-note" style="margin-top:12px"><b>Decision boundary:</b> #1/#2/#3 above are positions in this evidence-aware comparison, not the underlying chronological/canonical planning rank. This explains the current advisory ranking; it does not create a new score, infer appliance availability, infer EV charging need/SOC, or prove that the leading device should run. The canonical Scheduler and evidence-aware rank remain authoritative.</div>
+
+      <div class="section-title" style="margin-top:22px"><div><span>FLEXIBLE LOAD EVIDENCE PROFILES</span><h2>What Zeus has actually learned</h2><small>${profileSupported} ready · ${profileBuilding} building · ${Math.max(0,flex.length-profileSupported-profileBuilding)} collecting</small></div><ha-icon icon="mdi:chart-timeline-variant-shimmer"></ha-icon></div>
+      <div class="device-profile-grid">${profileRows||'<div class="empty">Register flexible loads to begin measured profile learning.</div>'}</div>
+      <div class="data-note" style="margin-top:14px"><b>Qualification:</b> A measured historical profile becomes evidence-backed only after at least 5 aligned active days and a sufficiently stable energy/runtime/power pattern. Recorder energy and canonical Zeus runtime must refer to the same local calendar day. Registered energy requirements or registered power + runtime remain valid direct evidence.</div>
+      <div class="promotion-readiness-strip"><ha-icon icon="mdi:progress-clock"></ha-icon><div><span>NEXT PROMOTION CANDIDATE</span><b>${this.esc(nextPromotionText)}</b><small>Passing the day-count gate does not override the existing 60% stability gate.</small></div></div>
+
+      <div class="section-title" style="margin-top:22px"><div><span>TOMORROW OUTLOOK</span><h2>Next-day flexible-load opportunities</h2><small>${tomorrowRanked.length?`${tomorrowRanked.length} ranked next-day planning signal${tomorrowRanked.length===1?'':'s'}`:'No next-day opportunity has been established yet.'}</small></div><ha-icon icon="mdi:calendar-arrow-right"></ha-icon></div>
+      <div class="energy-statistics-grid">${tomorrowRows||'<div class="empty">Tomorrow’s ranked opportunities will appear when the canonical forecast and Scheduler have enough evidence.</div>'}</div>
+
+      <div class="data-note" style="margin-top:16px"><b>Evidence boundary:</b> Ranking now gives bounded preference to stronger device-profile evidence, forecast confidence, registered constraints and quantified tariff value. DEA remains measured source context and is never interpreted as proof that a device needs to run. A ranking does not prove appliance availability or EV charging need. Zeus never starts, stops or schedules equipment automatically.</div>
+
+      <div class="section-title" style="margin-top:22px"><div><span>INTELLIGENCE AUDIT · .150</span><h2>What is strong, what is still learning</h2><small>Canonical evidence health for this planning domain</small></div><ha-icon icon="mdi:shield-search-outline"></ha-icon></div>
+      <div class="intelligence-audit-grid">
+        <article><span>Registered flexible loads</span><b>${flex.length}</b><small>${flex.length?'Registry classification available':'No flexible-load registry evidence'}</small></article>
+        <article><span>DEA attribution</span><b>${this.esc(deaAuditValue)}</b><small>${this.esc(deaAuditNote)}</small></article>
+        <article><span>Evidence-backed profiles</span><b>${supportedRanked.length}</b><small>${supportedRanked.length?'Scheduler may quantify supported profiles':'No ranked load has passed profile qualification yet'}</small></article>
+        <article><span>Profiles still learning</span><b>${limitedRanked.length}</b><small>${limitedRanked.length?'Ranking allowed; quantified kWh/CHF remains evidence-gated':'No assumption-limited ranked profiles'}</small></article>
+        <article><span>Forecast planning</span><b>${ranked.length?'Ready':'Collecting'}</b><small>${ranked.length?`${ranked.length} ranked opportunity window${ranked.length===1?'':'s'}`:'No ranked forecast opportunity'}</small></article>
+        <article><span>Control boundary</span><b>Recommendation only</b><small>No automatic device start, stop or scheduling</small></article>
+        <article><span>Release hardening</span><b>${Number.isFinite(releaseReadinessPercent)?`${releaseReadinessPercent.toFixed(0)}%`:this.esc(releaseReadinessStatus)}</b><small>${releaseFailedChecks?`${releaseFailedChecks} readiness check${releaseFailedChecks===1?'':'s'} need review`:this.esc(releaseReadinessStatus)}</small></article>
+      </div>
+      <div class="data-note intelligence-audit-note"><b>Next maturity gate:</b> Historical device profiles require at least 5 aligned active days plus stable measured energy/runtime/power. Zeus will promote a profile automatically only when that evidence gate is genuinely satisfied.</div>
+      <div class="data-note intelligence-audit-note"><b>Hardening contract:</b> Recommendation-only control boundary · persistent history excludes passive observe states · adaptive confidence requires 3 resolved same-category outcomes and remains bounded to ±4 points · Scheduler Recorder payload remains compact_v2.</div>
+      ${releaseFailedChecks?`<div class="data-note intelligence-audit-note release-hardening-issues"><b>Readiness checks needing review:</b> ${this.esc(releaseIssueSummary)}</div>`:`<div class="data-note intelligence-audit-note release-hardening-pass"><b>Release readiness:</b> ${this.esc(releaseIssueSummary)}</div>`}
+      ${qualityIssues.length?`<div class="data-note intelligence-audit-note release-hardening-issues"><b>Intelligence Quality Gate issues:</b> ${this.esc(qualityIssueSummary)}</div>`:`<div class="data-note intelligence-audit-note release-hardening-pass"><b>Intelligence Quality Gate:</b> ${this.esc(qualityIssueSummary)}</div>`}
+    </article>${this.wholeHomeLearningMaturity()}`;
   }
 
   planningContext(){
@@ -4816,6 +5299,36 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
   }
 
   planningLearningPage(){const engine=this.s('sensor.aion_ems_zeus_planning_engine')?.attributes||{},learning=engine.learning&&typeof engine.learning==='object'?engine.learning:{},latest=learning.latest_lesson&&typeof learning.latest_lesson==='object'?learning.latest_lesson:null,change=learning.change_since_yesterday&&typeof learning.change_since_yesterday==='object'?learning.change_since_yesterday:null,factors=Array.isArray(learning.factors)?learning.factors:[],patterns=Array.isArray(learning.patterns)?learning.patterns:[],comparisonCount=this.numberValue(learning.comparison_count,0),confidence=this.numberValue(learning.confidence_percent,0),bias=learning.average_bias_percent,correction=this.numberValue(learning.recommended_forecast_correction_percent,0),direction=learning.bias_direction||'Collecting',hasLearning=comparisonCount>0;const factorCards=factors.map(x=>`<div><span>${this.esc(x.label||'Factor')}</span><b>${x.value==null?'Collecting':`${this.esc(x.value)}${x.unit||''}`}</b></div>`).join('');const patternCards=patterns.map(x=>`<div class="planning-pattern-card"><span>${this.esc(x.label||'Pattern')}</span><b>${x.reusable_learning?`${this.esc(x.bias_direction||'Balanced')}`:'Collecting'}</b><small>${x.reusable_learning?`${Number(x.average_accuracy_percent||0).toFixed(1)}% weighted accuracy · ${x.comparison_count} day${x.comparison_count===1?'':'s'}`:x.comparison_count?`${x.comparison_count} matching day${x.comparison_count===1?'':'s'} · not enough weighted evidence`:'Waiting for matching days'}</small></div>`).join('');return `<section class="page planning-page planning-learning-page"><div class="page-head"><div><span>PLANNING · LEARNING</span><h1>What Zeus Learned</h1><p>Evidence-based forecast lessons from genuine stored plans and measured outcomes.</p></div><div class="badge">Recommendation only</div></div><div class="planning-learning-grid"><article class="panel planning-learning-hero ${hasLearning?'':'is-collecting'}"><div><span>LEARNING CONFIDENCE</span><h2>${hasLearning?(learning.confidence_level||'Early learning'):'Collecting data'}</h2><p>${hasLearning?`${comparisonCount} completed plan comparison${comparisonCount===1?'':'s'} available.`:'Waiting for the first completed pre-day plan comparison.'}</p></div><div class="planning-learning-score ${hasLearning?'':'is-collecting'}" style="--learning-score:${hasLearning?confidence:0}">${hasLearning?`<b>${confidence.toFixed(0)}</b><span>/ 100</span>`:'<ha-icon icon="mdi:database-clock-outline"></ha-icon><span>Collecting</span>'}</div></article><article class="panel planning-bias-card"><span>OBSERVED FORECAST BIAS</span><h2>${this.esc(direction)}</h2><b>${bias==null?'Collecting':`${Number(bias)>=0?'+':''}${Number(bias).toFixed(1)}%`}</b><p>${learning.reusable_learning_ready?(correction===0?'Weighted evidence is balanced; no correction is recommended.':`Qualified advisory correction: ${correction>0?'+':''}${correction.toFixed(1)}%.`):'Observed comparisons are not yet qualified as reusable learning.'}</p><small>Original plan confidence is used as evidence weight. No correction is applied automatically.</small></article></div><article class="panel spaced"><div class="section-title"><div><span>CONFIDENCE ENGINE</span><h2>Why Zeus has this confidence</h2></div><ha-icon icon="mdi:shield-check-outline"></ha-icon></div><div class="planning-factor-grid">${factorCards||'<div><span>History</span><b>Collecting</b></div>'}</div></article><article class="panel spaced"><div class="section-title"><div><span>PATTERN LEARNING</span><h2>Where forecast behavior differs</h2></div><ha-icon icon="mdi:chart-timeline-variant-shimmer"></ha-icon></div><div class="planning-pattern-grid">${patternCards||'<div class="planning-pattern-card"><span>Patterns</span><b>Collecting</b><small>Waiting for completed days</small></div>'}</div></article>${change?`<article class="panel spaced planning-change-card"><div class="section-title"><div><span>WHAT CHANGED SINCE YESTERDAY</span><h2>${this.esc(change.headline||'Latest comparison')}</h2></div><ha-icon icon="mdi:compare-horizontal"></ha-icon></div><p>${this.esc(change.detail||'Zeus compared the latest two completed days.')}</p><div class="planning-change-metrics"><div><span>Previous accuracy</span><b>${Number(change.previous_accuracy_percent||0).toFixed(1)}%</b></div><div><span>Latest accuracy</span><b>${Number(change.latest_accuracy_percent||0).toFixed(1)}%</b></div><div><span>Change</span><b>${Number(change.accuracy_change_points||0)>=0?'+':''}${Number(change.accuracy_change_points||0).toFixed(1)} pts</b></div></div></article>`:''}${latest?`<article class="panel spaced planning-daily-lesson"><div class="section-title"><div><span>DAILY LESSON</span><h2>${this.esc(latest.date||'Latest completed day')}</h2></div><ha-icon icon="mdi:lightbulb-on-outline"></ha-icon></div><div class="planning-lesson-metrics"><div><span>Planned</span><b>${this.kwh(latest.plan?.expected_solar_kwh||0)}</b></div><div><span>Measured</span><b>${this.kwh(latest.measured_solar_kwh||0)}</b></div><div><span>Accuracy</span><b>${latest.solar_accuracy_percent==null?'Collecting':Number(latest.solar_accuracy_percent).toFixed(1)+'%'}</b></div></div><h3>Why</h3><p>${this.esc(latest.reason_summary||'Zeus is evaluating the difference.')}</p><h3>Lesson</h3><p>${this.esc(latest.learning_summary||'More matching days are required.')}</p><small>${this.esc(latest.weather_summary||'Weather context unavailable')}</small></article>`:`<article class="panel planning-empty spaced"><ha-icon icon="mdi:brain"></ha-icon><h2>Building the learning loop</h2><p>A daily lesson appears after a genuine pre-day plan has matching measured solar data.</p></article>`}</section>`;}
+  wholeHomeLearningMaturity(){
+    const planning=this.s('sensor.aion_ems_zeus_planning_engine')?.attributes||{},pl=planning.learning||{};
+    const scheduler=this.s('sensor.aion_ems_zeus_scheduler_preview')?.attributes||{};
+    const flexibleAuthority=this.flexibleLoadCandidateAuthority(),flex=flexibleAuthority.devices;
+    const qualification=Array.isArray(scheduler.qualification_diagnostics)?scheduler.qualification_diagnostics:[];
+    const qualificationFor=name=>qualification.find(q=>String(q?.device_name||'').trim().toLowerCase()===String(name||'').trim().toLowerCase())||null;
+    const opportunity=this.s('sensor.aion_ems_zeus_opportunity_learning')?.attributes||{},outcome=opportunity.outcome_intelligence||{},adaptive=opportunity.adaptive_confidence||{},cal=adaptive.category_calibration||{};
+    const forecastComparisons=Number(pl.comparison_count)||0,forecastConf=Number(pl.confidence_percent);
+    // Use exactly the same canonical flexible-load authority and qualification
+    // diagnostics as "What Zeus has actually learned".
+    const profileReady=flex.filter(d=>qualificationFor(d?.name||d?.friendly_name)?.quantification_supported===true).length;
+    const profileBuilding=flex.filter(d=>{const q=qualificationFor(d?.name||d?.friendly_name);return q&&q.quantification_supported!==true&&(Number(q.historical_active_days)||0)>0;}).length;
+    const profileCollecting=Math.max(0,flex.length-profileReady-profileBuilding);
+    const resolved=Number(outcome.resolved_count)||0,observed=Number(outcome.observed_system_response_count)||0;
+    const adaptiveReady=Object.values(cal).filter(x=>x&&x.active===true).length;
+    const adaptiveWaiting=Object.values(cal).filter(x=>x&&x.active!==true).length;
+    const stage=(ready,building)=>ready?'Ready':building?'Learning':'Collecting';
+    const forecastState=stage(forecastComparisons>=10,forecastComparisons>0);
+    const profileState=stage(profileReady>0,profileBuilding>0);
+    const outcomeState=stage(resolved>=10,resolved>0);
+    const adaptiveState=stage(adaptiveReady>0,resolved>0);
+    const cards=[
+      {label:'Forecast learning',state:forecastState,value:`${forecastComparisons} comparisons`,detail:Number.isFinite(forecastConf)?`${forecastConf.toFixed(0)}% evidence confidence`:'Waiting for completed plan comparisons',next:forecastComparisons>=10?'Established evidence history':`${Math.max(0,10-forecastComparisons)} more comparison${Math.max(0,10-forecastComparisons)===1?'':'s'} to established-history gate`},
+      {label:'Flexible-load profiles',state:profileState,value:`${profileReady} evidence-backed`,detail:`${profileBuilding} building · ${profileCollecting} collecting`,next:profileReady?'At least one measured profile passed qualification':'Profiles require ≥5 aligned active days plus stability'},
+      {label:'Recommendation outcomes',state:outcomeState,value:`${resolved} resolved`,detail:`${observed} observed system response${observed===1?'':'s'}`,next:resolved>=10?'Established outcome history':resolved?`${Math.max(0,10-resolved)} more resolved outcome${Math.max(0,10-resolved)===1?'':'s'} to established-history gate`:'Waiting for genuine recommendation lifecycles'},
+      {label:'Adaptive confidence',state:adaptiveState,value:`${adaptiveReady} calibrated categories`,detail:adaptiveReady?`Bounded ±${Number(adaptive.maximum_adjustment_points)||4} point calibration active`:`${adaptiveWaiting} categories currently below gate`,next:adaptiveReady?'Calibration remains bounded and evidence-gated':'Requires ≥3 resolved outcomes in the same genuine category'}
+    ];
+    const readyCount=cards.filter(x=>x.state==='Ready').length,learningCount=cards.filter(x=>x.state==='Learning').length,collectingCount=cards.filter(x=>x.state==='Collecting').length;
+    return `<article class="panel spaced whole-home-maturity-panel"><div class="section-title"><div><span>WHOLE-HOME LEARNING MATURITY · .150</span><h2>What Zeus knows — and what is still learning</h2><small>${readyCount} ready · ${learningCount} learning · ${collectingCount} collecting</small></div><ha-icon icon="mdi:brain-check-outline"></ha-icon></div><div class="whole-home-maturity-grid">${cards.map(x=>`<article class="maturity-card ${x.state.toLowerCase()}"><div class="maturity-card-head"><span>${this.esc(x.label.toUpperCase())}</span><b>${this.esc(x.state)}</b></div><h3>${this.esc(x.value)}</h3><p>${this.esc(x.detail)}</p><small><strong>Next gate:</strong> ${this.esc(x.next)}</small></article>`).join('')}</div><p class="history-note"><b>Evidence boundary:</b> Maturity summarizes existing canonical evidence only. It does not promote a profile, alter Forecast, change Scheduler qualification, or bypass adaptive-confidence gates.</p></article>`;
+  }
   planningResultsPage(){const engine=this.s('sensor.aion_ems_zeus_planning_engine')?.attributes||{},rows=Array.isArray(engine.results)?engine.results:[];return `<section class="page planning-page"><div class="page-head"><div><span>PLANNING · RESULTS</span><h1>Plan Results & Learning</h1><p>Persistent pre-day plans compared with measured outcomes.</p></div><div class="badge">${this.esc(engine.stored_plan_count||0)} stored plans</div></div>${rows.length?`<div class="planning-results-list">${rows.map(r=>{const plan=r.plan&&typeof r.plan==='object'?r.plan:null,measured=this.numberValue(r.measured_solar_kwh,0),forecast=plan?this.numberValue(plan.expected_solar_kwh,0):0,delta=r.solar_difference_kwh,accuracy=r.solar_accuracy_percent;return `<article class="panel planning-result-row"><div><span>${this.esc(r.date||'Measured day')}</span><b>${this.kwh(measured)} solar</b></div><div><span>Pre-day plan</span><b>${forecast>0?this.kwh(forecast):'Not stored'}</b></div><div><span>Difference</span><b>${delta==null?'—':`${Number(delta)>=0?'+':''}${Number(delta).toFixed(2)} kWh`}</b></div><div><span>Accuracy</span><b>${accuracy==null?'Collecting':Number(accuracy).toFixed(0)+'%'}</b></div>${plan?`<div class="planning-result-details"><span>Demand ${this.kwh(plan.expected_consumption_kwh)}</span><span>Import ${this.kwh(plan.expected_grid_import_kwh)}</span><span>Export ${this.kwh(plan.expected_grid_export_kwh)}</span><span>Plan confidence ${this.esc(plan.confidence_percent)}%</span><span>Learning evidence ${this.esc(r.learning_evidence_level||'Collecting')}</span><span>Observed comparison only</span></div>`:''}<small>${this.esc(r.learning_summary||'Zeus is collecting matching plan and measured data.')}</small></article>`}).join('')}</div>`:'<article class="panel planning-empty"><ha-icon icon="mdi:database-clock-outline"></ha-icon><h2>Collecting plan results</h2><p>Zeus stores tomorrow’s plan automatically. Results appear after the planned day has measured energy.</p></article>'}</section>`;}
   intelligencePage(){const r=this.rec(),f=this.s('sensor.aion_ems_zeus_forecast')?.attributes||{},s=this.s('sensor.aion_ems_zeus_scheduler_preview','sensor.aion_ems_zeus_finance_summary','sensor.aion_ems_zeus_daily_briefing','sensor.aion_ems_zeus_seasonal_analysis','sensor.aion_ems_zeus_energy_topology'),i=this.s('sensor.aion_ems_zeus_intelligence_engine')?.attributes||{},b=i.battery_strategy||{},e=this.s('sensor.aion_ems_zeus_home_efficiency')?.attributes||{},l=this.s('sensor.aion_ems_zeus_learning_preview')?.attributes||{},brief=this.s('sensor.aion_ems_zeus_daily_briefing')?.attributes||{},planning=this.s('sensor.aion_ems_zeus_planning_engine')?.attributes||{},accuracy=this.s('sensor.aion_ems_zeus_prediction_accuracy')?.attributes||{},adaptive=f.adaptive_correction||{},planLearning=planning.learning||{},results=Array.isArray(planning.results)?planning.results:[],latestResult=results.find(x=>x&&x.solar_accuracy_percent!=null)||null,todayActual=this.periodData('today')||{},days=Array.isArray(f.daily_forecast)?f.daily_forecast:[];const forecastMethod=String(f.method||'learning').replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase()),accuracyValue=planLearning.average_accuracy_percent??accuracy.overall_accuracy_percent,comparisonCount=planLearning.comparison_count??accuracy.sample_count??0,bias=planLearning.bias_direction||'Collecting',confidence=planLearning.confidence_percent??f.confidence??null,recTitle=String(r.title||'').replace(/No device action needed/gi,'No energy action recommended'),recBenefit=String(r.benefit||'').replace(/device-specific opportunity/gi,'forecast-based optimization opportunity');return `<section class="page forecast-page"><div class="page-head"><div><span>INTELLIGENCE CORE 13.0</span><h1>Forecast & Home Intelligence</h1><p>Weather-aware forecasting, behavioural learning and transparent efficiency scoring.</p></div><div class="badge">Recommendation-only</div></div><div class="intel-hero"><div><span>CURRENT RECOMMENDATION · ${this.esc(r.urgency)} PRIORITY</span><h2>${this.esc(recTitle)}</h2><p>${this.esc(r.reason)}</p><small>${this.esc(recBenefit)}</small></div><ha-icon icon="mdi:brain"></ha-icon></div><div class="intel-grid"><article class="panel intel-card"><span>ENERGY INDEPENDENCE</span><b>${this.esc(e.score??'—')}%</b><p>${this.esc(e.grade||e.summary||'Collecting energy history.')}</p></article><article class="panel intel-card"><span>NEXT 24 HOURS</span><b>${this.kwh(f.expected_solar_next_24h_kwh)}</b><p>${this.esc(f.confidence??'—')}% forecast confidence · ${this.esc(forecastMethod)}</p></article><article class="panel intel-card"><span>FOLLOWING 24 HOURS</span><b>${this.kwh(f.expected_solar_following_24h_kwh)}</b><p>${this.esc(days[1]?.condition||'Weather context collecting')}</p></article><article class="panel intel-card"><span>LEARNING ENGINE 2.0</span><b>${this.esc(l.history_days??0)} days</b><p>${this.esc(l.summary||'Building weekday profiles.')}</p></article></div><article class="panel spaced forecast-alignment-panel"><div class="section-title"><div><span>FORECAST ALIGNMENT</span><h2>Forecast versus measured energy</h2></div><small>Canonical HA daily statistics</small></div><div class="today-grid"><div><span>Measured solar today</span><b>${this.kwh(todayActual.solar_energy_kwh)}</b></div><div><span>Completed comparisons</span><b>${this.esc(comparisonCount)}</b></div><div><span>Average solar accuracy</span><b>${accuracyValue!=null?`${Number(accuracyValue).toFixed(1)}%`:'Collecting'}</b></div><div><span>Forecast bias</span><b>${this.esc(bias)}</b></div><div><span>Historical learning confidence</span><b>${confidence!=null?`${Number(confidence).toFixed(0)}%`:'Collecting'}</b></div><div><span>Latest completed day</span><b>${latestResult?this.kwh(latestResult.measured_solar_kwh):'Collecting'}</b></div></div>${latestResult?`<div class="solar-comparison"><div><span>Stored forecast</span><b>${this.kwh(latestResult.plan?.expected_solar_kwh)}</b></div><div><span>Measured production</span><b>${this.kwh(latestResult.measured_solar_kwh)}</b></div><div><span>Accuracy</span><b>${Number(latestResult.solar_accuracy_percent).toFixed(1)}%</b></div></div><p class="data-note">${this.esc(latestResult.reason_summary||'Forecast comparison is based on a completed local calendar day.')}</p>`:'<div class="empty">Completed-day accuracy appears after Zeus stores a pre-day forecast and Home Assistant Recorder provides the matching measured solar total.</div>'}</article><article class="panel spaced forecast-trust-panel"><div class="section-title"><div><span>FORECAST TRUST</span><h2>Forward-matched accuracy</h2></div><small>${this.esc(accuracy.trust_label||'Collecting')} trust</small></div><div class="today-grid"><div><span>Trust score</span><b>${accuracy.trust_percent!=null?`${Number(accuracy.trust_percent).toFixed(1)}%`:'Collecting'}</b></div><div><span>Forward matches</span><b>${this.esc(accuracy.sample_count??0)}</b></div><div><span>Pending forecasts</span><b>${this.esc(accuracy.pending_forecasts??0)}</b></div><div><span>Solar accuracy</span><b>${accuracy.metrics?.solar!=null?`${Number(accuracy.metrics.solar).toFixed(1)}%`:'Collecting'}</b></div><div><span>Home demand accuracy</span><b>${accuracy.metrics?.home!=null?`${Number(accuracy.metrics.home).toFixed(1)}%`:'Collecting'}</b></div><div><span>Grid import accuracy</span><b>${accuracy.metrics?.grid_import!=null?`${Number(accuracy.metrics.grid_import).toFixed(1)}%`:'Collecting'}</b></div></div><div class="solar-comparison"><div><span>1h lead</span><b>${accuracy.lead_time_accuracy?.['1h']?.accuracy_percent!=null?`${Number(accuracy.lead_time_accuracy['1h'].accuracy_percent).toFixed(1)}%`:'Collecting'}</b></div><div><span>3h lead</span><b>${accuracy.lead_time_accuracy?.['3h']?.accuracy_percent!=null?`${Number(accuracy.lead_time_accuracy['3h'].accuracy_percent).toFixed(1)}%`:'Collecting'}</b></div><div><span>6h lead</span><b>${accuracy.lead_time_accuracy?.['6h']?.accuracy_percent!=null?`${Number(accuracy.lead_time_accuracy['6h'].accuracy_percent).toFixed(1)}%`:'Collecting'}</b></div></div><p class="data-note">${this.esc(accuracy.measurement_note||'Zeus is collecting forecasts before they mature so trust can be measured against later observations.')}</p></article><article class="panel spaced forecast-adaptive-panel"><div class="section-title"><div><span>ADAPTIVE FORECAST CORRECTION</span><h2>Learned solar adjustment</h2></div><small>${this.esc(adaptive.status||'Collecting')}</small></div><div class="today-grid"><div><span>Raw next 24h</span><b>${f.raw_expected_solar_next_24h_kwh!=null?this.kwh(f.raw_expected_solar_next_24h_kwh):'Collecting'}</b></div><div><span>Applied correction</span><b>${adaptive.applied_correction_percent!=null?`${Number(adaptive.applied_correction_percent)>=0?'+':''}${Number(adaptive.applied_correction_percent).toFixed(1)}%`:'Collecting'}</b></div><div><span>Corrected next 24h</span><b>${this.kwh(f.expected_solar_next_24h_kwh)}</b></div><div><span>Evidence basis</span><b>${this.esc(adaptive.completed_comparisons??0)} completed comparisons</b></div><div><span>Forward trust</span><b>${adaptive.forecast_trust_percent!=null?`${Number(adaptive.forecast_trust_percent).toFixed(1)}%`:'Collecting'}</b></div></div><p class="data-note">${this.esc(adaptive.reason||'Zeus waits for enough genuine completed comparisons before adjusting the raw solar forecast.')}</p></article><div class="forecast-briefing-grid"><article class="panel spaced forecast-compact-panel"><div class="section-title"><div><span>7-DAY SOLAR FORECAST</span><h2>Expected production</h2></div><small>${(Array.isArray(f.daily_forecast)&&f.daily_forecast.some(d=>d?.weather_forecast_applied===true))?'Weather-adjusted hourly forecast':'Historical-profile estimate'} · forward trust ${accuracy.trust_percent!=null?Number(accuracy.trust_percent).toFixed(1)+'%':'collecting'}</small></div>${days.length?`<div class="optimizer-timeline">${days.map(x=>`<div class="timeline-slot ${Number(x.expected_solar_kwh||0)>10?'good':'low'}"><span>${this.esc(x.label||x.date)}</span><i style="--h:${Math.max(8,Math.min(100,Number(x.expected_solar_kwh||0)*3))}%"></i><small>${this.kwh(x.expected_solar_kwh)}</small></div>`).join('')}</div>`:'<div class="empty">Forecast appears after Zeus collects historical samples.</div>'}</article><article class="panel spaced daily-briefing-panel"><div class="section-title"><div><span>FORECAST INTERPRETATION</span><h2>What Zeus expects</h2></div><ha-icon icon="mdi:text-box-check-outline"></ha-icon></div><p>${this.esc(days.length?`Zeus expects ${this.kwh(f.expected_solar_next_24h_kwh)} over the next 24 hours and ${this.kwh(f.expected_solar_following_24h_kwh)} in the following 24 hours.${adaptive.applied_correction_percent!=null?` The active learned correction is ${Number(adaptive.applied_correction_percent)>=0?'+':''}${Number(adaptive.applied_correction_percent).toFixed(1)}%.`:''}${days.length?` The strongest day in the current 7-day outlook is ${[...days].sort((a,b)=>Number(b.expected_solar_kwh||0)-Number(a.expected_solar_kwh||0))[0]?.label||'collecting'} at ${this.kwh([...days].sort((a,b)=>Number(b.expected_solar_kwh||0)-Number(a.expected_solar_kwh||0))[0]?.expected_solar_kwh)}.`:''}`:'Forecast interpretation appears after Zeus collects forecast evidence.')}</p><small style="display:block;margin-top:10px;opacity:.78;line-height:1.45">${this.esc(this.forecastWeatherDiagnosticText())}</small></article></div><article class="panel spaced"><div class="section-title"><div><span>ENERGY INDEPENDENCE & UTILIZATION</span><h2>Energy Independence & Utilization</h2></div><b>${this.esc(e.score??'—')}%</b></div><div class="today-grid"><div><span>Self-consumption</span><b>${this.esc(e.self_consumption_percent??'—')}%</b></div><div><span>Self-sufficiency</span><b>${this.esc(e.self_sufficiency_percent??'—')}%</b></div><div><span>Solar utilization</span><b>${this.esc(e.solar_utilization_percent??'—')}%</b></div><div><span>Grid dependency</span><b>${this.esc(e.grid_dependency_percent??'—')}%</b></div><div><span>Data confidence</span><b>${this.esc(e.data_confidence_percent??'—')}%</b></div><div><span>Best window</span><b>${this.esc(r.window)}</b></div></div></article></section>`;}
 
@@ -5988,7 +6501,9 @@ th,td{padding:11px 12px;vertical-align:top;overflow-wrap:anywhere}
 .advisor-rec-card b,.advisor-rec-card p{overflow-wrap:anywhere}
 
 /* v12.5.0-beta.3 Recommendation Outcomes & History */
-.history-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:16px}.history-summary-grid>.panel{min-height:104px;display:flex;flex-direction:column;justify-content:center}.history-summary-grid span{font-size:10px;font-weight:800;letter-spacing:.1em;color:var(--accent2)}.history-summary-grid b{font-size:32px;margin-top:8px}.recommendation-history-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.recommendation-history-card{display:flex;flex-direction:column;min-width:0}.history-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.history-card-head small,.history-note{color:var(--muted)}.history-status{padding:6px 10px;border-radius:999px;background:color-mix(in srgb,var(--accent2) 12%,transparent);color:var(--accent2);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}.history-status.completed{color:var(--green);background:color-mix(in srgb,var(--green) 12%,transparent)}.history-status.expired,.history-status.ignored{color:#ffb248;background:rgba(255,178,72,.1)}.recommendation-history-card h3{margin:15px 0 6px}.recommendation-history-card>p{margin:0 0 14px;color:var(--muted)}.history-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:auto}.history-metrics>div{padding:11px;border-radius:12px;background:var(--surface2);border:1px solid var(--line);min-width:0}.history-metrics span{display:block;color:var(--muted);font-size:10px}.history-metrics b{display:block;margin-top:4px;overflow-wrap:anywhere}.history-note{display:block;margin-top:12px;line-height:1.45}@media(max-width:900px){.history-summary-grid,.recommendation-history-grid{grid-template-columns:1fr 1fr}}@media(max-width:620px){.history-summary-grid,.recommendation-history-grid,.history-metrics{grid-template-columns:1fr}}
+.history-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:16px}.history-summary-grid>.panel{min-height:104px;display:flex;flex-direction:column;justify-content:center}.history-summary-grid span{font-size:10px;font-weight:800;letter-spacing:.1em;color:var(--accent2)}.history-summary-grid b{font-size:32px;margin-top:8px}.recommendation-history-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.outcome-intelligence-panel{padding:18px 20px}.outcome-intelligence-panel .section-title{margin-bottom:14px}.outcome-intelligence-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.outcome-intelligence-card{min-width:0;padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:var(--surface2);display:flex;flex-direction:column;align-items:flex-start;gap:6px}.outcome-intelligence-card span{font-size:10px;font-weight:800;letter-spacing:.08em;color:var(--green)}.outcome-intelligence-card b{font-size:28px;line-height:1;color:var(--text)}.outcome-intelligence-card small{font-size:11px;line-height:1.45;color:var(--muted)}.outcome-intelligence-panel>.history-note{display:block;margin-top:14px;line-height:1.55}@media(max-width:1100px){.outcome-intelligence-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){.outcome-intelligence-grid{grid-template-columns:1fr}.outcome-intelligence-card{padding:14px 16px}}
+.adaptive-confidence-panel{padding:18px 20px}.adaptive-confidence-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:14px}.adaptive-confidence-grid>article{min-width:0;padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:var(--surface2);display:flex;flex-direction:column;gap:6px}.adaptive-confidence-grid span{font-size:10px;font-weight:800;letter-spacing:.08em;color:var(--green)}.adaptive-confidence-grid b{font-size:24px;line-height:1.1}.adaptive-confidence-grid small{font-size:11px;line-height:1.45;color:var(--muted)}@media(max-width:1100px){.adaptive-confidence-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){.adaptive-confidence-grid{grid-template-columns:1fr}}
+.recommendation-history-card{display:flex;flex-direction:column;min-width:0}.history-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.history-card-head small,.history-note{color:var(--muted)}.history-status{padding:6px 10px;border-radius:999px;background:color-mix(in srgb,var(--accent2) 12%,transparent);color:var(--accent2);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}.history-status.completed{color:var(--green);background:color-mix(in srgb,var(--green) 12%,transparent)}.history-status.expired,.history-status.ignored{color:#ffb248;background:rgba(255,178,72,.1)}.recommendation-history-card h3{margin:15px 0 6px}.recommendation-history-card>p{margin:0 0 14px;color:var(--muted)}.history-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:auto}.history-metrics>div{padding:11px;border-radius:12px;background:var(--surface2);border:1px solid var(--line);min-width:0}.history-metrics span{display:block;color:var(--muted);font-size:10px}.history-metrics b{display:block;margin-top:4px;overflow-wrap:anywhere}.history-note{display:block;margin-top:12px;line-height:1.45}@media(max-width:900px){.history-summary-grid,.recommendation-history-grid{grid-template-columns:1fr 1fr}}@media(max-width:620px){.history-summary-grid,.recommendation-history-grid,.history-metrics{grid-template-columns:1fr}}
 
 /* v12.5.0-beta.3 Intelligence Memory Foundation */
 .memory-record-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:16px}.memory-record-card{min-height:150px;display:flex;flex-direction:column;align-items:flex-start}.memory-record-card ha-icon{color:var(--accent2);--mdc-icon-size:28px;margin-bottom:18px}.memory-record-card span{font-size:10px;font-weight:800;letter-spacing:.09em;color:var(--muted);text-transform:uppercase}.memory-record-card b{font-size:25px;margin:8px 0}.memory-record-card small{color:var(--muted)}.memory-milestone-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.memory-milestone{min-height:170px}.memory-milestone>div:first-child{display:flex;justify-content:space-between;align-items:center}.memory-milestone ha-icon{color:var(--accent2)}.memory-milestone>div:first-child span{font-size:9px;font-weight:800;color:var(--muted);letter-spacing:.08em}.memory-milestone.reached>div:first-child span{color:var(--green)}.memory-milestone h3{margin:20px 0 8px}.memory-milestone p{color:var(--muted);margin:0 0 18px}.memory-progress{height:7px;border-radius:999px;background:var(--surface2);overflow:hidden}.memory-progress i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--accent2),var(--green))}.similar-day-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.similar-day-card>div{display:flex;justify-content:space-between;gap:12px}.similar-day-card>div span{color:var(--accent2);font-weight:800}.similar-day-card>div b{color:#ffca4b;letter-spacing:.08em}.similar-day-card h3{font-size:26px;margin:18px 0 5px}.similar-day-card p,.similar-day-card small{color:var(--muted)}.memory-bottom-grid{display:grid;grid-template-columns:1.4fr .6fr;gap:16px;margin-bottom:16px}.memory-story{display:grid;gap:10px}.memory-story>div{display:flex;gap:12px;align-items:flex-start;padding:13px;border-radius:12px;background:var(--surface2)}.memory-story ha-icon{color:var(--accent2)}.memory-story p{margin:0;line-height:1.5}.memory-status-list{display:grid;gap:10px}.memory-status-list>div{display:flex;justify-content:space-between;gap:12px;padding:12px;border-radius:11px;background:var(--surface2)}.memory-status-list span{color:var(--muted)}.memory-empty{grid-column:1/-1;color:var(--muted)}@media(max-width:1050px){.memory-record-grid{grid-template-columns:repeat(2,1fr)}.memory-milestone-grid,.similar-day-grid{grid-template-columns:1fr 1fr}.memory-bottom-grid{grid-template-columns:1fr}}@media(max-width:620px){.memory-record-grid,.memory-milestone-grid,.similar-day-grid{grid-template-columns:1fr}}
@@ -6089,7 +6604,6 @@ th,td{padding:11px 12px;vertical-align:top;overflow-wrap:anywhere}
  .explain-summary-grid article,.memory-record-card,.memory-milestone{min-height:0}
  .explain-main-grid,.memory-bottom-grid,.explain-outcome,.explain-alternatives-grid{grid-template-columns:1fr!important}
 }
-
 
 
 /* v12.5.0-beta.3 Optimizer hard containment and stable grids */
@@ -6412,7 +6926,6 @@ th,td{padding:11px 12px;vertical-align:top;overflow-wrap:anywhere}
 @media(max-width:640px){.battery-summary-panel .battery-performance-grid{grid-template-columns:1fr!important}.battery-chart-panel{width:100%!important}.battery-history-bars{height:130px!important;min-height:130px!important}.battery-bar-pair{height:88px!important;min-height:88px!important}}
 
 
-
 .battery-analytics-page{
   display:flex!important;
   flex-direction:column!important;
@@ -6713,6 +7226,58 @@ aion-ems-device-manager{display:block!important;width:100%!important;max-width:n
 
 /* v13.0.0-rc.1.32.4 — measured-history cards and spacing polish */
 .energy-statistics-panel{width:100%;max-width:none;margin-top:20px!important}
+
+/* Flexible Load Evidence Profiles · .114 */
+.intelligence-audit-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
+.intelligence-audit-grid article{background:var(--surface2);border:1px solid var(--line);border-radius:14px;padding:15px;min-width:0}
+.intelligence-audit-grid span{display:block;color:var(--muted);font-size:11px}
+.intelligence-audit-grid b{display:block;color:var(--text);font-size:18px;margin-top:5px;line-height:1.2}
+.intelligence-audit-grid small{display:block;color:var(--muted);font-size:10px;line-height:1.45;margin-top:6px}
+.intelligence-audit-note{margin-top:12px}
+@media(max-width:1000px){.intelligence-audit-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:650px){.intelligence-audit-grid{grid-template-columns:1fr}}
+.device-profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:14px;align-items:stretch}
+.device-profile-card{min-width:0;padding:16px;border:1px solid var(--line);border-radius:15px;background:var(--surface2);display:flex;flex-direction:column;gap:0}
+.device-profile-head{display:grid;grid-template-columns:46px minmax(0,1fr) auto;align-items:center;gap:12px;min-width:0}
+.device-profile-head .device-icon{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(72,168,255,.12);color:var(--green);flex:0 0 auto}
+.device-profile-head .device-icon ha-icon{--mdc-icon-size:23px}
+.device-profile-head>div:nth-child(2){min-width:0}
+.device-profile-head span{display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.device-profile-head b{display:block;margin-top:3px;color:var(--text);font-size:17px;line-height:1.2}
+.device-profile-head em{font-style:normal;font-size:10px;font-weight:800;letter-spacing:.06em;padding:5px 8px;border-radius:999px;background:rgba(120,140,160,.14);color:var(--muted);white-space:nowrap}
+.device-profile-head em.ok{color:var(--green);background:rgba(78,211,138,.11)}
+.device-profile-head em.learning{color:var(--muted)}
+.device-profile-meter{height:7px;background:rgba(120,145,165,.14);border-radius:999px;overflow:hidden;margin:15px 0 12px}
+.device-profile-meter i{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--green));border-radius:inherit;min-width:3px}
+.device-profile-card p{margin:0 0 7px;color:var(--text);font-size:12px;line-height:1.45}
+.device-profile-card small{display:block;color:var(--muted);font-size:10px;line-height:1.45;margin-top:4px;overflow-wrap:anywhere}
+.evidence-rank-line{margin-top:4px;color:var(--green)!important;font-weight:700}
+
+.cross-domain-explain-title{margin-top:22px}.cross-domain-explain-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}.cross-domain-explain-grid>article{padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:var(--surface2)}.cross-domain-explain-grid span{display:block;color:var(--green);font-size:10px;font-weight:800;letter-spacing:.08em}.cross-domain-explain-grid h3{margin:5px 0 8px;color:var(--text);font-size:16px}.cross-domain-explain-grid ul{margin:0;padding-left:18px;color:var(--muted);font-size:11px;line-height:1.6}.cross-domain-compare-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}.cross-domain-compare-card{padding:13px 15px;border:1px solid var(--line);border-radius:14px;background:var(--surface2)}.cross-domain-compare-card span,.cross-domain-compare-card small,.cross-domain-compare-card p{display:block;color:var(--muted);font-size:10px;line-height:1.4;margin:4px 0 0}.cross-domain-compare-card b{display:block;color:var(--text);font-size:20px;margin-top:4px}@media(max-width:850px){.cross-domain-explain-grid,.cross-domain-compare-grid{grid-template-columns:1fr}}.whole-home-opportunity-panel{margin-top:18px}.whole-home-opportunity-hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center;margin-top:14px;padding:18px 20px;border:1px solid var(--line);border-radius:16px;background:var(--surface2)}.whole-home-opportunity-hero>div:first-child>span{display:block;color:var(--green);font-size:10px;font-weight:800;letter-spacing:.08em}.whole-home-opportunity-hero h3{margin:5px 0 6px;color:var(--text);font-size:20px}.whole-home-opportunity-hero p,.whole-home-opportunity-hero small{display:block;margin:0;color:var(--muted);font-size:11px;line-height:1.5}.whole-home-opportunity-hero>div:last-child{min-width:112px;text-align:center}.whole-home-opportunity-hero>div:last-child b{display:block;color:var(--green);font-size:32px}.whole-home-opportunity-hero>div:last-child span{display:block;color:var(--muted);font-size:10px}.whole-home-opportunity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}.whole-home-opportunity-grid>article{padding:15px;border:1px solid var(--line);border-radius:14px;background:var(--surface2);min-width:0}.whole-home-opportunity-head{display:flex;align-items:center;gap:8px;color:var(--green);font-size:10px;font-weight:800}.whole-home-opportunity-head ha-icon{--mdc-icon-size:20px}.whole-home-opportunity-grid>article>b{display:block;color:var(--text);font-size:14px;line-height:1.35;margin-top:10px}.whole-home-opportunity-grid p,.whole-home-opportunity-grid small,.whole-home-opportunity-grid em{display:block;color:var(--muted);font-size:10px;line-height:1.45;margin:6px 0 0;font-style:normal}.whole-home-opportunity-grid em{color:var(--text);font-weight:700}@media(max-width:1150px){.whole-home-opportunity-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.whole-home-opportunity-grid{grid-template-columns:1fr}.whole-home-opportunity-hero{grid-template-columns:1fr}.whole-home-opportunity-hero>div:last-child{text-align:left}}
+.decision-intelligence-hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center;margin-top:14px;padding:18px 20px;border:1px solid var(--line);border-radius:16px;background:var(--surface2)}
+.decision-intelligence-hero span{display:block;color:var(--green);font-size:10px;font-weight:800;letter-spacing:.08em}
+.decision-intelligence-hero h3{margin:5px 0 6px;color:var(--text);font-size:20px}
+.decision-intelligence-hero p{margin:0;color:var(--muted);font-size:12px;line-height:1.5}
+.decision-intelligence-hero small{display:block;color:var(--muted);font-size:10px;margin-top:7px}
+.decision-intelligence-hero>ha-icon{color:var(--green);--mdc-icon-size:34px}
+.decision-compare-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}
+.decision-compare-card{padding:14px 16px;border:1px solid var(--line);border-radius:14px;background:var(--surface2);min-width:0}
+.decision-compare-card span{display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.decision-compare-card b{display:block;color:var(--text);font-size:22px;margin-top:5px}
+.decision-compare-card small{display:block;color:var(--muted);font-size:10px;line-height:1.4;margin-top:4px}
+@media(max-width:900px){.decision-compare-grid{grid-template-columns:1fr}.decision-intelligence-hero{grid-template-columns:1fr}.decision-intelligence-hero>ha-icon{display:none}}
+
+.device-profile-card small.profile-readiness{margin-top:8px;color:var(--text);font-weight:700}
+.device-profile-card small.profile-readiness.ready{color:var(--green)}
+.promotion-readiness-strip{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:center;margin-top:12px;padding:14px 16px;border:1px solid var(--line);border-radius:14px;background:var(--surface2)}
+.promotion-readiness-strip>ha-icon{color:var(--green);--mdc-icon-size:24px}
+.promotion-readiness-strip span{display:block;color:var(--green);font-size:10px;font-weight:800;letter-spacing:.08em}
+.promotion-readiness-strip b{display:block;color:var(--text);font-size:14px;margin-top:3px;line-height:1.35}
+.promotion-readiness-strip small{display:block;color:var(--muted);font-size:10px;margin-top:4px}
+
+@media(max-width:1180px){.device-profile-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){.device-profile-grid{grid-template-columns:1fr}.device-profile-head{grid-template-columns:42px minmax(0,1fr) auto}.device-profile-head .device-icon{width:42px;height:42px}}
+
 .energy-statistics-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:16px;align-items:stretch;grid-auto-rows:1fr}
 .energy-statistics-card{display:grid;grid-template-columns:54px minmax(0,1fr);align-items:center;gap:14px;min-height:126px;height:100%;padding:18px;border:1px solid var(--line);border-radius:16px;background:var(--surface2);min-width:0}
 .energy-statistics-card ha-icon{display:grid;place-items:center;width:48px;height:48px;padding:11px;border-radius:14px;background:rgba(72,168,255,.11);color:var(--accent2);box-sizing:border-box;--mdc-icon-size:26px}
@@ -7313,7 +7878,6 @@ aion-ems-device-manager{display:block!important;width:100%!important;max-width:n
 .battery-history-controls{display:flex;flex-direction:column;align-items:flex-end;gap:10px}.battery-history-switch{display:flex;gap:6px;padding:4px;border:1px solid var(--line);border-radius:12px;background:rgba(10,23,38,.42)}.battery-history-switch button{border:0;border-radius:8px;padding:7px 11px;background:transparent;color:var(--muted);font:inherit;font-size:11px;font-weight:700;cursor:pointer}.battery-history-switch button.selected{background:var(--accent2);color:#fff}.battery-chart-legend .net{background:var(--accent2)}.battery-chart-legend .soc{background:#a77cff}.battery-history-net{font-size:9px;font-weight:700;text-anchor:middle}.battery-history-net.positive{fill:var(--green)}.battery-history-net.negative{fill:#ffb248}.battery-history-soc-line{fill:none;stroke:#a77cff;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}.battery-history-soc-point{fill:#a77cff;stroke:var(--surface);stroke-width:2}@media(max-width:700px){.battery-history-controls{align-items:flex-start;width:100%}.battery-history-switch{width:100%}.battery-history-switch button{flex:1}.battery-chart-legend{justify-content:flex-start}}
 
 
-
 /* v14.0.0-alpha.20.9 Executive Intelligence */
 .insight-executive-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:16px}.insight-executive-kpis>div{padding:14px 16px;border:1px solid var(--line);border-radius:15px;background:var(--surface)}.insight-executive-kpis span,.insight-executive-kpis small{display:block;color:var(--muted);font-size:11px}.insight-executive-kpis b{display:block;margin-top:7px;font-size:20px}.insight-story-hero small{display:block;margin-top:12px;color:var(--muted)}.insight-executive-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px;align-items:stretch}.insight-executive-grid>.panel{margin:0;height:100%}.insight-story-list,.insight-positive-list{display:grid;gap:11px}.insight-story-item{display:grid;grid-template-columns:92px 34px minmax(0,1fr);gap:11px;align-items:start;padding:13px;border:1px solid var(--line);border-radius:14px;background:var(--surface2)}.insight-story-item>span{color:var(--accent2);font-size:11px;font-weight:800}.insight-story-item>ha-icon{color:var(--accent2);--mdc-icon-size:25px}.insight-story-item b,.insight-story-item p{display:block}.insight-story-item p,.insight-positive-card p{margin:5px 0 0;color:var(--muted);line-height:1.45}.insight-story-item.tone-battery>ha-icon{color:var(--green)}.insight-story-item.tone-recommendation>ha-icon{color:var(--amber)}.insight-positive-card{display:grid;grid-template-columns:38px minmax(0,1fr);gap:12px;padding:14px;border:1px solid color-mix(in srgb,var(--green) 38%,var(--line));border-radius:14px;background:color-mix(in srgb,var(--green) 5%,var(--surface2))}.insight-positive-card>ha-icon{color:var(--green);--mdc-icon-size:28px}.insight-positive-card small{display:block;margin-top:8px;color:var(--muted)}.insight-recommendation-body{display:grid;grid-template-columns:2fr 2fr 1fr 1fr;gap:12px}.insight-recommendation-body>div{padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--surface2);min-width:0}.insight-recommendation-body span{display:block;color:var(--accent2);font-size:11px;font-weight:800;text-transform:uppercase}.insight-recommendation-body p{margin:7px 0 0;color:var(--muted);line-height:1.45}.insight-recommendation-body b{display:block;margin-top:8px;overflow-wrap:anywhere}@media(max-width:1100px){.insight-executive-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.insight-recommendation-body{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:800px){.insight-executive-grid{grid-template-columns:1fr}.insight-executive-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.insight-story-item{grid-template-columns:74px 30px minmax(0,1fr)}}@media(max-width:560px){.insight-executive-kpis,.insight-recommendation-body{grid-template-columns:1fr}.insight-story-item{grid-template-columns:1fr}.insight-story-item>span{margin-bottom:-4px}}
 /* v14.0.0-alpha.20.9 Insight Refinement */
@@ -7332,7 +7896,8 @@ aion-ems-device-manager{display:block!important;width:100%!important;max-width:n
 /* v14.0.0-alpha.20.9 UI Polish and Advisor Intelligence v1 */
 .planning-pattern-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.planning-pattern-card,.planning-change-metrics>div{background:var(--panel-soft,#1b2834);border:1px solid var(--line,#2b4052);border-radius:16px;padding:16px;min-width:0}.planning-pattern-card{display:flex;flex-direction:column;gap:8px;min-height:112px}.planning-pattern-card span,.planning-change-metrics span{font-size:12px;color:var(--muted,#9ab4c9)}.planning-pattern-card b,.planning-change-metrics b{font-size:18px;line-height:1.25}.planning-pattern-card small{color:var(--muted,#9ab4c9);line-height:1.4}.planning-change-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:16px}.planning-change-metrics>div{display:flex;flex-direction:column;gap:8px}@media(max-width:1050px){.planning-pattern-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:720px){.planning-pattern-grid,.planning-change-metrics{grid-template-columns:1fr}}
 
-.planning-hero{display:flex;align-items:center;justify-content:space-between;gap:24px;background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 16%,var(--surface)),var(--surface));border-color:color-mix(in srgb,var(--accent) 38%,var(--line))}.planning-hero h2{margin:6px 0}.planning-score{width:112px;height:112px;flex:0 0 112px;border-radius:50%;display:grid;place-items:center;align-content:center;background:radial-gradient(circle,var(--surface) 58%,transparent 60%),conic-gradient(var(--accent) 65%,var(--line) 0);border:1px solid var(--line)}.planning-score b{font-size:28px}.planning-score span{font-size:10px;color:var(--muted)}.planning-metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:16px}.planning-metric{min-width:0;min-height:154px;padding:18px;border:1px solid var(--line);border-radius:18px;background:var(--surface);position:relative;overflow:hidden}.planning-metric>div{width:42px;height:42px;display:grid;place-items:center;border-radius:13px;background:rgba(72,168,255,.12);color:var(--accent2)}.planning-metric span,.planning-metric b,.planning-metric small{display:block}.planning-metric span{margin-top:13px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}.planning-metric b{margin-top:6px;font-size:23px}.planning-metric small{margin-top:5px;color:var(--muted)}.planning-metric.solar{border-color:color-mix(in srgb,var(--solar) 38%,var(--line))}.planning-metric.solar>div{color:var(--solar);background:color-mix(in srgb,var(--solar) 13%,transparent)}.planning-metric.export{border-color:color-mix(in srgb,var(--green) 38%,var(--line))}.planning-metric.export>div{color:var(--green)}.planning-metric.import{border-color:color-mix(in srgb,#fb7185 38%,var(--line))}.planning-metric.import>div{color:#fb7185}.planning-metric.battery{border-color:color-mix(in srgb,#a77cff 38%,var(--line))}.planning-metric.battery>div{color:#a77cff}.planning-metric.money{border-color:color-mix(in srgb,#55d6be 38%,var(--line))}.planning-grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:1fr;gap:16px;margin-top:16px;align-items:stretch}.planning-grid-2>.panel{height:100%;min-width:0;display:flex;flex-direction:column;margin-top:0!important;align-self:stretch}.planning-draft-panel,.planning-action-panel{min-height:0}.planning-action-panel .section-title{margin-bottom:0}.planning-draft-panel .buttons{margin-top:auto}.planning-action-panel>p{margin-bottom:0}.planning-action-panel .planning-action-meta{margin-top:auto;padding-top:16px}.planning-form{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}.planning-form label{display:grid;gap:7px;color:var(--muted);font-size:11px}.planning-form .wide{grid-column:1/-1}.planning-form input,.planning-form select,.planning-form textarea{width:100%;border:1px solid var(--line);border-radius:11px;background:var(--surface2);color:var(--text);padding:11px;font:inherit}.planning-action-meta,.planning-day-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px}.planning-action-meta>div,.planning-day-metrics>div{padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface2)}.planning-action-meta span,.planning-day-metrics span{display:block;color:var(--muted);font-size:10px}.planning-action-meta b,.planning-day-metrics b{display:block;margin-top:5px}.planning-upcoming-list,.planning-results-list{display:grid;gap:14px}.planning-day-card{display:grid;gap:14px}.planning-day-head{display:flex;justify-content:space-between;align-items:center}.planning-day-head h2{margin:4px 0 0}.planning-day-head ha-icon{color:var(--solar);--mdc-icon-size:34px}.planning-day-metrics{grid-template-columns:repeat(4,minmax(0,1fr));margin:0}.scenario-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:16px}.scenario-tabs button{display:grid;place-items:center;gap:8px;min-height:92px;border:1px solid var(--line);border-radius:15px;background:var(--surface);color:var(--muted);cursor:pointer}.scenario-tabs button.selected{border-color:var(--accent);color:var(--text);background:color-mix(in srgb,var(--accent) 12%,var(--surface))}.planning-result-row{display:grid;grid-template-columns:1.25fr repeat(3,minmax(100px,.7fr));gap:14px;align-items:center}.planning-result-row>div span{display:block;color:var(--muted);font-size:10px}.planning-result-row>div b{display:block;margin-top:5px}.planning-result-details{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px}.planning-result-details span{padding:6px 9px;border-radius:999px;background:var(--surface2);color:var(--muted);font-size:10px}.planning-result-row>small{grid-column:1/-1;color:var(--muted);padding-top:10px;border-top:1px solid var(--line)}.planning-empty{text-align:center;padding:48px}.planning-empty ha-icon{--mdc-icon-size:48px;color:var(--accent2)}.planning-learning-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:1fr;gap:16px;align-items:stretch;margin-bottom:16px}.planning-learning-grid>.panel{height:100%;min-width:0;display:flex;flex-direction:column;margin-top:0!important;align-self:stretch}.planning-learning-hero{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:230px;background:linear-gradient(135deg,color-mix(in srgb,#7c5cff 16%,var(--surface)),var(--surface));border-color:color-mix(in srgb,#7c5cff 42%,var(--line))}.planning-learning-hero.is-collecting{min-height:230px}.planning-bias-card{min-height:230px;justify-content:center}.planning-learning-hero h2,.planning-bias-card h2{margin:6px 0}.planning-learning-score{width:104px;height:104px;flex:0 0 104px;border-radius:50%;display:grid;place-items:center;align-content:center;background:radial-gradient(circle,var(--surface) 58%,transparent 60%),conic-gradient(#7c5cff calc(var(--learning-score,65)*1%),var(--line) 0);border:1px solid var(--line)}.planning-learning-score b{font-size:28px}.planning-learning-score span{font-size:10px;color:var(--muted)}.planning-learning-score.is-collecting{background:var(--surface2);border-style:dashed;color:var(--accent2);gap:5px}.planning-learning-score.is-collecting ha-icon{--mdc-icon-size:30px}.planning-learning-page>.panel.spaced{margin-top:0}.planning-learning-page .planning-empty{min-height:230px;display:grid;place-content:center;gap:8px;padding:32px}.planning-bias-card{border-color:color-mix(in srgb,var(--accent2) 42%,var(--line));background:linear-gradient(145deg,color-mix(in srgb,var(--accent2) 10%,var(--surface)),var(--surface))}.planning-bias-card>b{display:block;font-size:28px;margin:10px 0}.planning-factor-grid,.planning-lesson-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.planning-factor-grid>div,.planning-lesson-metrics>div{padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--surface2)}.planning-factor-grid span,.planning-lesson-metrics span{display:block;color:var(--muted);font-size:10px}.planning-factor-grid b,.planning-lesson-metrics b{display:block;margin-top:6px}.planning-daily-lesson h3{margin:18px 0 5px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent2)}.planning-daily-lesson>small{display:block;margin-top:16px;color:var(--muted)}.domain-outlook-panel{overflow:hidden}.domain-outlook-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px}.domain-outlook-card{min-width:0;padding:13px;border:1px solid var(--line);border-radius:13px;background:var(--surface2)}.domain-outlook-card>span,.domain-outlook-card>small,.domain-outlook-card>strong,.domain-outlook-card>em{display:block}.domain-outlook-card>span{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}.domain-outlook-card>small{margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.domain-outlook-card>strong{margin-top:12px;font-size:18px}.domain-outlook-card>em{margin-top:7px;color:var(--muted);font-size:10px;font-style:normal}.domain-outlook-card.grid>strong{display:grid;gap:5px;font-size:11px}.domain-outlook-card.grid>strong span{display:flex;justify-content:space-between;gap:5px}.domain-outlook-card.solar{border-color:color-mix(in srgb,var(--solar) 35%,var(--line))}.domain-outlook-card.finance{border-color:color-mix(in srgb,var(--green) 35%,var(--line))}@media(max-width:1200px){.domain-outlook-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:760px){.domain-outlook-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:430px){.domain-outlook-grid{grid-template-columns:1fr}}@media(max-width:1050px){.planning-learning-grid{grid-template-columns:1fr}.planning-factor-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.planning-metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.scenario-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.planning-grid-2{grid-template-columns:1fr}}@media(max-width:700px){.planning-factor-grid,.planning-lesson-metrics{grid-template-columns:1fr}.planning-learning-hero{align-items:flex-start}.planning-learning-score{width:82px;height:82px;flex-basis:82px}.planning-hero{align-items:flex-start}.planning-score{width:86px;height:86px;flex-basis:86px}.planning-metric-grid,.planning-day-metrics,.planning-action-meta,.planning-form,.scenario-tabs{grid-template-columns:1fr}.planning-result-row{grid-template-columns:1fr 1fr}.planning-form .wide{grid-column:auto}}
+.planning-hero{display:flex;align-items:center;justify-content:space-between;gap:24px;background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 16%,var(--surface)),var(--surface));border-color:color-mix(in srgb,var(--accent) 38%,var(--line))}.planning-hero h2{margin:6px 0}.planning-score{width:112px;height:112px;flex:0 0 112px;border-radius:50%;display:grid;place-items:center;align-content:center;background:radial-gradient(circle,var(--surface) 58%,transparent 60%),conic-gradient(var(--accent) 65%,var(--line) 0);border:1px solid var(--line)}.planning-score b{font-size:28px}.planning-score span{font-size:10px;color:var(--muted)}.planning-metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:16px}.planning-metric{min-width:0;min-height:154px;padding:18px;border:1px solid var(--line);border-radius:18px;background:var(--surface);position:relative;overflow:hidden}.planning-metric>div{width:42px;height:42px;display:grid;place-items:center;border-radius:13px;background:rgba(72,168,255,.12);color:var(--accent2)}.planning-metric span,.planning-metric b,.planning-metric small{display:block}.planning-metric span{margin-top:13px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}.planning-metric b{margin-top:6px;font-size:23px}.planning-metric small{margin-top:5px;color:var(--muted)}.planning-metric.solar{border-color:color-mix(in srgb,var(--solar) 38%,var(--line))}.planning-metric.solar>div{color:var(--solar);background:color-mix(in srgb,var(--solar) 13%,transparent)}.planning-metric.export{border-color:color-mix(in srgb,var(--green) 38%,var(--line))}.planning-metric.export>div{color:var(--green)}.planning-metric.import{border-color:color-mix(in srgb,#fb7185 38%,var(--line))}.planning-metric.import>div{color:#fb7185}.planning-metric.battery{border-color:color-mix(in srgb,#a77cff 38%,var(--line))}.planning-metric.battery>div{color:#a77cff}.planning-metric.money{border-color:color-mix(in srgb,#55d6be 38%,var(--line))}.planning-grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:1fr;gap:16px;margin-top:16px;align-items:stretch}.planning-grid-2>.panel{height:100%;min-width:0;display:flex;flex-direction:column;margin-top:0!important;align-self:stretch}.planning-draft-panel,.planning-action-panel{min-height:0}.planning-action-panel .section-title{margin-bottom:0}.planning-draft-panel .buttons{margin-top:auto}.planning-action-panel>p{margin-bottom:0}.planning-action-panel .planning-action-meta{margin-top:auto;padding-top:16px}.planning-form{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}.planning-form label{display:grid;gap:7px;color:var(--muted);font-size:11px}.planning-form .wide{grid-column:1/-1}.planning-form input,.planning-form select,.planning-form textarea{width:100%;border:1px solid var(--line);border-radius:11px;background:var(--surface2);color:var(--text);padding:11px;font:inherit}.planning-action-meta,.planning-day-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px}.planning-action-meta>div,.planning-day-metrics>div{padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface2)}.planning-action-meta span,.planning-day-metrics span{display:block;color:var(--muted);font-size:10px}.planning-action-meta b,.planning-day-metrics b{display:block;margin-top:5px}.planning-upcoming-list,.planning-results-list{display:grid;gap:14px}.planning-day-card{display:grid;gap:14px}.planning-day-head{display:flex;justify-content:space-between;align-items:center}.planning-day-head h2{margin:4px 0 0}.planning-day-head ha-icon{color:var(--solar);--mdc-icon-size:34px}.planning-day-metrics{grid-template-columns:repeat(4,minmax(0,1fr));margin:0}.scenario-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:16px}.scenario-tabs button{display:grid;place-items:center;gap:8px;min-height:92px;border:1px solid var(--line);border-radius:15px;background:var(--surface);color:var(--muted);cursor:pointer}.scenario-tabs button.selected{border-color:var(--accent);color:var(--text);background:color-mix(in srgb,var(--accent) 12%,var(--surface))}.planning-result-row{display:grid;grid-template-columns:1.25fr repeat(3,minmax(100px,.7fr));gap:14px;align-items:center}.planning-result-row>div span{display:block;color:var(--muted);font-size:10px}.planning-result-row>div b{display:block;margin-top:5px}.planning-result-details{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px}.planning-result-details span{padding:6px 9px;border-radius:999px;background:var(--surface2);color:var(--muted);font-size:10px}.planning-result-row>small{grid-column:1/-1;color:var(--muted);padding-top:10px;border-top:1px solid var(--line)}.planning-empty{text-align:center;padding:48px}.planning-empty ha-icon{--mdc-icon-size:48px;color:var(--accent2)}.planning-learning-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:1fr;gap:16px;align-items:stretch;margin-bottom:16px}.planning-learning-grid>.panel{height:100%;min-width:0;display:flex;flex-direction:column;margin-top:0!important;align-self:stretch}.planning-learning-hero{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:230px;background:linear-gradient(135deg,color-mix(in srgb,#7c5cff 16%,var(--surface)),var(--surface));border-color:color-mix(in srgb,#7c5cff 42%,var(--line))}.planning-learning-hero.is-collecting{min-height:230px}.planning-bias-card{min-height:230px;justify-content:center}.planning-learning-hero h2,.planning-bias-card h2{margin:6px 0}.whole-home-maturity-panel{padding:20px}.whole-home-maturity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:14px}.maturity-card{min-width:0;padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:var(--surface2)}.maturity-card-head{display:flex;justify-content:space-between;gap:10px;align-items:center}.maturity-card-head span{font-size:10px;font-weight:800;letter-spacing:.08em;color:var(--green)}.maturity-card-head b{font-size:11px}.maturity-card h3{font-size:21px;margin:12px 0 6px}.maturity-card p{margin:0 0 10px;color:var(--muted)}.maturity-card small{line-height:1.45;color:var(--muted)}.maturity-card.ready .maturity-card-head b{color:var(--green)}@media(max-width:1100px){.whole-home-maturity-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){.whole-home-maturity-grid{grid-template-columns:1fr}}
+.planning-learning-score{width:104px;height:104px;flex:0 0 104px;border-radius:50%;display:grid;place-items:center;align-content:center;background:radial-gradient(circle,var(--surface) 58%,transparent 60%),conic-gradient(#7c5cff calc(var(--learning-score,65)*1%),var(--line) 0);border:1px solid var(--line)}.planning-learning-score b{font-size:28px}.planning-learning-score span{font-size:10px;color:var(--muted)}.planning-learning-score.is-collecting{background:var(--surface2);border-style:dashed;color:var(--accent2);gap:5px}.planning-learning-score.is-collecting ha-icon{--mdc-icon-size:30px}.planning-learning-page>.panel.spaced{margin-top:0}.planning-learning-page .planning-empty{min-height:230px;display:grid;place-content:center;gap:8px;padding:32px}.planning-bias-card{border-color:color-mix(in srgb,var(--accent2) 42%,var(--line));background:linear-gradient(145deg,color-mix(in srgb,var(--accent2) 10%,var(--surface)),var(--surface))}.planning-bias-card>b{display:block;font-size:28px;margin:10px 0}.planning-factor-grid,.planning-lesson-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.planning-factor-grid>div,.planning-lesson-metrics>div{padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--surface2)}.planning-factor-grid span,.planning-lesson-metrics span{display:block;color:var(--muted);font-size:10px}.planning-factor-grid b,.planning-lesson-metrics b{display:block;margin-top:6px}.planning-daily-lesson h3{margin:18px 0 5px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent2)}.planning-daily-lesson>small{display:block;margin-top:16px;color:var(--muted)}.domain-outlook-panel{overflow:hidden}.domain-outlook-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px}.domain-outlook-card{min-width:0;padding:13px;border:1px solid var(--line);border-radius:13px;background:var(--surface2)}.domain-outlook-card>span,.domain-outlook-card>small,.domain-outlook-card>strong,.domain-outlook-card>em{display:block}.domain-outlook-card>span{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}.domain-outlook-card>small{margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.domain-outlook-card>strong{margin-top:12px;font-size:18px}.domain-outlook-card>em{margin-top:7px;color:var(--muted);font-size:10px;font-style:normal}.domain-outlook-card.grid>strong{display:grid;gap:5px;font-size:11px}.domain-outlook-card.grid>strong span{display:flex;justify-content:space-between;gap:5px}.domain-outlook-card.solar{border-color:color-mix(in srgb,var(--solar) 35%,var(--line))}.domain-outlook-card.finance{border-color:color-mix(in srgb,var(--green) 35%,var(--line))}@media(max-width:1200px){.domain-outlook-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:760px){.domain-outlook-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:430px){.domain-outlook-grid{grid-template-columns:1fr}}@media(max-width:1050px){.planning-learning-grid{grid-template-columns:1fr}.planning-factor-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.planning-metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.scenario-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.planning-grid-2{grid-template-columns:1fr}}@media(max-width:700px){.planning-factor-grid,.planning-lesson-metrics{grid-template-columns:1fr}.planning-learning-hero{align-items:flex-start}.planning-learning-score{width:82px;height:82px;flex-basis:82px}.planning-hero{align-items:flex-start}.planning-score{width:86px;height:86px;flex-basis:86px}.planning-metric-grid,.planning-day-metrics,.planning-action-meta,.planning-form,.scenario-tabs{grid-template-columns:1fr}.planning-result-row{grid-template-columns:1fr 1fr}.planning-form .wide{grid-column:auto}}
 
 /* v14.0.0-alpha.20.9 global UI polish and Advisor Intelligence v1 */
 .planning-page,.advisor-page{--planning-section-gap:16px}
@@ -7656,8 +8221,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
     padding-bottom:5px!important;
   }
 }
-
-
 
 
 /* v14.0.0-alpha.22.6.0.5 Phase 1 - Navigation Integrity */
@@ -8408,7 +8971,7 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
 }
 \n/* v14.0.0-alpha.22.18.1.7 — Energy Executive Overview */
 .executive-overview-page{max-width:1600px;margin:0 auto}.eo-now{display:grid;grid-template-columns:minmax(260px,.7fr) 2fr;gap:18px}.eo-now-main{display:flex;flex-direction:column;justify-content:center;padding:8px}.eo-now-main>span,.executive-overview-page .section-title span,.eo-footer span{color:var(--accent,#6ff0b1);font-size:11px;font-weight:800;letter-spacing:.12em}.eo-now-main h2{font-size:28px;margin:6px 0}.eo-now-main p{margin:0;color:var(--muted,#9fb0bf)}.eo-live,.eo-performance{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.eo-kpi{display:flex;align-items:center;gap:14px;min-width:0;padding:16px;border:1px solid #293c4d;border-radius:14px;background:#1b2935}.eo-kpi ha-icon{color:#82efb5}.eo-kpi div{display:flex;flex-direction:column;min-width:0}.eo-kpi span,.eo-kpi small{color:#9eb0bf}.eo-kpi b{font-size:18px;margin:3px 0}.eo-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px}.eo-grid>.panel{margin:0}.eo-signals{display:grid;gap:10px}.eo-signal,.eo-recommend{padding:14px;border:1px solid #2b4050;border-radius:12px;background:#17242e}.eo-signal.attention{border-color:#684238}.eo-signal.positive{border-color:#275c49}.eo-signal span{display:block;font-size:10px;letter-spacing:.1em;color:#8deeb8;font-weight:800}.eo-signal b,.eo-recommend b{display:block;font-size:16px;margin:5px 0}.eo-signal p,.eo-recommend p{margin:4px 0;color:#a7b5c1;line-height:1.45}.eo-footer{margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px 20px!important;min-height:0!important}.eo-footer-copy{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}.eo-footer-copy span{display:block;white-space:nowrap}.eo-footer-copy b{display:block}.eo-footer-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.eo-footer-actions .outline-button{width:auto!important;min-width:150px;margin:0!important;padding:10px 14px!important}@media(max-width:900px){.eo-now,.eo-grid{grid-template-columns:1fr}.eo-footer{align-items:flex-start;flex-direction:column}}@media(max-width:650px){.eo-live,.eo-performance{grid-template-columns:1fr}}\n
-/* v14.0.0-alpha.22.18.1.7 — Executive Overview Intelligence Refinement */
+
 .eo-status{display:grid;grid-template-columns:minmax(210px,.32fr) minmax(0,1fr);gap:16px;margin-bottom:16px;align-items:stretch}
 .eo-status-badge{border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;justify-content:center;gap:5px}
 .eo-status-badge span,.eo-zeus-says>span,.eo-evidence span,.eo-ranked-opportunity span{font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--muted)}
@@ -8423,7 +8986,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
 @media(max-width:900px){.eo-status{grid-template-columns:1fr}.eo-today-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.eo-evidence{align-items:flex-start;flex-direction:column}.eo-evidence-pills{justify-content:flex-start}}
 @media(max-width:650px){.eo-today-grid{grid-template-columns:1fr}}
 
-/* v14.0.0-alpha.22.18.1.7 — Command Center brain placement + 4-panel lower row */
 .cc-system-state-graph .kg-core{
   transform:translate(-50%,-50%) translateY(-42px) scale(.92)!important;
   transform-origin:center!important;
@@ -8486,7 +9048,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
 .cc-supply-legend span{font-size:12px;color:#a9bac7}
 .cc-supply-legend b{font-size:14px}
 
-/* v14.0.0-alpha.22.18.1.7 — Command Center target layout match */
 .cc2-page{
   height:100dvh!important;
   min-height:0!important;
@@ -8720,7 +9281,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
   .cc2-footer{gap:8px;font-size:9px}
 }
 
-/* v14.0.0-alpha.22.18.1.7 — Knowledge Core target-match + footer removal */
 .cc2-page{
   height:auto!important;
   min-height:0!important;
@@ -8838,7 +9398,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
   .cc2-lower{height:200px!important;min-height:200px!important}
 }
 
-/* v14.0.0-alpha.22.18.1.7 — Command Center visual consolidation */
 .cc2-page{
   height:100dvh!important;
   min-height:720px!important;
@@ -9039,7 +9598,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
   .cc5-flow-node.battery{min-width:160px!important}
 }
 
-/* v14.0.0-alpha.22.18.1.7 — Command Center correction: reuse proven components */
 .cc6-page{
   height:auto!important;
   min-height:0!important;
@@ -9201,7 +9759,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
   .cc6-lower,.cc6-lower .cc-card{height:180px!important;min-height:180px!important}
 }
 
-/* v14.0.0-alpha.22.18.1.7 — final two-half Command Center hotfix */
 .cc6-page{
   height:100dvh!important;
   min-height:0!important;
@@ -9313,7 +9870,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
   }
 }
 
-/* v14.0.0-alpha.22.18.1.13 — Split Command Center kiosk hotfix */
 .cc7-page{height:100dvh!important;min-height:0!important;padding:8px 10px!important;overflow:hidden!important}
 .cc7-main{height:calc(100dvh - 16px)!important;min-height:0!important;display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:10px!important}
 .cc7-column{min-width:0!important;min-height:0!important;display:grid!important;gap:8px!important;overflow:hidden!important}
@@ -9338,7 +9894,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
 .cc7-live-status b{font-size:16px!important;line-height:1.1!important;margin:3px 0!important;white-space:nowrap!important}
 .cc7-live-status small{font-size:8px!important;color:var(--muted)!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
 
-/* v14.0.0-alpha.22.18.1.13 — Active Loads capacity/readability hotfix */
 .cc7-energy-flow{grid-template-rows:26px minmax(0,1fr) 132px!important}
 .cc7-energy-flow .cc-flow-v4-loads{height:132px!important;min-height:132px!important;grid-template-rows:18px minmax(0,1fr)!important;padding:6px 7px!important;gap:5px!important}
 .cc7-energy-flow .cc-flow-v4-load-grid{grid-template-columns:repeat(4,minmax(0,1fr))!important;grid-template-rows:repeat(2,minmax(0,1fr))!important;gap:5px!important}
@@ -9349,7 +9904,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
 .cc7-energy-flow .cc-flow-v4-load-title span,.cc7-energy-flow .cc-flow-v4-load-title b{font-size:10px!important}
 @media(max-width:1200px){.cc7-main{grid-template-columns:1fr!important;grid-template-rows:1fr 1fr!important;overflow:auto!important}.cc7-page{overflow:auto!important}.cc7-right{grid-template-rows:minmax(320px,1fr) 96px!important}.cc7-energy-flow{min-height:430px!important}}
 
-/* v14.0.0-alpha.22.18.1.13 — Energy Flow Compression + Named Active Loads hotfix */
 /* Recover vertical room from the flow stage while preserving the proven v4 topology and live calculations. */
 .cc7-energy-flow{grid-template-rows:26px minmax(0,1fr) 188px!important}
 .cc7-energy-flow .cc-flow-v4-loads{height:188px!important;min-height:188px!important;grid-template-rows:22px minmax(0,1fr)!important;padding:8px 9px!important;gap:7px!important}
@@ -9374,7 +9928,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
   .cc7-energy-flow .cc-flow-v4-loads{height:176px!important;min-height:176px!important}
 }
 
-/* v14.0.0-alpha.22.18.1.13 — Day Energy + Zeus Prognosis / Live System Status / Kiosk Navigation */
 .cc7-energy-flow .cc-flow-v4-node,.cc7-energy-flow .cc-flow-v4-home{width:154px!important;min-width:154px!important;min-height:112px!important;height:112px!important;padding:10px 12px!important;box-sizing:border-box!important}
 .cc7-energy-flow .cc-flow-v4-home{width:176px!important;min-width:176px!important;min-height:126px!important;height:126px!important}
 .cc7-energy-flow .cc8-energy-node span{font-size:10px!important;letter-spacing:.12em!important}
@@ -9398,7 +9951,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
   .cc7-energy-flow .cc8-energy-node b{font-size:18px!important}
 }
 
-/* v14.0.0-alpha.22.18.1.14 — Command Center geometry + kiosk return hotfix */
 /* Grid needs enough room for both daily directions and Zeus forecast without clipping. */
 .cc7-energy-flow .cc-flow-v4-node.grid.cc8-grid-node{width:208px!important;min-width:208px!important;height:134px!important;min-height:134px!important;padding:11px 13px!important}
 .cc7-energy-flow .cc8-grid-values{display:grid!important;grid-template-columns:1fr!important;gap:2px!important;width:100%!important;margin:4px 0 3px!important}
@@ -9424,10 +9976,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
   .cc7-energy-flow .cc-flow-v4-line.home i{height:calc(56% - 66px)!important}
 }
 
-
-/* v14.0.0-alpha.22.18.1.17 — Command Center vertical flow continuity hotfix
-   Anchor the Solar → Home and Home → Active Loads paths to the actual node
-   boundaries. Keep all live values, directions and animations unchanged. */
 .cc7-energy-flow .cc-flow-v4-line.solar{
   top:114px!important;
   bottom:calc(56% + 77px)!important;
@@ -9451,9 +9999,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
   .cc7-energy-flow .cc-flow-v4-line.home{top:calc(44% + 72px)!important}
 }
 
-/* v14.0.0-alpha.22.18.1.22 — Kiosk energy-node readability hotfix
-   User-requested kiosk exception: enlarge only the existing Solar, Grid, Home and Battery
-   day-energy boxes and their text. Preserve all other kiosk layout, data and behavior. */
 .cc7-energy-flow .cc-flow-v4-node.solar.cc8-energy-node,
 .cc7-energy-flow .cc-flow-v4-node.battery.cc8-energy-node{
   width:190px!important;min-width:190px!important;height:142px!important;min-height:142px!important;padding:14px 16px!important;
@@ -9510,10 +10055,6 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
 .zk42-page{height:100vh;box-sizing:border-box;overflow:hidden;background:radial-gradient(circle at 50% 42%,rgba(0,143,255,.08),transparent 34%),#030a10;color:#f4f7fa;padding:0 14px 12px;font-family:inherit}.zk42-top{height:72px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;border-bottom:1px solid #0d6389}.zk42-brand{display:flex;align-items:center;gap:9px}.zk42-brand>ha-icon{--mdc-icon-size:52px;color:#32f06c}.zk42-brand b{display:block;font-size:25px}.zk42-brand span{display:block;color:#32f06c;font-size:12px}.zk42-title{display:flex;align-items:center;gap:10px;color:#32f06c;font-size:20px;font-weight:900;letter-spacing:.04em}.zk42-title ha-icon{--mdc-icon-size:28px}.zk42-clock{justify-self:end;display:flex;align-items:center;gap:15px}.zk42-clock>span{font-size:12px}.zk42-clock>b{font-size:25px}.zk42-clock button{display:flex;align-items:center;gap:7px;background:#08203a;border:1px solid #147bb2;color:#fff;border-radius:10px;padding:9px 13px;font-weight:800}.zk42-main{height:calc(100vh - 84px);display:grid;grid-template-columns:300px minmax(720px,1fr) 300px;grid-template-rows:minmax(0,1fr) 130px;gap:12px;padding-top:10px}.zk42-left,.zk42-rightcol>section,.zk42-safe,.zk42-bottom>article{border:1px solid #17465e;border-radius:16px;background:linear-gradient(180deg,#071723,#06111a);box-shadow:0 0 22px rgba(0,0,0,.18)}.zk42-left{grid-column:1;grid-row:1;padding:15px;overflow:hidden}.zk42-left h3,.zk42-battery h3,.zk42-briefing h3{margin:0 0 10px;font-size:14px;display:flex;align-items:center;gap:7px}.zk42-left h3 small{font-weight:400;color:#8ba2b3}.zk42-day{height:82px;box-sizing:border-box;display:flex;align-items:center;gap:12px;border-top:1px solid #163344;padding:7px 5px}.zk42-day>ha-icon{--mdc-icon-size:36px}.zk42-day span{font-weight:900;font-size:14px}.zk42-day b{display:block;font-size:23px;margin:2px 0}.zk42-day small{color:#c8d2d9}.zk42-day.solar ha-icon,.zk42-day.solar span{color:#ffb000}.zk42-day.grid ha-icon,.zk42-day.grid span{color:#168fff}.zk42-day.house ha-icon,.zk42-day.house span{color:#22e263}.zk42-day.dhw ha-icon,.zk42-day.dhw span{color:#b65cff}.zk42-sources{border-top:1px solid #17465e;padding:10px 3px 0;margin-top:2px}.zk42-source-head span{display:block;color:#8df1b2;font-size:11px;font-weight:900;letter-spacing:.12em}.zk42-source-head b{display:block;font-size:15px;margin-top:2px}.zk42-source-body{display:flex;flex-direction:column;align-items:center;gap:7px;margin-top:8px}.zk42-source-donut{width:100px;height:100px;border-radius:50%;display:grid;place-items:center}.zk42-source-donut>div{width:58px;height:58px;border-radius:50%;background:#071723;display:flex;flex-direction:column;align-items:center;justify-content:center}.zk42-source-donut strong{font-size:17px}.zk42-source-donut small{font-size:7px;color:#8da3b4}.zk42-source-list{display:grid;gap:5px;width:100%}.zk42-source-list span{display:grid;grid-template-columns:10px 1fr auto;gap:8px;align-items:center;font-size:12px;color:#a7bac7}.zk42-source-list span>i{width:7px;height:7px;border-radius:50%}.zk42-source-list i.solar{background:#ffc247}.zk42-source-list i.grid{background:#ef7373}.zk42-source-list i.battery{background:#42df8b}.zk42-source-list b{color:#f2f7fa;font-size:13px}.zk42-dhw-temp{width:100%;box-sizing:border-box;border-top:1px solid #17465e;margin-top:2px;padding:7px 2px 0;display:grid;grid-template-columns:20px 1fr auto;gap:7px;align-items:center}.zk42-dhw-temp ha-icon{--mdc-icon-size:18px;color:#b65cff}.zk42-dhw-temp span{font-size:10px;font-weight:900;color:#b65cff}.zk42-dhw-temp b{font-size:13px;color:#f2f7fa}.zk42-ledger{border-top:1px solid #17465e;padding-top:4px}.zk42-ledger p,.zk42-battery p{display:flex;justify-content:space-between;gap:7px;margin:0;padding:8px 1px;border-bottom:1px solid #102a38;font-size:11px}.zk42-ledger b{color:#d7f0ff}.zk42-flow{grid-column:2;grid-row:1;position:relative;border-radius:16px;background:radial-gradient(circle at 50% 48%,rgba(0,179,255,.12),transparent 30%);overflow:hidden}.zk42-flow:before{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(26,116,155,.16) 1px,transparent 1px);background-size:18px 18px;opacity:.16}.zk42-flow svg{position:absolute;inset:0;width:100%;height:100%;z-index:1}.zk42-route{fill:none;stroke-width:7;opacity:.08;stroke-linecap:round}.zk42-route.active{opacity:1;filter:drop-shadow(0 0 9px currentColor)}.zk42-route.solar{stroke:#ffb000;color:#ffb000}.zk42-route.grid{stroke:#108cff;color:#108cff}.zk42-route.battery{stroke:#25e468;color:#25e468}.zk42-route.loads{stroke:#ff9f00;color:#ff9f00}.zk42-dot.solar{fill:#ffd15c}.zk42-dot.grid{fill:#62b8ff}.zk42-dot.battery{fill:#7cff9d}.zk42-dot.loads{fill:#ffc35d}.zk42-node,.zk42-house{position:absolute;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:rgba(4,18,28,.94);border:1px solid #31566d;box-shadow:0 0 28px rgba(0,0,0,.38)}.zk42-node{width:210px;height:142px;border-radius:14px}.zk42-node ha-icon{--mdc-icon-size:43px}.zk42-node span,.zk42-house span{font-weight:900;font-size:17px;margin-top:3px}.zk42-node b{font-size:30px;margin-top:4px}.zk42-node small,.zk42-house small{font-size:14px;color:#d0d9df;margin-top:3px}.zk42-node.solar{left:50%;top:2%;transform:translateX(-50%);border-color:#9a6c00}.zk42-node.solar ha-icon,.zk42-node.solar span{color:#ffb000}.zk42-node.grid{left:18%;top:52%;transform:translate(-50%,-50%);border-color:#0f75c7}.zk42-node.grid ha-icon,.zk42-node.grid span{color:#168fff}.zk42-node.battery{right:18%;top:52%;transform:translate(50%,-50%);border-color:#139b47}.zk42-node.battery ha-icon,.zk42-node.battery span{color:#25e468}.zk42-house{left:50%;top:52%;transform:translate(-50%,-50%);width:210px;height:210px;border-radius:50%;border:2px solid #11b4ff;box-shadow:0 0 30px rgba(0,157,255,.32),inset 0 0 24px rgba(24,226,94,.10)}.zk42-house:after{content:"";position:absolute;inset:7px;border:2px solid rgba(37,228,104,.8);border-radius:50%;border-left-color:rgba(17,180,255,.9);border-bottom-color:#ffb000}.zk42-house ha-icon{--mdc-icon-size:52px;z-index:1}.zk42-house span,.zk42-house b,.zk42-house small{z-index:1}.zk42-house span{color:#25e468}.zk42-house b{font-size:38px;margin-top:4px}.zk42-node.loads{left:50%;bottom:1%;transform:translateX(-50%);border-color:#8d5e00}.zk42-node.loads ha-icon,.zk42-node.loads span{color:#ff9f00}.zk42-node.export.idle{opacity:.18;filter:saturate(.3)}.zk42-weather{position:absolute;z-index:3;right:1%;top:1%;width:360px;height:118px;box-sizing:border-box;border:1px solid #17465e;border-radius:12px;background:rgba(5,23,35,.94);display:grid;grid-template-columns:1.1fr .9fr 1fr;gap:8px;padding:10px}.zk42-weather-main{display:flex;gap:8px;align-items:center}.zk42-weather-main ha-icon{--mdc-icon-size:39px;color:#ffd158}.zk42-weather span,.zk42-prognose span{font-size:9px;color:#8da3b4;font-weight:800}.zk42-weather-main b{display:block;font-size:23px;margin:3px 0}.zk42-weather-main small,.zk42-prognose small{font-size:9px;color:#b8c8d3}.zk42-weather-facts p{display:flex;justify-content:space-between;margin:0;padding:4px 0;border-bottom:1px solid #123242;font-size:9px}.zk42-weather-facts b{font-size:10px}.zk42-prognose{border-left:1px solid #123242;padding-left:8px}.zk42-prognose b{display:block;font-size:19px;margin:9px 0 3px;color:#f4f7fa}.zk42-rightcol{grid-column:3;grid-row:1/3;display:grid;grid-template-rows:1fr 225px 64px;gap:10px;min-height:0}.zk42-core{padding:14px;text-align:center;min-height:0}.zk42-core h3{font-size:21px;margin:0}.zk42-core h3 small{display:block;color:#32f06c;font-size:10px;margin-top:2px}.zk42-brain{width:124px;height:124px;border-radius:50%;display:grid;place-items:center;margin:10px auto;border:2px solid #2cea68;box-shadow:0 0 30px rgba(44,234,104,.35),inset 0 0 23px rgba(44,234,104,.1)}.zk42-brain ha-icon{--mdc-icon-size:57px;color:#43ef83}.zk42-corestate{display:block;font-size:23px;color:#32f06c}.zk42-core>span{font-size:11px;color:#75df96}.zk42-core>p{font-size:11px;text-align:left;background:#0b2638;border:1px solid #17465e;border-radius:9px;padding:9px;line-height:1.38}.zk42-status{display:grid;grid-template-columns:7px 1fr auto;gap:7px 8px;text-align:left;align-items:center;font-size:10px}.zk42-status i{width:6px;height:6px;border-radius:50%;background:#2cea68}.zk42-status b{text-align:right;color:#4cf18a}.zk42-gauges{margin-top:12px;padding-top:10px;border-top:1px solid #173747;text-align:left}.zk42-gauges h4{margin:0 0 8px;color:#8df1b2;font-size:9px;letter-spacing:.12em}.zk42-gauge{display:grid;grid-template-columns:18px 1fr 34px;gap:7px;align-items:center;padding:6px 0;border-bottom:1px solid #102a38}.zk42-gauge:last-child{border-bottom:0}.zk42-gauge ha-icon{--mdc-icon-size:16px;color:#42e783}.zk42-gauge span{display:block;color:#a7bac7;font-size:9px;margin-bottom:4px}.zk42-gauge i{display:block;height:5px;border-radius:999px;background:#0d2230;overflow:hidden}.zk42-gauge i b{display:block;height:100%;border-radius:999px;background:#42d88a}.zk42-gauge strong{color:#f2f7fa;font-size:10px;text-align:right}.zk42-battery{padding:13px}.zk42-battery>div{display:flex;justify-content:space-between;align-items:end}.zk42-battery>div b{font-size:32px;color:#35e96d}.zk42-battery>div span{font-size:10px;color:#98adbc}.zk42-battery progress{width:100%;height:11px;margin:10px 0;accent-color:#35e96d}.zk42-safe{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px;color:#58ec94}.zk42-safe ha-icon{--mdc-icon-size:25px}.zk42-safe b{font-size:11px}.zk42-safe span{display:block;color:#9ac8ac;font-size:8px;margin-top:2px}.zk42-bottom{grid-column:1/3;grid-row:2;display:grid;grid-template-columns:2fr 1.25fr .72fr;gap:10px;min-width:0}.zk42-bottom>article{padding:11px 13px;overflow:hidden}.zk42-briefing{display:grid;grid-template-columns:54px 1fr;align-items:center;gap:12px}.zk42-briefing-icon{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;border:1px solid #1f7ca1;background:rgba(10,46,65,.7);box-shadow:0 0 18px rgba(17,180,255,.14)}.zk42-briefing-icon ha-icon{--mdc-icon-size:27px;color:#32f06c}.zk42-briefing span,.zk42-forecast span,.zk42-autonomy span{display:block;font-size:9px;color:#8da3b4}.zk42-briefing h3{margin:4px 0 5px!important;font-size:17px!important;color:#f1f7fa}.zk42-briefing p{margin:0;color:#c9d7df;font-size:10px;line-height:1.45;max-width:96%}.zk42-forecast{display:grid;grid-template-columns:1fr 1fr;gap:10px}.zk42-forecast-head{display:grid;grid-template-columns:1fr .8fr;gap:8px}.zk42-forecast-head b{display:block;font-size:18px;margin:4px 0}.zk42-forecast-head small{font-size:8px;color:#8da3b4}.zk42-fbars{display:flex;align-items:end;gap:7px;height:94px}.zk42-fbar{height:100%;flex:1;display:grid;grid-template-rows:1fr auto auto;align-items:end;text-align:center}.zk42-fbar i{display:block;width:65%;margin:auto;background:linear-gradient(#25e468,#0d7db7);border-radius:3px 3px 0 0;min-height:8px}.zk42-fbar span{font-size:7px}.zk42-fbar b{font-size:8px}.zk42-collecting{font-size:9px;color:#8da3b4}.zk42-autonomy{display:flex;flex-direction:column;justify-content:center;text-align:center}.zk42-autonomy b{display:block;color:#32e96c;font-size:31px;margin:5px 0}.zk42-autonomy small{font-size:9px;color:#8da3b4}.app.kiosk-active .sidebar{display:none!important}.app.kiosk-active .content{margin:0!important;width:100%!important;max-width:none!important;padding:0!important;overflow:hidden!important}.app.kiosk-active{min-height:100vh;background:#030a10!important}@media(max-height:850px){.zk42-core{padding:10px 12px}.zk42-core h3{font-size:18px}.zk42-brain{width:78px;height:78px;margin:5px auto}.zk42-brain ha-icon{--mdc-icon-size:39px}.zk42-corestate{font-size:20px}.zk42-core>span{font-size:9px}.zk42-core>p{font-size:9px;padding:6px 8px;margin:6px 0;line-height:1.25}.zk42-status{gap:4px 7px;font-size:8px}.zk42-gauges{margin-top:7px;padding-top:6px}.zk42-gauges h4{margin-bottom:4px;font-size:8px}.zk42-gauge{grid-template-columns:15px 1fr 30px;gap:5px;padding:3px 0}.zk42-gauge ha-icon{--mdc-icon-size:14px}.zk42-gauge span{font-size:8px;margin-bottom:2px}.zk42-gauge i{height:4px}.zk42-gauge strong{font-size:9px}}
 @media(max-width:1500px){.zk42-main{grid-template-columns:270px minmax(650px,1fr) 278px}.zk42-weather{width:330px}.zk42-node.grid{left:17%}.zk42-node.battery{right:17%}.zk42-briefing{grid-template-columns:48px 1fr;gap:9px}.zk42-briefing h3{font-size:15px!important}.zk42-briefing p{font-size:9px}}
 
-/* v14.0.0-alpha.22.18.1.57 — Kiosk Loads Width + DHW Readability Hotfix
-   User-requested kiosk exception only: widen the existing LOADS node horizontally and
-   increase DHW temperature label/value readability. Preserve position, height, flow
-   geometry, source distribution layout, and all other kiosk behavior. */
 .zk42-node.loads{width:238px!important;min-width:238px!important}
 .zk42-dhw-temp{grid-template-columns:24px 1fr auto!important;gap:8px!important}
 .zk42-dhw-temp ha-icon{--mdc-icon-size:22px!important}
@@ -9539,10 +10080,15 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
     this.querySelectorAll('[data-device-manage]').forEach(button=>button.addEventListener('click',()=>{const id=button.dataset.deviceManage||'';this._selectedDeviceId='';this.rememberMobilePage('device_manager');this._page='device_manager';try{localStorage.setItem('aion_zeus_page','device_manager');localStorage.setItem('aion_zeus_manage_device',id);}catch(_e){}this.render();}));
     this.querySelectorAll('[data-device-remove]').forEach(button=>button.addEventListener('click',async()=>{const id=button.dataset.deviceRemove;if(!id||!confirm(`Remove ${id} from the Zeus Registry?`))return;try{await this._hass.callService('aion_ems_zeus','device_manager_remove_device',{device_id:id});await this._hass.callService('homeassistant','update_entity',{entity_id:['sensor.aion_ems_zeus_registry_summary','sensor.aion_ems_zeus_device_manager','sensor.aion_ems_zeus_energy_flow','sensor.aion_ems_zeus_device_analytics']});this._selectedDeviceId='';this.render();}catch(error){alert(error.message||String(error));}}));
     const saveZeusHistory=(q)=>{try{let h=JSON.parse(localStorage.getItem('aion_zeus_question_history')||'[]');if(!Array.isArray(h))h=[];const ev=this.copilotAnswerEvidence(q);h=[{question:q.question,context_query:q.context_query||q.question,answer:q.answer,source:q.source||'Zeus',confidence:q.confidence??'—',evidence_type:ev.type,mode:ev.mode,time:new Date().toLocaleString()},...h.filter(x=>x.question!==q.question)].slice(0,20);localStorage.setItem('aion_zeus_question_history',JSON.stringify(h));}catch(_e){}};
-    const displayZeusAnswer=(q,save=true)=>{const box=this.querySelector('#zeus-answer'),title=this.querySelector('#zeus-answer-title');if(!q||!box)return;if(title)title.textContent=q.question;box.innerHTML=this.copilotAnswerMarkup(q);if(save){saveZeusHistory(q);setTimeout(()=>this.render(),60);}};
+    const displayZeusAnswer=(q,save=true)=>{const box=this.querySelector('#zeus-answer'),title=this.querySelector('#zeus-answer-title');if(!q||!box)return;if(title)title.textContent=q.question;box.innerHTML=this.copilotAnswerMarkup(q);
+      box.querySelectorAll('[data-copilot-answer],[data-copilot-evidence-type],[data-copilot-evidence-source],[data-copilot-confidence],[data-copilot-mode]').forEach(el=>{
+        el.textContent=this.normalizeCopilotDisplayText(el.textContent);
+      });
+      if(save){saveZeusHistory(q);setTimeout(()=>this.render(),60);}};
     const showZeusAnswer=(index)=>{const source=this.s('sensor.aion_ems_zeus_conversational_assistant')?.attributes||{},items=Array.isArray(source.answers)?source.answers:[],q=items[index];displayZeusAnswer(q,true);};
     this.querySelectorAll('[data-zeus-question]').forEach(b=>b.addEventListener('click',()=>showZeusAnswer(Number(b.dataset.zeusQuestion))));
-    this.querySelector('#ask-zeus')?.addEventListener('click',()=>{const input=this.querySelector('#zeus-question'),raw=(input?.value||'').trim();if(!raw)return;let previous='';try{const h=JSON.parse(localStorage.getItem('aion_zeus_question_history')||'[]');previous=Array.isArray(h)&&h[0]?String(h[0].context_query||h[0].question||''):'';}catch(_e){}let optimizationIntent=this.copilotOptimizationIntent(raw);if(optimizationIntent==='contextual_saving'&&previous){const previousOptimizationIntent=this.copilotOptimizationIntent(previous);if(previousOptimizationIntent==='shiftable_energy')optimizationIntent='shiftable_energy_saving';}const flexiblePlanningIntent=this.copilotFlexiblePlanningIntent(raw),isExplicitOptimization=optimizationIntent&&optimizationIntent!=='contextual_saving'&&optimizationIntent!=='shiftable_energy_saving',isExplicitPlanning=!!flexiblePlanningIntent,genericFollowup=!optimizationIntent&&!flexiblePlanningIntent&&/^(and|what about|how about|and what|and grid|and solar|and battery|compare\s+(that|it|this|same)\b|why|how much|what was|what did|did it|did that|what cost|what is|what's|what happens|is that|same|then)/i.test(raw),contextQuery=(isExplicitPlanning||isExplicitOptimization)?raw:(genericFollowup&&previous?this.resolveCopilotFollowup(previous,raw):raw),resolved=this.resolveCopilotIIQuestion(contextQuery,optimizationIntent);if(resolved){resolved.question=raw;resolved.context_query=isExplicitOptimization?raw:((optimizationIntent==='contextual_saving'||optimizationIntent==='shiftable_energy_saving')&&previous?previous:contextQuery);displayZeusAnswer(resolved,true);if(input)input.value='';return;}const text=raw.toLowerCase(),source=this.s('sensor.aion_ems_zeus_conversational_assistant')?.attributes||{},items=Array.isArray(source.answers)?source.answers:[];if(!items.length)return;const evIntent=/(\bev\b|electric car|electric vehicle|car|vehicle|wallbox|go-?e|charger)/i.test(text)&&/(charge|charging|when|best|time|window|solar)/i.test(text);if(evIntent){const evIndex=items.findIndex(q=>q.id==='ev_charge'||/charge the car|ev charg/i.test(String(q.question||'')));if(evIndex>=0){showZeusAnswer(evIndex);if(input)input.value='';return;}}const aliases={car:['ev','vehicle','charger','wallbox'],vehicle:['ev','car','charger'],charge:['charging','charger','ev'],charging:['charge','charger','ev'],wallbox:['ev','charger','car']};const words=text.split(/\s+/).filter(w=>w.length>2),score=q=>{const hay=(q.question+' '+q.answer+' '+(q.id||'')).toLowerCase();return words.reduce((n,w)=>n+(hay.includes(w)?2:0)+(aliases[w]||[]).reduce((m,a)=>m+(hay.includes(a)?1:0),0),0)},best=items.map((q,i)=>[score(q),i]).sort((a,b)=>b[0]-a[0])[0];showZeusAnswer(best&&best[0]>0?best[1]:items.length-1);if(input)input.value='';});
+    this.querySelector('#ask-zeus')?.addEventListener('click',()=>{const input=this.querySelector('#zeus-question'),raw=(input?.value||'').trim();if(!raw)return;let previous='';try{const h=JSON.parse(localStorage.getItem('aion_zeus_question_history')||'[]');previous=Array.isArray(h)&&h[0]?String(h[0].context_query||h[0].question||''):'';}catch(_e){}let optimizationIntent=this.copilotOptimizationIntent(raw);if(optimizationIntent==='contextual_saving'&&previous){const previousOptimizationIntent=this.copilotOptimizationIntent(previous);if(previousOptimizationIntent==='shiftable_energy')optimizationIntent='shiftable_energy_saving';}const flexiblePlanningIntent=this.copilotFlexiblePlanningIntent(raw),isExplicitOptimization=optimizationIntent&&optimizationIntent!=='contextual_saving'&&optimizationIntent!=='shiftable_energy_saving',isExplicitPlanning=!!flexiblePlanningIntent,genericFollowup=!optimizationIntent&&!flexiblePlanningIntent&&/^(and|what about|how about|and what|and grid|and solar|and battery|compare\s+(that|it|this|same)\b|why|how much|what was|what did|did it|did that|what cost|what is|what's|what happens|is that|same|then)/i.test(raw),followupQuery=(genericFollowup&&previous?this.resolveCopilotFollowup(previous,raw):raw),contextQuery=(isExplicitPlanning||isExplicitOptimization)?raw:(followupQuery||raw),resolved=this.resolveCopilotIIQuestion(contextQuery,optimizationIntent);if(resolved){resolved.question=raw;resolved.context_query=isExplicitOptimization?raw:((optimizationIntent==='contextual_saving'||optimizationIntent==='shiftable_energy_saving')&&previous?previous:(followupQuery?contextQuery:raw));displayZeusAnswer(resolved,true);if(input)input.value='';return;}const text=raw.toLowerCase(),source=this.s('sensor.aion_ems_zeus_conversational_assistant')?.attributes||{},items=Array.isArray(source.answers)?source.answers:[];if(!items.length)return;const evIntent=/(\bev\b|electric car|electric vehicle|car|vehicle|wallbox|go-?e|charger)/i.test(text)&&/(charge|charging|when|best|time|window|solar)/i.test(text);if(evIntent){const evIndex=items.findIndex(q=>q.id==='ev_charge'||/charge the car|ev charg/i.test(String(q.question||'')));if(evIndex>=0){showZeusAnswer(evIndex);if(input)input.value='';return;}}const aliases={car:['ev','vehicle','charger','wallbox'],vehicle:['ev','car','charger'],charge:['charging','charger','ev'],charging:['charge','charger','ev'],wallbox:['ev','charger','car']};const words=text.split(/\s+/).filter(w=>w.length>2),score=q=>{const hay=(q.question+' '+q.answer+' '+(q.id||'')).toLowerCase();return words.reduce((n,w)=>n+(hay.includes(w)?2:0)+(aliases[w]||[]).reduce((m,a)=>m+(hay.includes(a)?1:0),0),0)},best=items.map((q,i)=>[score(q),i]).sort((a,b)=>b[0]-a[0])[0];showZeusAnswer(best&&best[0]>0?best[1]:items.length-1);if(input)input.value='';});
+    this.querySelectorAll('[data-copilot-answer],[data-copilot-evidence-type],[data-copilot-evidence-source],[data-copilot-confidence],[data-copilot-mode]').forEach(el=>{el.textContent=this.normalizeCopilotDisplayText(el.textContent);});
     this.querySelectorAll('[data-history-index]').forEach(b=>b.addEventListener('click',()=>{try{const h=JSON.parse(localStorage.getItem('aion_zeus_question_history')||'[]');displayZeusAnswer(h[Number(b.dataset.historyIndex)],false);}catch(_e){}}));
     this.querySelector('#clear-zeus-history')?.addEventListener('click',()=>{try{localStorage.removeItem('aion_zeus_question_history');}catch(_e){}this.render();});
 
@@ -9739,72 +10285,4 @@ if(!customElements.get('aion-ems-zeus-command-center')) customElements.define('a
 
 /* v14.0.0-alpha.22.8.9.0 Registered Load Power-History Period Authority */
 
-/* v14.0.0-alpha.22.18.1.58 — HA App Header Stray A Hotfix
-   Removes the compact/tablet brand pseudo-element that rendered a stray literal A.
-   Header branding, Back/Menu controls, navigation behavior, and kiosk are otherwise unchanged. */
-
-/* v14.0.0-alpha.22.18.1.60 — Main/HA App + Kiosk Branding Hotfix */
-
-/* v14.0.0-alpha.22.18.1.64 — HA Energy Source-Set + Historical Forecast Authority Hotfix */
-
-/* v14.0.0-alpha.22.18.1.65 — Statistics Canonical Measured Routing Hotfix */
-
-/* v14.0.0-alpha.22.18.1.66 — Canonical Grid Outlook History Hotfix */
-
-/* v14.0.0-alpha.22.18.1.67 — Modern HA Future Weather Forecast Pipeline Hotfix */
-
-/* v14.0.0-alpha.22.18.1.68 — Future Weather Diagnostics Hotfix */
-
-/* v14.0.0-alpha.22.18.1.69 — Future Weather Preservation + Targeted Action Hotfix */
-
-/* v14.0.0-alpha.22.18.1.70 — Hourly Weather Day Aggregation Evidence Hotfix */
-
-/* v14.0.0-alpha.22.18.1.71 — Solar Forecast Provenance Label Hotfix */
-
-/* v14.0.0-alpha.22.18.1.72 — Heat Pump Recorder Statistics */
-
-/* v14.0.0-alpha.22.18.1.73 — Device Manager Type-Specific Fields Hotfix */
-
-/* v14.0.0-alpha.22.18.1.74 — Water Heater Temperature Visibility Fix */
-
-/* v14.0.0-alpha.22.18.1.75 — Heat Pump Intelligence Phase 2 */
-
-/* v14.0.0-alpha.22.18.1.76 — Heat Pump Comparison Polish */
-
-/* v14.0.0-alpha.22.18.1.77 — Heat Pump Comparison Label Fit */
-
-/* v14.0.0-alpha.22.18.1.79 — Direct Heat Pump COP Sensor Support */
-
-/* v14.0.0-alpha.22.18.1.80 — Heat Pump Comparison Headline Fit */
-
-/* v14.0.0-alpha.22.18.1.81 — COP Zero-State & Device Details Fix */
-
-/* v14.0.0-alpha.22.18.1.82 — Registry Metadata Merge + Direct COP State Read */
-
-/* v14.0.0-alpha.22.18.1.83 — Heat Pump Comparison Card Typography Fit */
-
-/* v14.0.0-alpha.22.18.1.87 — Heat Pump COP + Outdoor Temperature Context */
-
-/* v14.0.0-alpha.22.18.1.88 — Heat Pump Peak Today Consistency Fix */
-
-/* v14.0.0-alpha.22.18.1.89 — Real Recorder Statistics COP History */
-
-/* v14.0.0-alpha.22.18.1.90 — PeriodWindow COP history hotfix */
-
-/* v14.0.0-alpha.22.18.1.91 — COP long-period evidence gate */
-
-/* v14.0.0-alpha.22.18.1.92 — Heat Pump measured COP self-comparison intelligence */
-
-/* v14.0.0-alpha.22.18.1.104 — DHW Intelligence Phase 2 + Switzerland kiosk branding */
-
-/* v14.0.0-alpha.22.18.1.105 — EV & Flexible Load Intelligence Phase 1 */
-
-/* v14.0.0-alpha.22.18.1.106 — DEA Attribution Integration Fix: async loading + page rerender + robust registered-device resolver */
-
-/* v14.0.0-alpha.22.18.1.107 — EV/Flexible DEA registry-metadata matching fix */
-
-/* v14.0.0-alpha.22.18.1.108 — DEA backend registry-mapping authority fix */
-
-/* v14.0.0-alpha.22.18.1.109 — DEA websocket on-demand refresh + payload diagnostics */
-
-/* v14.0.0-alpha.22.18.1.110 — explicit end-use load classifier authority fix */
+/* AION EMS Zeus GitHub/update notification test release: v14.0.0-alpha.22.18.1.150 */

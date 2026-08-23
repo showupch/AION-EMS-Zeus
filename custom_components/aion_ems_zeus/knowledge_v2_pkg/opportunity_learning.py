@@ -19,7 +19,7 @@ MAX_RECORDS = 300
 class OpportunityLearningEngine:
     """Evaluate recommendation outcomes and expose conservative feedback."""
 
-    VERSION = "1.0-alpha.3"
+    VERSION = "1.3-passive-learning-cleanup"
 
     def __init__(self, hass: Any, event_bus: Any, core: Any) -> None:
         self.hass = hass
@@ -41,6 +41,10 @@ class OpportunityLearningEngine:
         if isinstance(stored, dict):
             self.data.update(stored)
         self.data.setdefault("records", {})
+        self.data["records"] = {
+            str(key): value for key, value in self.data.get("records", {}).items()
+            if isinstance(value, dict) and self._learning_eligible(value)
+        }
         self.data.setdefault("metadata", {"max_records": MAX_RECORDS})
         self.refresh()
 
@@ -55,6 +59,22 @@ class OpportunityLearningEngine:
     @staticmethod
     def _record_key(item: dict[str, Any]) -> str:
         return f"{item.get('id') or 'unknown'}::{item.get('created_at') or item.get('updated_at') or 'unknown'}"
+
+    @staticmethod
+    def _learning_eligible(item: dict[str, Any]) -> bool:
+        category = str(item.get("category") or "").strip().lower()
+        identifier = str(item.get("id") or "").strip().lower()
+        action = str(item.get("action") or "").strip().lower()
+        title = str(item.get("title") or "").strip().lower()
+        if category == "observe":
+            return False
+        if identifier in {"continue_observing", "no_high_value_action", "hold"}:
+            return False
+        if action in {"keep monitoring current conditions", "continue current operation", "hold", "monitor"}:
+            return False
+        if title == "no high-value action right now":
+            return False
+        return True
 
     @staticmethod
     def _is_resolved(status: str) -> bool:
@@ -72,7 +92,7 @@ class OpportunityLearningEngine:
         changed = False
         now = datetime.now(timezone.utc).isoformat()
         for item in history:
-            if not isinstance(item, dict) or not item.get("id"):
+            if not isinstance(item, dict) or not item.get("id") or not self._learning_eligible(item):
                 continue
             key = self._record_key(item)
             previous = records.get(key, {})
@@ -138,33 +158,101 @@ class OpportunityLearningEngine:
         }
 
     @staticmethod
-    def _adjustment(profile: dict[str, Any]) -> int:
-        resolved = int(profile.get("resolved_count") or 0)
+    def _adjustment(profile: dict[str, Any], outcome: dict[str, Any]) -> int:
+        """Return a small, evidence-gated confidence calibration.
+
+        No adjustment is allowed before three resolved outcomes in the same
+        category. Observed responses are correlation evidence only and are
+        intentionally bounded to a small effect.
+        """
+        resolved = int(outcome.get("resolved_count") or profile.get("resolved_count") or 0)
         if resolved < 3:
             return 0
-        completion = profile.get("follow_through_percent")
+        observed = int(outcome.get("observed_system_response_count") or 0)
+        not_measurable = int(outcome.get("not_measurable_count") or 0)
+        quantified = int(profile.get("measurable_outcome_count") or 0)
         accuracy = profile.get("benefit_prediction_accuracy_percent")
         adjustment = 0
-        if isinstance(completion, (int, float)):
-            if completion >= 75:
-                adjustment += 3
-            elif completion < 35:
-                adjustment -= 3
-        if isinstance(accuracy, (int, float)):
+
+        response_rate = observed / max(1, resolved)
+        not_measurable_rate = not_measurable / max(1, resolved)
+        if response_rate >= 0.75:
+            adjustment += 2
+        elif response_rate >= 0.50:
+            adjustment += 1
+        elif not_measurable_rate >= 0.75:
+            adjustment -= 2
+        elif not_measurable_rate >= 0.50:
+            adjustment -= 1
+
+        # Quantified benefit accuracy is stronger evidence, but only after at
+        # least three genuinely measured benefit outcomes.
+        if quantified >= 3 and isinstance(accuracy, (int, float)):
             if accuracy >= 85:
-                adjustment += 3
+                adjustment += 2
             elif accuracy < 60:
-                adjustment -= 4
-        return max(-8, min(6, adjustment))
+                adjustment -= 2
+
+        return max(-4, min(4, adjustment))
 
     def refresh(self) -> dict[str, Any]:
         changed = self._ingest()
-        records = list(self.data.get("records", {}).values())
+        filtered_records = {
+            str(key): value for key, value in self.data.get("records", {}).items()
+            if isinstance(value, dict) and self._learning_eligible(value)
+        }
+        if len(filtered_records) != len(self.data.get("records", {})):
+            self.data["records"] = filtered_records
+            changed = True
+        records = list(filtered_records.values())
         categories = sorted({str(x.get("category") or "unknown") for x in records})
         profiles = {category: self._profile([x for x in records if str(x.get("category") or "unknown") == category]) for category in categories}
         overall = self._profile(records)
-        adjustments = {category: self._adjustment(profile) for category, profile in profiles.items()}
         resolved = int(overall.get("resolved_count") or 0)
+        observed_responses = [x for x in records if str(x.get("outcome_status") or "") == "Observed system response"]
+        not_measurable = [x for x in records if str(x.get("outcome_status") or "") == "Not measurable" and self._is_resolved(str(x.get("status") or ""))]
+        measured_outcomes = [x for x in records if self._number(x.get("actual_benefit_value_kwh")) is not None]
+        resolved_with_classification = len(observed_responses) + len(not_measurable)
+        observed_response_percent = round(len(observed_responses) / resolved_with_classification * 100.0, 1) if resolved_with_classification else None
+        category_outcomes = {}
+        for category in categories:
+            category_records = [x for x in records if str(x.get("category") or "unknown") == category]
+            category_resolved = [x for x in category_records if self._is_resolved(str(x.get("status") or ""))]
+            category_observed = [x for x in category_resolved if str(x.get("outcome_status") or "") == "Observed system response"]
+            category_not_measurable = [x for x in category_resolved if str(x.get("outcome_status") or "") == "Not measurable"]
+            category_outcomes[category] = {
+                "resolved_count": len(category_resolved),
+                "observed_system_response_count": len(category_observed),
+                "not_measurable_count": len(category_not_measurable),
+                "observed_response_percent": round(len(category_observed) / len(category_resolved) * 100.0, 1) if category_resolved else None,
+            }
+        adjustments = {
+            category: self._adjustment(profiles[category], category_outcomes.get(category, {}))
+            for category in categories
+        }
+        calibration = {}
+        for category in categories:
+            category_outcome = category_outcomes.get(category, {})
+            category_resolved = int(category_outcome.get("resolved_count") or 0)
+            adjustment = int(adjustments.get(category) or 0)
+            calibration[category] = {
+                "resolved_count": category_resolved,
+                "adjustment_points": adjustment,
+                "active": category_resolved >= 3,
+                "gate_remaining": max(0, 3 - category_resolved),
+                "reason": (
+                    "Waiting for at least 3 resolved outcomes in this category."
+                    if category_resolved < 3 else
+                    "Small bounded calibration from observed outcome history; correlation is not treated as causation."
+                ),
+            }
+
+        evidence_strength = (
+            "No resolved outcomes yet" if resolved == 0 else
+            "Early evidence" if resolved < 3 else
+            "Building evidence" if resolved < 10 else
+            "Established outcome history"
+        )
         self.last = {
             "status": "Ready" if resolved >= 3 else "Learning",
             "version": self.VERSION,
@@ -174,6 +262,25 @@ class OpportunityLearningEngine:
             "overall_profile": overall,
             "category_profiles": profiles,
             "confidence_adjustments": adjustments,
+            "adaptive_confidence": {
+                "minimum_resolved_per_category": 3,
+                "passive_categories_excluded": ["observe"],
+                "maximum_adjustment_points": 4,
+                "minimum_adjustment_points": -4,
+                "category_calibration": calibration,
+                "rule": "No confidence adjustment before 3 resolved outcomes in the same category. Adjustments remain bounded to ±4 points.",
+                "causality_boundary": "Observed system response may calibrate confidence only as correlation evidence; Zeus does not infer that its recommendation caused the change.",
+            },
+            "outcome_intelligence": {
+                "resolved_count": resolved,
+                "observed_system_response_count": len(observed_responses),
+                "not_measurable_count": len(not_measurable),
+                "quantified_actual_benefit_count": len(measured_outcomes),
+                "observed_response_percent": observed_response_percent,
+                "evidence_strength": evidence_strength,
+                "category_outcomes": category_outcomes,
+                "causality_boundary": "Observed system response is correlation only. Zeus does not claim the recommendation caused the measured change.",
+            },
             "recent_outcomes": sorted(records, key=lambda x: str(x.get("updated_at") or ""), reverse=True)[:20],
             "summary": (
                 f"Zeus has evaluated {resolved} resolved recommendation outcome(s)."

@@ -1,4 +1,4 @@
-"""Soak validation and release-candidate readiness for AION EMS Zeus.
+"""Release hardening and soak readiness for AION EMS Zeus.
 
 The engine aggregates compact, recorder-safe evidence from existing Zeus
 components. It never controls devices and does not create a polling loop.
@@ -10,9 +10,9 @@ from typing import Any
 
 
 class ReleaseReadinessEngine:
-    """Build a compact release-readiness report for the v12.5 soak test."""
+    """Build a compact release-readiness report for the current Zeus branch."""
 
-    VERSION = "1.1-beta.7"
+    VERSION = "1.3-readiness-semantics"
 
     def __init__(self, event_bus: Any, core: Any) -> None:
         self.event_bus = event_bus
@@ -35,7 +35,7 @@ class ReleaseReadinessEngine:
     @staticmethod
     def _status_ok(value: Any) -> bool:
         return str(value or "").strip().lower() in {
-            "ready", "healthy", "active", "normal", "complete", "completed",
+            "ready", "healthy", "active", "running", "normal", "complete", "completed",
             "available", "learning", "partial", "monitoring", "collecting data",
             "waiting", "no data", "not enough data",
         }
@@ -47,6 +47,7 @@ class ReleaseReadinessEngine:
         data_quality = self._summary(getattr(self.core, "data_quality", None))
         update_engine = self._summary(getattr(self.core, "update_engine", None))
         decision = self._summary(getattr(self.core, "decision_engine", None))
+        opportunity_learning = self._summary(getattr(self.core, "opportunity_learning", None))
         memory = self._summary(getattr(self.core, "intelligence_memory", None))
         consistency = self._summary(getattr(self.core, "data_consistency", None))
 
@@ -98,6 +99,28 @@ class ReleaseReadinessEngine:
                 "detail": decision.get("decision") or decision.get("summary") or decision.get("status", "Unavailable"),
             },
             {
+                "name": "Recommendation history quality",
+                "passed": bool((decision.get("history_quality_gate") or {}).get("passive_observe_excluded")),
+                "detail": (
+                    "Passive observe/monitor states are excluded from persistent Recommendation History."
+                    if (decision.get("history_quality_gate") or {}).get("passive_observe_excluded")
+                    else "Recommendation History quality gate is not confirmed."
+                ),
+            },
+            {
+                "name": "Adaptive confidence safeguards",
+                "passed": (
+                    int((opportunity_learning.get("adaptive_confidence") or {}).get("minimum_resolved_per_category") or 0) == 3
+                    and int((opportunity_learning.get("adaptive_confidence") or {}).get("maximum_adjustment_points") or 0) == 4
+                    and "observe" in ((opportunity_learning.get("adaptive_confidence") or {}).get("passive_categories_excluded") or [])
+                ),
+                "detail": (
+                    "Minimum 3 resolved same-category outcomes; bounded ±4 points; passive observe excluded."
+                    if opportunity_learning
+                    else "Opportunity Learning safeguards unavailable."
+                ),
+            },
+            {
                 "name": "Memory growth",
                 "passed": bool(memory) and str(memory.get("status", "")).lower() not in {"error", "unavailable"},
                 "detail": memory.get("summary") or memory.get("status", "Unavailable"),
@@ -134,9 +157,18 @@ class ReleaseReadinessEngine:
                 "last_live_refresh": performance.get("last_live_refresh"),
                 "last_decision_refresh": performance.get("last_decision_refresh"),
             },
+            "hardening_contract": {
+                "recommendation_only": True,
+                "history_quality_gate_required": True,
+                "adaptive_min_resolved_per_category": 3,
+                "adaptive_adjustment_bound_points": 4,
+                "passive_learning_excluded": True,
+                "recorder_payload_contract": "compact_v2",
+            },
             "soak_guidance": (
-                "Let beta.3 run for several days and review Home Assistant logs, browser console, "
-                "Recorder warnings, mapping restoration, and this readiness sensor after restarts."
+                "Run this branch through normal Home Assistant restarts and day-to-day operation. "
+                "Review Home Assistant logs, browser console, Recorder warnings, mapping restoration, "
+                "Recommendation History persistence, Copilot answers, and this readiness sensor."
             ),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "summary": (

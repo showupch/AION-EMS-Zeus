@@ -1,4 +1,4 @@
-"""Stabilization and quality gate for AION EMS Zeus v12.5 beta.
+"""Intelligence-stack quality gate for AION EMS Zeus.
 
 Recorder-safe, recommendation-only health aggregation. It never calls device
 services and does not create a polling loop.
@@ -10,9 +10,9 @@ from typing import Any
 
 
 class IntelligenceQualityGate:
-    """Validate the consolidated v12.5 intelligence stack."""
+    """Validate the consolidated Zeus intelligence stack."""
 
-    VERSION = "1.3-beta.7"
+    VERSION = "1.5-operational-state-semantics"
     ENGINES = (
         "home_profile",
         "anomaly_intelligence",
@@ -47,8 +47,9 @@ class IntelligenceQualityGate:
     @staticmethod
     def _healthy(status: Any) -> bool:
         return str(status or "").strip().lower() in {
-            "ready", "healthy", "active", "normal", "complete", "completed",
+            "ready", "healthy", "active", "running", "normal", "complete", "completed",
             "available", "learning", "partial", "monitoring", "collecting data",
+            "collecting", "observation", "waiting", "no data", "not enough data",
         }
 
     @staticmethod
@@ -123,7 +124,7 @@ class IntelligenceQualityGate:
             "engine_health": engine_health,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "summary": (
-                "The v12.5 intelligence stack passed the quality gate."
+                "The Zeus intelligence stack passed the quality gate."
                 if status == "Healthy"
                 else "Zeus is running safely; review the compact quality-gate issues."
             ),

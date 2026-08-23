@@ -8,15 +8,21 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from homeassistant.helpers.storage import Store
+
 
 class DecisionEngine:
     """Rank explainable energy opportunities without autonomous control."""
 
-    VERSION = "2.3-opportunity-learning"
+    VERSION = "2.6-adaptive-confidence-phase-1"
+    STORAGE_VERSION = 1
+    STORAGE_KEY = "aion_ems_zeus.decision_outcomes"
+    MAX_HISTORY = 120
 
     def __init__(self, event_bus: Any, core: Any) -> None:
         self.event_bus = event_bus
         self.core = core
+        self.store = Store(core.hass, self.STORAGE_VERSION, self.STORAGE_KEY)
         self._lifecycle: dict[str, dict[str, Any]] = {}
         self._history: list[dict[str, Any]] = []
         self._previous_active_ids: set[str] = set()
@@ -26,6 +32,50 @@ class DecisionEngine:
             "mode": "recommendation_only",
             "opportunities": [],
         }
+
+    async def async_load(self) -> None:
+        stored = await self.store.async_load()
+        if isinstance(stored, dict):
+            history = stored.get("history")
+            lifecycle = stored.get("lifecycle")
+            if isinstance(history, list):
+                self._history = [
+                    x for x in history
+                    if isinstance(x, dict) and self._history_eligible(x)
+                ][-self.MAX_HISTORY:]
+            if isinstance(lifecycle, dict):
+                self._lifecycle = {str(k): dict(v) for k, v in lifecycle.items() if isinstance(v, dict)}
+            self._previous_active_ids = {str(x.get("id")) for x in self._history if x.get("id") and x.get("status") in {"Detected", "Active"}}
+
+    def _schedule_save(self) -> None:
+        payload = {"history": self._history[-self.MAX_HISTORY:], "lifecycle": dict(list(self._lifecycle.items())[-60:]), "saved_at": datetime.now(timezone.utc).isoformat()}
+        try:
+            self.core.hass.async_create_task(self.store.async_save(payload))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _flow_context(*, solar_w: float, house_w: float, import_w: float, export_w: float, soc: float) -> dict[str, Any]:
+        return {"solar_w": round(max(0.0, solar_w), 1), "house_w": round(max(0.0, house_w), 1), "grid_import_w": round(max(0.0, import_w), 1), "grid_export_w": round(max(0.0, export_w), 1), "battery_soc_percent": None if soc < 0 else round(soc, 1)}
+
+    @staticmethod
+    def _outcome_for_expired(record: dict[str, Any], after: dict[str, Any]) -> tuple[str, str]:
+        before = record.get("detected_context") if isinstance(record.get("detected_context"), dict) else {}
+        category = str(record.get("category") or "")
+        before_export, after_export = float(before.get("grid_export_w") or 0), float(after.get("grid_export_w") or 0)
+        before_import, after_import = float(before.get("grid_import_w") or 0), float(after.get("grid_import_w") or 0)
+        before_soc, after_soc = before.get("battery_soc_percent"), after.get("battery_soc_percent")
+        if category in {"battery", "load"} and before_export >= 500:
+            export_drop = before_export - after_export
+            soc_gain = float(after_soc) - float(before_soc) if before_soc is not None and after_soc is not None else None
+            if export_drop >= 250 or (soc_gain is not None and soc_gain >= 2):
+                detail = f"Measured export changed from {before_export:.0f} W to {after_export:.0f} W"
+                if soc_gain is not None:
+                    detail += f"; battery SOC changed by {soc_gain:+.1f} points"
+                return "Observed system response", detail + ". Zeus cannot attribute this change to user action."
+        if category == "grid" and before_import >= 500 and after_import <= before_import - 250:
+            return "Observed system response", f"Measured grid import changed from {before_import:.0f} W to {after_import:.0f} W. Zeus cannot prove the recommendation caused the change."
+        return "Not measurable", "The opportunity ended without enough evidence to attribute a measured benefit or user action."
 
     @staticmethod
     def _summary(engine: Any) -> dict[str, Any]:
@@ -76,6 +126,24 @@ class DecisionEngine:
                 "priority": str(device.get("priority") or "medium").lower(),
             })
         return result[:12]
+
+    @staticmethod
+    def _history_eligible(item: dict[str, Any]) -> bool:
+        """Return True only for genuine advisory/action opportunities.
+
+        Passive observe/hold states stay visible in Decision Intelligence but do
+        not enter persistent Recommendation History.
+        """
+        category = str(item.get("category") or "").strip().lower()
+        identifier = str(item.get("id") or "").strip().lower()
+        action = str(item.get("action") or "").strip().lower()
+        if category == "observe":
+            return False
+        if identifier in {"continue_observing", "no_high_value_action", "hold"}:
+            return False
+        if action in {"keep monitoring current conditions", "continue current operation", "hold", "monitor"}:
+            return False
+        return True
 
     @staticmethod
     def _priority_label(score: int) -> str:
@@ -166,9 +234,12 @@ class DecisionEngine:
             target_valid = bool(target and target.get("name"))
             learning_adjustment = 0
             learning_profile: dict[str, Any] = {}
+            learning_calibration: dict[str, Any] = {}
             try:
+                learning_summary = self.core.opportunity_learning.summary()
                 learning_adjustment = self.core.opportunity_learning.confidence_adjustment(category)
-                learning_profile = (self.core.opportunity_learning.summary().get("category_profiles") or {}).get(category, {})
+                learning_profile = (learning_summary.get("category_profiles") or {}).get(category, {})
+                learning_calibration = ((learning_summary.get("adaptive_confidence") or {}).get("category_calibration") or {}).get(category, {})
             except Exception:
                 pass
             item_confidence = int(max(20, min(99, confidence + learning_adjustment)))
@@ -193,7 +264,7 @@ class DecisionEngine:
                 "expected_benefit": benefit_text,
                 "confidence_percent": item_confidence,
                 "confidence_breakdown": parts,
-                "opportunity_learning": {"confidence_adjustment": learning_adjustment, "category_profile": learning_profile},
+                "opportunity_learning": {"confidence_adjustment": learning_adjustment, "category_profile": learning_profile, "adaptive_confidence": learning_calibration},
                 "expected_benefit_value_kwh": expected_benefit_value_kwh,
                 "actual_benefit_value_kwh": None,
                 "risk": self._risk(score, quality),
@@ -203,6 +274,7 @@ class DecisionEngine:
                 "outcome_status": "Not measured",
                 "actual_benefit": None,
                 "measurement_note": "Outcome evaluation will only be shown when Zeus has enough measured before/after data.",
+                "detected_context": previous.get("detected_context") or self._flow_context(solar_w=solar_w, house_w=house_w, import_w=import_w, export_w=export_w, soc=soc),
             }
             item["quality_gate"] = self._quality_gate(item, quality)
             item["eligible"] = bool(item["quality_gate"]["eligible"])
@@ -251,7 +323,8 @@ class DecisionEngine:
                 "The system is expected to remain stable without unnecessary changes.", 35, 25, None, window)
 
         # Resolve recommendations that were active on the previous refresh but are no longer valid.
-        current_ids = {item["id"] for item in opportunities}
+        history_opportunities = [item for item in opportunities if self._history_eligible(item)]
+        current_ids = {item["id"] for item in history_opportunities}
         for missing_id in sorted(self._previous_active_ids - current_ids):
             previous = self._lifecycle.get(missing_id, {})
             previous["status"] = "Expired"
@@ -261,12 +334,16 @@ class DecisionEngine:
                 if record.get("id") == missing_id and record.get("status") in {"Detected", "Active"}:
                     record["status"] = "Expired"
                     record["resolved_at"] = now
-                    record["outcome_status"] = "Not measurable"
-                    record["measurement_note"] = "The opportunity ended before a verified completion signal was available."
+                    record["resolved_context"] = self._flow_context(solar_w=solar_w, house_w=house_w, import_w=import_w, export_w=export_w, soc=soc)
+                    outcome_status, measurement_note = self._outcome_for_expired(record, record["resolved_context"])
+                    record["outcome_status"] = outcome_status
+                    record["measurement_note"] = measurement_note
                     break
 
-        # Keep one compact history record per recommendation lifecycle.
-        for item in opportunities:
+        # Keep one compact history record per genuine recommendation lifecycle.
+        # Passive observe/hold states remain available in Decision Intelligence
+        # but are intentionally excluded from persistent Recommendation History.
+        for item in history_opportunities:
             existing = next((record for record in reversed(self._history) if record.get("id") == item["id"] and record.get("status") in {"Detected", "Active"}), None)
             snapshot = {
                 "id": item["id"], "title": item["title"], "action": item["action"],
@@ -281,12 +358,14 @@ class DecisionEngine:
                 "measurement_note": item.get("measurement_note"),
                 "confidence_percent": item["confidence_percent"],
                 "created_at": item["created_at"], "updated_at": now,
+                "detected_context": item.get("detected_context"),
+                "resolved_context": item.get("resolved_context"),
             }
             if existing is None:
                 self._history.append(snapshot)
             else:
                 existing.update(snapshot)
-        self._history = self._history[-60:]
+        self._history = self._history[-self.MAX_HISTORY:]
         self._previous_active_ids = current_ids
 
         opportunities.sort(key=lambda item: (not item.get("eligible", False), -item["priority_score"], -item["confidence_percent"], item["title"]))
@@ -319,6 +398,11 @@ class DecisionEngine:
             "recommendation_quality_gate": primary.get("quality_gate", {}),
             "recommendation_history": list(reversed(self._history[-40:])),
             "history_counts": {status: sum(1 for item in self._history if item.get("status") == status) for status in ("Active", "Completed", "Expired", "Ignored")},
+            "history_active_opportunity_count": len(history_opportunities),
+            "history_quality_gate": {
+                "passive_observe_excluded": True,
+                "eligible_categories": sorted({str(item.get("category") or "") for item in history_opportunities}),
+            },
             "lifecycle": {key: dict(value) for key, value in list(self._lifecycle.items())[-20:]},
             "candidate_devices": loads,
             "live_context": {"solar_w": round(solar_w, 1), "home_w": round(house_w, 1), "grid_import_w": round(import_w, 1), "grid_export_w": round(export_w, 1), "battery_soc_percent": None if soc < 0 else round(soc, 1)},
@@ -326,6 +410,7 @@ class DecisionEngine:
             "recorder_safe": True,
             "safety": "Recommendation only. No device, inverter or battery services are called.",
         }
+        self._schedule_save()
         try:
             self.event_bus.publish("DecisionEngineUpdated", "DecisionEngine", {"decision": primary["id"], "score": primary["priority_score"], "confidence": confidence})
         except Exception:

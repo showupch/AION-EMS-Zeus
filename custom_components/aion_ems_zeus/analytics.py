@@ -3336,6 +3336,58 @@ class SchedulerEngine:
             "assumption": assumption,
         }
 
+    def _evidence_rank(self, item: dict[str, Any], forecast_confidence: Any) -> dict[str, Any]:
+        """Return a transparent evidence-aware recommendation score.
+
+        This score re-orders advisory recommendations only. It does not change
+        forecast allocation, device state, energy accounting, or profile
+        qualification. If no extra evidence exists, the original Scheduler
+        score remains the effective fallback.
+        """
+        base = self._number(item.get("score"))
+        evidence = item.get("profile_evidence") if isinstance(item.get("profile_evidence"), dict) else {}
+        historical = evidence.get("historical_profile") if isinstance(evidence.get("historical_profile"), dict) else {}
+
+        supported = bool(item.get("quantification_supported"))
+        active_days = max(0.0, self._number(historical.get("active_days")))
+        maturity = historical.get("maturity_percent")
+        if maturity is None:
+            maturity = min(100.0, active_days / 5.0 * 100.0)
+        maturity = max(0.0, min(100.0, self._number(maturity)))
+
+        # Qualified/registered evidence gets the strongest confidence bonus.
+        # Learning history earns only a bounded maturity bonus and can never
+        # masquerade as a fully qualified profile.
+        qualification_bonus = 18.0 if supported else 0.0
+        maturity_bonus = 0.0 if supported else maturity * 0.12
+
+        fc = max(0.0, min(100.0, self._number(forecast_confidence)))
+        forecast_bonus = fc * 0.08 if fc > 0 else 0.0
+
+        # Registered timing constraints are evidence that a window is relevant,
+        # not proof the load needs to run.
+        constraint_bonus = 3.0 if item.get("constraints_applied") else 0.0
+
+        # Tariff value is used only when the profile is already quantified.
+        saving = item.get("estimated_saving")
+        tariff_bonus = 0.0
+        if supported and saving is not None:
+            tariff_bonus = min(8.0, max(0.0, self._number(saving)) * 8.0)
+
+        total = base + qualification_bonus + maturity_bonus + forecast_bonus + constraint_bonus + tariff_bonus
+        return {
+            "score": round(total, 1),
+            "base_scheduler_score": round(base, 1),
+            "qualification_bonus": round(qualification_bonus, 1),
+            "maturity_bonus": round(maturity_bonus, 1),
+            "forecast_bonus": round(forecast_bonus, 1),
+            "constraint_bonus": round(constraint_bonus, 1),
+            "tariff_bonus": round(tariff_bonus, 1),
+            "historical_maturity_percent": round(maturity, 1),
+            "profile_supported": supported,
+            "policy": "Advisory re-ranking only; original Scheduler score remains fallback. No EV SOC/need or appliance availability is inferred.",
+        }
+
     def _allowed(self, device: dict[str, Any], start: datetime, end: datetime) -> bool:
         earliest = self._dt(device.get("earliest_start") or device.get("schedule_earliest"))
         deadline = self._dt(device.get("deadline") or device.get("schedule_deadline") or device.get("latest_end"))
@@ -3639,14 +3691,25 @@ class SchedulerEngine:
                 "mode": "recommendation_only",
             })
 
-        tomorrow_plan.sort(key=lambda x: (-self._number(x.get("score")), -self._number(x.get("solar_coverage_percent")), str(x.get("suggested_start") or "")))
+        forecast_confidence = forecast.get("confidence_percent") or forecast.get("confidence")
+        for item in schedule:
+            evidence_rank = self._evidence_rank(item, forecast_confidence)
+            item["evidence_rank_score"] = evidence_rank["score"]
+            item["evidence_rank"] = evidence_rank
+        for item in tomorrow_plan:
+            evidence_rank = self._evidence_rank(item, forecast_confidence)
+            item["evidence_rank_score"] = evidence_rank["score"]
+            item["evidence_rank"] = evidence_rank
+
+        tomorrow_plan.sort(key=lambda x: (-self._number(x.get("evidence_rank_score"), self._number(x.get("score"))), -self._number(x.get("score")), -self._number(x.get("solar_coverage_percent")), str(x.get("suggested_start") or "")))
         for rank, item in enumerate(tomorrow_plan, start=1):
             item["planning_rank"] = rank
 
         # Chronological schedule remains the canonical execution-order preview.
         schedule.sort(key=lambda x: x["suggested_start"])
-        # Recommendation order is explicit and separate from chronology.
-        recommendation_order = sorted(schedule, key=lambda x: (-self._number(x.get("score")), -self._number(x.get("solar_coverage_percent")), str(x.get("suggested_start") or "")))
+        # Recommendation order is evidence-aware but safely falls back to the
+        # original Scheduler score whenever no additional evidence exists.
+        recommendation_order = sorted(schedule, key=lambda x: (-self._number(x.get("evidence_rank_score"), self._number(x.get("score"))), -self._number(x.get("score")), -self._number(x.get("solar_coverage_percent")), str(x.get("suggested_start") or "")))
         for rank, item in enumerate(recommendation_order, start=1):
             item["planning_rank"] = rank
 
@@ -3670,8 +3733,9 @@ class SchedulerEngine:
             if item.get("quantification_supported"):
                 bucket["supported_energy_kwh"] += self._number(item.get("expected_energy_kwh"))
                 bucket["supported_solar_covered_energy_kwh"] += self._number(item.get("expected_energy_kwh")) * self._number(item.get("solar_coverage_percent")) / 100.0
-            if self._number(item.get("score")) > bucket["highest_score"]:
-                bucket["highest_score"] = self._number(item.get("score"))
+            item_rank_score = self._number(item.get("evidence_rank_score"), self._number(item.get("score")))
+            if item_rank_score > bucket["highest_score"]:
+                bucket["highest_score"] = item_rank_score
                 bucket["best_window"] = item.get("suggested_start")
                 bucket["confidence_percent"] = int(self._number(item.get("confidence_percent")))
         role_plan = sorted(roles.values(), key=lambda x: (-x["highest_score"], str(x["role"])))
@@ -3699,6 +3763,8 @@ class SchedulerEngine:
                 "qualification_rule": evidence.get("qualification_rule"),
                 "historical_status": historical.get("status"),
                 "historical_active_days": historical.get("active_days"),
+                "historical_maturity_percent": historical.get("maturity_percent"),
+                "historical_active_day_frequency_percent": historical.get("active_day_frequency_percent"),
                 "historical_typical_energy_kwh": historical.get("typical_energy_kwh"),
                 "historical_typical_runtime_minutes": historical.get("typical_runtime_minutes"),
                 "historical_typical_power_w": historical.get("typical_power_w"),
@@ -3767,6 +3833,7 @@ class SchedulerEngine:
             },
             "optimizer_context": optimizer.get("best_action"), "summary": summary,
             "method": "Continuous-window allocation using canonical forecast surplus, optional configured tariffs, registered-device priority/timing constraints and evidence-labeled device profiles.",
+            "recommendation_ranking_method": "Evidence-aware advisory re-ranking: original Scheduler score + qualified-profile evidence + bounded historical maturity + forecast confidence + registered constraints + tariff value only when quantified. Original Scheduler score remains fallback.",
             "planning_policy": "Established schedulable load roles may enter advisory planning automatically. Generic/custom and smart-plug loads require explicit flexible=true or flexible-load category/group evidence. Default profiles may rank recommendations but cannot create quantified kWh/CHF opportunity. Functional roles aggregate registered devices while individual devices remain distinct.",
             "limitations": limitations,
             "safety": "Recommendation only. Zeus does not call services, start devices, change schedules or modify registry data.",
@@ -4257,6 +4324,8 @@ class DeviceAnalyticsEngine:
                 "quantification_supported": False,
                 "active_days": 0,
                 "profile_window_days": 60,
+                "maturity_percent": 0,
+                "active_day_frequency_percent": 0.0,
                 "aligned_recorder_runtime_days": 0,
                 "aligned_datalake_runtime_days": 0,
                 "source": "Device Analytics · Recorder energy + Data Lake runtime · local-day aligned",
@@ -4310,11 +4379,22 @@ class DeviceAnalyticsEngine:
             "data_lake_device_daily_summary": sum(1 for x in recent if x["energy_source"] == "data_lake_device_daily_summary"),
         }
 
+        # Evidence maturity reports quantity only; profile stability remains a
+        # separate mandatory qualification gate.
+        maturity_percent = int(max(0, min(100, round(count / 5.0 * 100.0))))
+        observed_days = sorted({
+            str(day) for day, rows in lake_days.items()
+            if isinstance(rows, dict) and isinstance(rows.get(device_id), dict)
+        })[-60:]
+        active_day_frequency = (count / len(observed_days) * 100.0) if observed_days else 0.0
+
         return {
             "status": "supported" if supported else "insufficient_evidence",
             "quantification_supported": supported,
             "active_days": count,
             "profile_window_days": 60,
+            "maturity_percent": maturity_percent,
+            "active_day_frequency_percent": round(active_day_frequency, 1),
             "aligned_recorder_runtime_days": source_counts["ha_recorder_daily_statistics"],
             "aligned_datalake_runtime_days": source_counts["data_lake_device_daily_summary"],
             "typical_energy_kwh": round(median_energy, 3),
