@@ -3336,6 +3336,58 @@ class SchedulerEngine:
             "assumption": assumption,
         }
 
+    def _device_need_evidence(self, device: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+        """Distinguish schedulable capability from evidence of a current need.
+
+        Historical behavior can qualify a typical cycle profile, but it does not
+        prove that today's appliance cycle is needed. Available solar never creates
+        a device need by itself.
+        """
+        truthy_flags = []
+        for key in (
+            "needs_run", "run_required", "cycle_required", "schedule_required",
+            "pending_cycle", "needs_charge", "charge_required",
+        ):
+            if device.get(key) is True:
+                truthy_flags.append(key)
+
+        deadline = device.get("deadline") or device.get("schedule_deadline") or device.get("latest_end")
+        earliest = device.get("earliest_start") or device.get("schedule_earliest")
+
+        historical = profile.get("historical_evidence") if isinstance(profile.get("historical_evidence"), dict) else {}
+        active_days = int(self._number(historical.get("active_days"), 0))
+        maturity = self._number(historical.get("maturity_percent"), min(100.0, active_days * 5.0))
+        pattern_known = bool(profile.get("profile_source") == "device_analytics_historical_profile" and active_days >= 5)
+
+        explicit_need = bool(truthy_flags or deadline)
+        if explicit_need:
+            status = "required"
+            reason = "Explicit registered need/deadline evidence says this flexible load currently requires scheduling."
+            confidence = 100
+        elif pattern_known:
+            status = "pattern_known_no_current_need"
+            reason = "Zeus has a qualified historical cycle profile, but no evidence says a cycle is currently needed."
+            confidence = int(max(40.0, min(90.0, maturity)))
+        else:
+            status = "need_unknown"
+            reason = "This load can be planned, but no current need-to-run evidence is available."
+            confidence = None
+
+        return {
+            "status": status,
+            "should_schedule_now": explicit_need,
+            "explicit_need": explicit_need,
+            "explicit_need_flags": truthy_flags,
+            "earliest_start": earliest,
+            "deadline": deadline,
+            "historical_pattern_known": pattern_known,
+            "historical_active_days": active_days,
+            "historical_maturity_percent": round(maturity, 1),
+            "confidence_percent": confidence,
+            "reason": reason,
+            "policy": "Available solar and historical cadence alone never prove that a device needs to run.",
+        }
+
     def _evidence_rank(self, item: dict[str, Any], forecast_confidence: Any) -> dict[str, Any]:
         """Return a transparent evidence-aware recommendation score.
 
@@ -3477,12 +3529,39 @@ class SchedulerEngine:
                 device["type"] = dtype
                 flexible.append(device)
         flexible.sort(key=lambda d: self.PRIORITY_WEIGHT.get(str(d.get("priority") or "medium").lower(), 15.0), reverse=True)
+
+        need_diagnostics: list[dict[str, Any]] = []
+        schedulable_flexible: list[dict[str, Any]] = []
+        deferred_no_need: list[dict[str, Any]] = []
+        for device in schedulable_flexible:
+            profile = self._profile(device)
+            need = self._device_need_evidence(device, profile)
+            enriched = dict(device)
+            enriched["_need_evidence"] = need
+            need_diagnostics.append({
+                "device_id": device.get("id"),
+                "device_name": device.get("name") or device.get("id"),
+                "device_type": device.get("type") or "custom",
+                **need,
+            })
+            if need.get("should_schedule_now"):
+                schedulable_flexible.append(enriched)
+            else:
+                deferred_no_need.append({
+                    "device_id": device.get("id"),
+                    "device_name": device.get("name") or device.get("id"),
+                    "device_type": device.get("type") or "custom",
+                    "need_evidence": need,
+                    "profile_source": profile.get("profile_source"),
+                    "quantification_supported": bool(profile.get("quantification_supported")),
+                })
+
         reserved: dict[str, float] = {}
         schedule: list[dict[str, Any]] = []
         unscheduled: list[dict[str, Any]] = []
 
         candidate_diagnostics: list[dict[str, Any]] = []
-        for device in flexible:
+        for device in schedulable_flexible:
             profile = self._profile(device)
             power, runtime, energy = profile["power_w"], profile["runtime_minutes"], profile["energy_kwh"]
             hours_needed = max(1, int((runtime + 59) // 60))
@@ -3541,6 +3620,9 @@ class SchedulerEngine:
             item = {
                 "device_id": device.get("id"), "device_name": device.get("name") or device.get("id"),
                 "device_type": dtype, "role": self.ROLE_LABELS.get(dtype, dtype.replace("_", " ").title()), "icon": device.get("icon"),
+                "need_evidence": device.get("_need_evidence") or {},
+                "need_status": (device.get("_need_evidence") or {}).get("status"),
+                "should_schedule_now": True,
                 "priority": device.get("priority") or "medium", "suggested_start": start.isoformat(),
                 "suggested_end": end.isoformat(), "duration_minutes": runtime,
                 "expected_power_w": round(power, 1), "expected_energy_kwh": round(energy, 3),
@@ -3652,6 +3734,9 @@ class SchedulerEngine:
                 "device_name": device.get("name") or device.get("id"),
                 "device_type": dtype,
                 "role": self.ROLE_LABELS.get(dtype, dtype.replace("_", " ").title()),
+                "need_evidence": device.get("_need_evidence") or {},
+                "need_status": (device.get("_need_evidence") or {}).get("status"),
+                "should_schedule_now": True,
                 "priority": device.get("priority") or "medium",
                 "suggested_start": start.isoformat(),
                 "suggested_end": end.isoformat(),
@@ -3794,12 +3879,19 @@ class SchedulerEngine:
             limitations.append(f"{assumed_count} planned load(s) use type-default or partial profiles. Zeus may rank their windows, but withholds their kWh/CHF from Opportunity Quantification until sufficient device profile evidence exists.")
         if not flexible:
             limitations.append("No registered flexible loads are available to plan.")
-        if flexible and not raw_slots:
+        if flexible and not schedulable_flexible:
+            limitations.append("Flexible loads exist, but none has current need-to-run evidence. Zeus will not recommend running a device merely because solar is available.")
+        if schedulable_flexible and not raw_slots:
             limitations.append("Canonical future forecast slots are unavailable, so no flexible-load window can be recommended.")
 
         status = "Ready" if raw_slots else "Waiting"
-        summary = (f"Planned {len(schedule)} flexible load(s); {len(supported)} have sufficient profile evidence for quantified opportunity, with {avg_solar:.0f}% average forecast solar coverage."
-                   if schedule else ("No flexible-load candidate window is available in the rolling 48-hour canonical forecast horizon." if flexible else "No flexible-load plan yet; register a flexible device."))
+        summary = (
+            f"Planned {len(schedule)} need-supported flexible load(s); {len(supported)} have sufficient profile evidence for quantified opportunity, with {avg_solar:.0f}% average forecast solar coverage."
+            if schedule else
+            ("Flexible loads are registered, but none currently has explicit need-to-run evidence." if flexible and not schedulable_flexible else
+             "No flexible-load candidate window is available in the rolling 48-hour canonical forecast horizon." if schedulable_flexible else
+             "No flexible-load plan yet; register a flexible device.")
+        )
         self.last = {
             "status": status, "engine": "Intelligent Scheduler", "version": self.VERSION,
             "foundation": "Adaptive Energy Optimization · Flexible Load Planning",
@@ -3811,7 +3903,13 @@ class SchedulerEngine:
             "tomorrow_plan_count": len(tomorrow_plan),
             "tomorrow_candidate_diagnostics": tomorrow_diagnostics,
             "unscheduled_device_count": len(unscheduled), "unscheduled": unscheduled,
-            "flexible_device_count": len(flexible), "total_planned_energy_kwh": total_energy,
+            "flexible_device_count": len(flexible),
+            "need_supported_device_count": len(schedulable_flexible),
+            "deferred_no_need_device_count": len(deferred_no_need),
+            "deferred_no_need_plan": deferred_no_need,
+            "device_need_diagnostics": need_diagnostics,
+            "device_need_policy": "A flexible load is actionable only when explicit current need/deadline evidence exists. Historical cadence and available solar are not enough.",
+            "total_planned_energy_kwh": total_energy,
             "quantified_planned_energy_kwh": supported_energy,
             "quantified_solar_covered_energy_kwh": supported_solar_energy,
             "quantified_device_count": len(supported), "assumption_limited_device_count": assumed_count,
@@ -3834,7 +3932,7 @@ class SchedulerEngine:
             "optimizer_context": optimizer.get("best_action"), "summary": summary,
             "method": "Continuous-window allocation using canonical forecast surplus, optional configured tariffs, registered-device priority/timing constraints and evidence-labeled device profiles.",
             "recommendation_ranking_method": "Evidence-aware advisory re-ranking: original Scheduler score + qualified-profile evidence + bounded historical maturity + forecast confidence + registered constraints + tariff value only when quantified. Original Scheduler score remains fallback.",
-            "planning_policy": "Established schedulable load roles may enter advisory planning automatically. Generic/custom and smart-plug loads require explicit flexible=true or flexible-load category/group evidence. Default profiles may rank recommendations but cannot create quantified kWh/CHF opportunity. Functional roles aggregate registered devices while individual devices remain distinct.",
+            "planning_policy": "Flexible classification only means a load can be planned. Actionable planning additionally requires explicit current need/deadline evidence. Available solar and historical cadence alone never create a need-to-run recommendation. Default profiles may rank only after the need gate and cannot create quantified kWh/CHF opportunity.",
             "limitations": limitations,
             "safety": "Recommendation only. Zeus does not call services, start devices, change schedules or modify registry data.",
         }
