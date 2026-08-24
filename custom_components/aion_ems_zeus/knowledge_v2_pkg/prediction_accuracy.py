@@ -18,7 +18,7 @@ class PredictionAccuracyEngine:
     freshly recalculated forecast with the measurement that already exists.
     """
 
-    LEAD_HOURS = (1, 3, 6)
+    LEAD_HOURS = (1, 3, 6, 12, 24)
     METRICS = ("solar", "home", "grid_import", "grid_export", "battery_soc")
 
     def __init__(self, event_bus: Any, core: Any) -> None:
@@ -27,6 +27,8 @@ class PredictionAccuracyEngine:
         self._samples: deque[dict[str, Any]] = deque(maxlen=168)
         self._pending: deque[dict[str, Any]] = deque(maxlen=96)
         self._queued_markers: deque[str] = deque(maxlen=384)
+        self._daily_pending: deque[dict[str, Any]] = deque(maxlen=45)
+        self._daily_samples: deque[dict[str, Any]] = deque(maxlen=120)
         self._summary: dict[str, Any] = {
             "status": "Collecting",
             "sample_count": 0,
@@ -154,11 +156,86 @@ class PredictionAccuracyEngine:
             })
         self._pending = keep
 
+    def _canonical_daily_rows(self) -> list[dict[str, Any]]:
+        analytics = getattr(self.core, "analytics", None)
+        if analytics is None or not callable(getattr(analytics, "summary", None)):
+            return []
+        try:
+            summary = analytics.summary() or {}
+        except Exception:
+            return []
+        rows = list(((summary.get("chart_history") or {}).get("total") or []))
+        return [dict(row) for row in rows if isinstance(row, dict) and row.get("date")]
+
+    def _capture_daily_forecast(self, now: datetime) -> None:
+        forecast = getattr(self.core, "forecast", None)
+        if forecast is None or not callable(getattr(forecast, "summary", None)):
+            return
+        try:
+            summary = forecast.summary() or {}
+        except Exception:
+            return
+        daily = summary.get("daily_forecast") or summary.get("days") or []
+        if not isinstance(daily, list):
+            return
+        tomorrow = (now.astimezone().date() + timedelta(days=1)).isoformat()
+        row = next((x for x in daily if isinstance(x, dict) and str(x.get("date") or "") == tomorrow), None)
+        if row is None or any(str(x.get("target_date") or "") == tomorrow for x in self._daily_pending):
+            return
+        predicted = {
+            "solar_kwh": self._num(row.get("expected_solar_kwh")),
+            "home_kwh": self._num(row.get("expected_consumption_kwh")),
+            "grid_import_kwh": self._num(row.get("expected_grid_import_kwh")),
+            "grid_export_kwh": self._num(row.get("expected_grid_export_kwh")),
+        }
+        if any(v is not None for v in predicted.values()):
+            self._daily_pending.append({"created_at": now.isoformat(), "target_date": tomorrow, "predicted": predicted, "evidence_method": row.get("evidence_method")})
+
+    def _mature_daily_forecasts(self, now: datetime) -> None:
+        rows = {str(r.get("date")): r for r in self._canonical_daily_rows()}
+        keep: deque[dict[str, Any]] = deque(maxlen=self._daily_pending.maxlen)
+        today = now.astimezone().date().isoformat()
+        for pending in self._daily_pending:
+            target = str(pending.get("target_date") or "")
+            if not target or target >= today:
+                keep.append(pending); continue
+            actual_row = rows.get(target)
+            if actual_row is None:
+                keep.append(pending); continue
+            predicted = pending.get("predicted") or {}
+            actual = {
+                "solar_kwh": self._num(actual_row.get("solar_energy_kwh")),
+                "home_kwh": self._num(actual_row.get("house_energy_kwh")),
+                "grid_import_kwh": self._num(actual_row.get("grid_import_energy_kwh")),
+                "grid_export_kwh": self._num(actual_row.get("grid_export_energy_kwh")),
+            }
+            metrics,errors={},{}
+            for key in actual:
+                pred,act=self._num(predicted.get(key)),actual.get(key)
+                if pred is None or act is None:
+                    metrics[key]=None;errors[key]=None;continue
+                scale=max(abs(act),abs(pred),0.25)
+                metrics[key]=round(max(0.0,100.0-abs(act-pred)/scale*100.0),1)
+                errors[key]=round(act-pred,3)
+            self._daily_samples.append({"target_date":target,"forecast_created_at":pending.get("created_at"),"predicted":predicted,"actual":actual,"metrics":metrics,"errors":errors,"evidence_method":pending.get("evidence_method")})
+        self._daily_pending=keep
+
+    def _daily_accuracy_summary(self) -> dict[str, Any]:
+        result={}
+        for key in ("solar_kwh","home_kwh","grid_import_kwh","grid_export_kwh"):
+            vals=[(s.get("metrics") or {}).get(key) for s in self._daily_samples if isinstance((s.get("metrics") or {}).get(key),(int,float))]
+            errs=[(s.get("errors") or {}).get(key) for s in self._daily_samples if isinstance((s.get("errors") or {}).get(key),(int,float))]
+            mean=sum(errs)/len(errs) if errs else None
+            result[key]={"accuracy_percent":round(sum(vals)/len(vals),1) if vals else None,"matched_days":len(vals),"mean_error_kwh":round(mean,3) if mean is not None else None,"mean_absolute_error_kwh":round(sum(abs(x) for x in errs)/len(errs),3) if errs else None,"bias_direction":"balanced" if mean is None or abs(mean)<0.15 else "under_forecast" if mean>0 else "over_forecast"}
+        return result
+
     def refresh(self) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
         actual = self._actual()
         self._mature_forecasts(now, actual)
+        self._mature_daily_forecasts(now)
         self._capture_forward_forecasts(now)
+        self._capture_daily_forecast(now)
 
         metric_history: dict[str, list[float]] = {key: [] for key in self.METRICS}
         metric_errors: dict[str, list[float]] = {key: [] for key in self.METRICS}
@@ -215,6 +292,11 @@ class PredictionAccuracyEngine:
             "minimum_samples_for_trend": 6,
             "minimum_samples_for_high_trust": 12,
             "forecast_capture_horizons_hours": list(self.LEAD_HOURS),
+            "daily_forecast_accuracy": self._daily_accuracy_summary(),
+            "daily_matched_forecast_count": len(self._daily_samples),
+            "daily_pending_forecast_count": len(self._daily_pending),
+            "recent_daily_forecast_outcomes": list(self._daily_samples)[-14:],
+            "daily_measurement_note": "Daily outcomes compare stored pre-day forecasts only against canonical completed Recorder energy. Missing completed days remain pending and are never estimated.",
             "measurement_note": "Trust uses forecasts captured before their target time and scores them only after an aligned measurement matures. Missing or late pairs are discarded, never estimated.",
             "mode": "forward_matched_measurement_only",
             "control_permission": False,
