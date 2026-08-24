@@ -182,7 +182,7 @@ async def _async_register_frontend(hass: HomeAssistant, version: str) -> None:
         webcomponent_name="aion-ems-zeus-dashboard",
         sidebar_title="AION EMS Energy Flow",
         sidebar_icon="mdi:home-lightning-bolt",
-        module_url=f"{_FRONTEND_URL}?v={version}&build=zeus-14-0-0-stable",
+        module_url=f"{_FRONTEND_URL}?v={version}&build=zeus-14-4-2-entity-backed-inverter-discovery",
         config={"version": version, "domain": DOMAIN},
         require_admin=False,
     )
