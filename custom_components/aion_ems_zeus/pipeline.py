@@ -88,13 +88,15 @@ class IntegrationHub:
         }
 
     def _physical_inverter_candidates(self):
-        """Discover inverters from Home Assistant's Device Registry.
+        """Discover inverter candidates from Home Assistant device/entity evidence.
 
-        Physical devices are the source of truth. Helper entities (utility_meter,
-        template, statistics) may be attached as optional energy candidates, but
-        can never become inverter identities.
+        Device Registry physical devices remain the preferred identity source.
+        A strict entity-backed fallback is also allowed for coherent inverter
+        measurements (notably Modbus installations) when HA exposes usable power
+        and/or energy entities without a dedicated recognized inverter device.
+        Derived helper entities never create an inverter identity by themselves.
         """
-        inverter_brands = ("goodwe", "sungrow", "fronius", "huawei", "solis", "solax", "deye", "victron")
+        inverter_brands = ("goodwe", "sungrow", "fronius", "huawei", "solis", "solax", "deye", "victron", "kostal", "piko", "plenticore")
         entity_reg = er.async_get(self.hass)
         device_reg = dr.async_get(self.hass)
 
@@ -236,6 +238,123 @@ class IntegrationHub:
             })
             best_group["helper_entity_count"] += 1
 
+        # Third pass: entity-backed inverter fallback for generic transports
+        # such as Modbus. This is capability discovery, not direct Modbus access.
+        helper_only_platforms = {"utility_meter", "template", "statistics", "integration"}
+        measurement_terms = {
+            "sensor", "binary", "number", "select", "switch",
+            "power", "leistung", "energy", "energie", "yield", "production",
+            "current", "strom", "voltage", "spannung", "frequency", "frequenz",
+            "status", "state", "ac", "dc", "pv", "solar", "inverter",
+            "day", "daily", "today", "total", "lifetime", "meter",
+            "phase", "l1", "l2", "l3", "w", "kw", "wh", "kwh", "mwh",
+        }
+
+        def entity_identity(entry, state):
+            attrs = state.attributes if state else {}
+            entity_id = str(getattr(entry, "entity_id", "") or "")
+            object_id = entity_id.split(".", 1)[-1]
+            original = str(getattr(entry, "original_name", "") or "")
+            friendly = str(attrs.get("friendly_name", "") or "")
+            raw = " ".join([object_id, original, friendly]).lower()
+            strong = (
+                any(brand in raw for brand in inverter_brands)
+                or "solar inverter" in raw
+                or "inverter" in raw
+            )
+            if not strong:
+                return None
+
+            object_words = re.findall(r"[a-z]+[0-9]*|[0-9]+", object_id.lower())
+            prefix = []
+            for word in object_words:
+                if word in measurement_terms:
+                    break
+                prefix.append(word)
+
+            words = re.findall(r"[a-z]+[0-9]*|[0-9]+", raw)
+            family = [
+                word for word in words
+                if word not in measurement_terms and (len(word) >= 2 or word.isdigit())
+            ]
+
+            if prefix and any(any(brand in token for brand in inverter_brands) for token in prefix):
+                family = prefix
+            if not family:
+                return None
+            return "_".join(family[:6])
+
+        recognized_entity_ids = {
+            entity_id
+            for group in groups.values()
+            for entity_id in group.get("entities", [])
+        }
+        entity_backed = {}
+
+        for entry in entries:
+            entity_id = getattr(entry, "entity_id", None)
+            if not entity_id or entity_id in recognized_entity_ids:
+                continue
+            platform = str(getattr(entry, "platform", "") or "").lower()
+            if platform in helper_only_platforms:
+                continue
+            state = states_by_id.get(entity_id)
+            identity = entity_identity(entry, state)
+            if not identity:
+                continue
+
+            attrs = state.attributes if state else {}
+            device_id = getattr(entry, "device_id", None)
+            key = f"{platform or 'entity'}:{device_id or identity}"
+            group = entity_backed.setdefault(key, {
+                "entity_id": None,
+                "name": identity.replace("_", " ").title(),
+                "device_name": identity.replace("_", " ").title(),
+                "platform": platform or "unknown",
+                "manufacturer": attrs.get("manufacturer"),
+                "model": attrs.get("model"),
+                "device_id": device_id,
+                "identifiers": [],
+                "entity_count": 0,
+                "physical_entity_count": 0,
+                "helper_entity_count": 0,
+                "entities": [],
+                "entity_options": [],
+                "resolution": "entity_backed_inverter",
+                "discovery_evidence": "Home Assistant inverter entities without a recognized dedicated inverter device",
+            })
+            if entity_id in group["entities"] or len(group["entities"]) >= 60:
+                continue
+            group["entities"].append(entity_id)
+            group["entity_options"].append({
+                "entity_id": entity_id,
+                "name": attrs.get("friendly_name") or getattr(entry, "original_name", None) or entity_id,
+                "unit": attrs.get("unit_of_measurement"),
+                "unit_of_measurement": attrs.get("unit_of_measurement"),
+                "device_class": attrs.get("device_class") or getattr(entry, "device_class", None),
+                "state_class": attrs.get("state_class"),
+                "state": str(state.state)[:24] if state else "unavailable",
+                "platform": platform or "unknown",
+                "source": "entity_backed",
+            })
+            group["entity_id"] = group["entity_id"] or entity_id
+
+        for key, group in entity_backed.items():
+            options = group.get("entity_options", [])
+            power_count = sum(
+                1 for x in options
+                if str(x.get("unit") or "") in {"W", "kW"} or x.get("device_class") == "power"
+            )
+            energy_count = sum(
+                1 for x in options
+                if str(x.get("unit") or "") in {"Wh", "kWh", "MWh"} or x.get("device_class") == "energy"
+            )
+            if not power_count and not energy_count:
+                continue
+            group["physical_entity_count"] = len(options)
+            group["entity_count"] = len(options)
+            groups[f"entity:{key}"] = group
+
         rows = list(groups.values())
         for group in rows:
             options = group.get("entity_options", [])
@@ -258,7 +377,7 @@ class IntegrationHub:
                 if item.get("device_class") == "power": score += 30
                 if "ac power" in text or "power ac" in text: score += 40
                 elif "power" in text: score += 10
-                if item.get("source") == "physical_device": score += 10
+                if item.get("source") in {"physical_device", "entity_backed"}: score += 10
                 if any(x in text for x in ("energy", "production", "day", "total")): score -= 100
                 if any(x in text for x in ("battery", "grid", "load", "photovoltaics", "dc power")): score -= 20
                 return score
@@ -289,7 +408,7 @@ class IntegrationHub:
     def _entity_candidates(self, kind):
         if kind == "inverter_adapters":
             return self._physical_inverter_candidates()
-        inverter_brands = ("goodwe", "sungrow", "fronius", "huawei", "solis", "solax", "deye", "victron")
+        inverter_brands = ("goodwe", "sungrow", "fronius", "huawei", "solis", "solax", "deye", "victron", "kostal", "piko", "plenticore")
         rows = []
         inverter_devices = {}
         for state in self.hass.states.async_all():

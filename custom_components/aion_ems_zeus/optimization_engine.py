@@ -165,6 +165,383 @@ class OptimizationIntelligenceEngine:
             result.append(bucket)
         return sorted(result, key=lambda x: (-x["solar_covered_energy_kwh"], str(x["role"])))
 
+    def _strategy_score(
+        self,
+        *,
+        strategy: str,
+        forecast_solar: float | None,
+        forecast_home: float | None,
+        forecast_import: float | None,
+        forecast_export: float | None,
+        planned_energy: float | None,
+        solar_covered_energy: float | None,
+        scheduled_saving: float | None,
+        import_tariff: float | None,
+        export_tariff: float | None,
+        forecast_confidence: float | None,
+    ) -> dict[str, Any]:
+        """Score advisory planning strategies without claiming mathematical optimality.
+
+        This is a transparent heuristic comparison layer over the canonical
+        Forecast/Scheduler outputs. It does not mutate schedules or measured data.
+        """
+        solar=max(0.0,self._num(forecast_solar))
+        home=max(0.0,self._num(forecast_home))
+        imp=max(0.0,self._num(forecast_import))
+        exp=max(0.0,self._num(forecast_export))
+        planned=max(0.0,self._num(planned_energy))
+        solar_cov=max(0.0,self._num(solar_covered_energy))
+        saving=max(0.0,self._num(scheduled_saving))
+        confidence=self._clamp(forecast_confidence) if forecast_confidence is not None else 0.0
+
+        local_use=max(0.0,min(solar,home))
+        self_consumption=(local_use/solar*100.0) if solar>0 else None
+        self_sufficiency=(max(0.0,home-imp)/home*100.0) if home>0 else None
+
+        import_cost=(imp*import_tariff) if import_tariff is not None else None
+        export_value=(exp*export_tariff) if export_tariff is not None else None
+        net_grid_cost=(import_cost-export_value) if import_cost is not None and export_value is not None else None
+
+        if strategy=="lowest_cost":
+            score=50.0
+            if net_grid_cost is not None:
+                score += max(-25.0,min(25.0,25.0-net_grid_cost*8.0))
+            score += min(15.0,saving*10.0)
+            score += min(10.0,confidence*0.10)
+            reason="Prioritizes tariff-aware savings and lower net grid cost using the current forecast and supported flexible-load plan."
+        elif strategy=="highest_self_consumption":
+            score=40.0
+            if self_consumption is not None:
+                score += self_consumption*0.35
+            score += min(15.0,solar_cov*5.0)
+            score += min(10.0,confidence*0.10)
+            reason="Prioritizes using forecast solar locally and shifting supported flexible loads into solar-rich periods."
+        else:
+            score=45.0
+            if self_sufficiency is not None:
+                score += self_sufficiency*0.30
+            score += max(0.0,min(20.0,20.0-imp*4.0))
+            score += min(10.0,confidence*0.10)
+            reason="Prioritizes reducing forecast grid import while preserving the existing recommendation-only planning boundary."
+
+        return {
+            "strategy":strategy,
+            "score":round(max(0.0,min(100.0,score)),1),
+            "reason":reason,
+            "forecast_confidence_percent":round(confidence,1) if forecast_confidence is not None else None,
+            "expected_solar_kwh":round(solar,3),
+            "expected_home_kwh":round(home,3),
+            "expected_grid_import_kwh":round(imp,3),
+            "expected_grid_export_kwh":round(exp,3),
+            "planned_flexible_energy_kwh":round(planned,3) if planned_energy is not None else None,
+            "solar_covered_flexible_energy_kwh":round(solar_cov,3) if solar_covered_energy is not None else None,
+            "estimated_scheduler_saving":round(saving,3) if scheduled_saving is not None else None,
+            "expected_self_consumption_percent":round(self_consumption,1) if self_consumption is not None else None,
+            "expected_self_sufficiency_percent":round(self_sufficiency,1) if self_sufficiency is not None else None,
+            "estimated_import_cost":round(import_cost,3) if import_cost is not None else None,
+            "estimated_export_value":round(export_value,3) if export_value is not None else None,
+            "estimated_net_grid_cost":round(net_grid_cost,3) if net_grid_cost is not None else None,
+            "method":"transparent_heuristic_strategy_comparison_v1",
+            "mathematical_optimum_claimed":False,
+            "recommendation_only":True,
+        }
+
+    def _strategy_comparison(
+        self,
+        *,
+        forecast_solar: float | None,
+        forecast_home: float | None,
+        forecast_import: float | None,
+        forecast_export: float | None,
+        planned_energy: float | None,
+        solar_covered_energy: float | None,
+        scheduled_saving: float | None,
+        import_tariff: float | None,
+        export_tariff: float | None,
+        forecast_confidence: float | None,
+    ) -> dict[str, Any]:
+        rows=[
+            self._strategy_score(strategy="lowest_cost",forecast_solar=forecast_solar,forecast_home=forecast_home,forecast_import=forecast_import,forecast_export=forecast_export,planned_energy=planned_energy,solar_covered_energy=solar_covered_energy,scheduled_saving=scheduled_saving,import_tariff=import_tariff,export_tariff=export_tariff,forecast_confidence=forecast_confidence),
+            self._strategy_score(strategy="highest_self_consumption",forecast_solar=forecast_solar,forecast_home=forecast_home,forecast_import=forecast_import,forecast_export=forecast_export,planned_energy=planned_energy,solar_covered_energy=solar_covered_energy,scheduled_saving=scheduled_saving,import_tariff=import_tariff,export_tariff=export_tariff,forecast_confidence=forecast_confidence),
+            self._strategy_score(strategy="lowest_grid_import",forecast_solar=forecast_solar,forecast_home=forecast_home,forecast_import=forecast_import,forecast_export=forecast_export,planned_energy=planned_energy,solar_covered_energy=solar_covered_energy,scheduled_saving=scheduled_saving,import_tariff=import_tariff,export_tariff=export_tariff,forecast_confidence=forecast_confidence),
+        ]
+        ranked=sorted(rows,key=lambda x:x["score"],reverse=True)
+        return {
+            "status":"Ready" if ranked else "Collecting",
+            "recommended_strategy":ranked[0]["strategy"] if ranked else None,
+            "recommended_score":ranked[0]["score"] if ranked else None,
+            "strategies":ranked,
+            "comparison_note":"Advisory heuristic comparison only. This does not prove a global mathematical optimum and does not alter device schedules.",
+            "control_permission":False,
+        }
+
+    def _parse_slot_time(self, value: Any) -> datetime | None:
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            return stamp.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return None
+
+    def _candidate_windows(
+        self,
+        *,
+        item: dict[str, Any],
+        forecast_rows: list[dict[str, Any]],
+        import_tariff: float | None,
+        export_tariff: float | None,
+    ) -> list[dict[str, Any]]:
+        """Build feasible start windows for one quantified flexible load.
+
+        Only Scheduler rows that are already quantification-supported are accepted.
+        Candidate windows are derived from canonical forecast rows and explicit
+        Scheduler timing boundaries. No device requirement is invented here.
+        """
+        duration_min=max(15,int(self._num(item.get("duration_minutes")) or 60))
+        energy_kwh=max(0.0,self._num(item.get("expected_energy_kwh")))
+        if energy_kwh<=0:
+            return []
+        power_w=max(50.0,self._num(item.get("required_power_w")) or energy_kwh*1000.0/(duration_min/60.0))
+        hours=max(1,int(math.ceil(duration_min/60.0)))
+        earliest=self._parse_slot_time(item.get("earliest_start") or item.get("suggested_start"))
+        latest_end=self._parse_slot_time(item.get("deadline") or item.get("latest_end") or item.get("suggested_end"))
+        candidates=[]
+        for idx,row in enumerate(forecast_rows):
+            start=self._parse_slot_time(row.get("time"))
+            if start is None:
+                continue
+            end=start+timedelta(hours=hours)
+            if earliest and start<earliest:
+                continue
+            if latest_end and end>latest_end:
+                continue
+            if idx+hours>len(forecast_rows):
+                continue
+            span=forecast_rows[idx:idx+hours]
+            if any(self._parse_slot_time(x.get("time")) is None for x in span):
+                continue
+            solar_kwh=sum(max(0.0,self._num(x.get("solar_power_w")))*1.0/1000.0 for x in span)
+            base_import_kwh=sum(max(0.0,self._num(x.get("grid_import_power_w")))*1.0/1000.0 for x in span)
+            base_export_kwh=sum(max(0.0,self._num(x.get("grid_export_power_w")))*1.0/1000.0 for x in span)
+            load_kwh=min(energy_kwh,power_w*hours/1000.0)
+            solar_capture=min(load_kwh,base_export_kwh if base_export_kwh>0 else solar_kwh)
+            extra_import=max(0.0,load_kwh-solar_capture)
+            reduced_export=min(base_export_kwh,solar_capture)
+            cost_delta=None
+            if import_tariff is not None and export_tariff is not None:
+                cost_delta=extra_import*import_tariff-reduced_export*export_tariff
+            candidates.append({
+                "start":start.isoformat(),
+                "end":end.isoformat(),
+                "duration_minutes":duration_min,
+                "energy_kwh":round(energy_kwh,3),
+                "power_w":round(power_w,1),
+                "solar_capture_kwh":round(solar_capture,3),
+                "extra_grid_import_kwh":round(extra_import,3),
+                "reduced_grid_export_kwh":round(reduced_export,3),
+                "estimated_cost_delta":round(cost_delta,4) if cost_delta is not None else None,
+                "slot_index":idx,
+                "slot_hours":hours,
+            })
+        # Bound search width while keeping the most relevant feasible windows.
+        ranked=sorted(
+            candidates,
+            key=lambda x: (
+                x["estimated_cost_delta"] if x["estimated_cost_delta"] is not None else 0.0,
+                x["extra_grid_import_kwh"],
+                -x["solar_capture_kwh"],
+                x["start"],
+            )
+        )
+        return ranked[:10]
+
+    @staticmethod
+    def _windows_overlap(a: dict[str, Any], b: dict[str, Any]) -> bool:
+        try:
+            a0=datetime.fromisoformat(str(a["start"]).replace("Z","+00:00"))
+            a1=datetime.fromisoformat(str(a["end"]).replace("Z","+00:00"))
+            b0=datetime.fromisoformat(str(b["start"]).replace("Z","+00:00"))
+            b1=datetime.fromisoformat(str(b["end"]).replace("Z","+00:00"))
+            return max(a0,b0)<min(a1,b1)
+        except (KeyError,TypeError,ValueError):
+            return False
+
+    def _objective_value(self, schedule: list[dict[str, Any]], objective: str) -> float:
+        import_kwh=sum(self._num(x.get("extra_grid_import_kwh")) for x in schedule)
+        solar_kwh=sum(self._num(x.get("solar_capture_kwh")) for x in schedule)
+        cost=sum(self._num(x.get("estimated_cost_delta")) for x in schedule if x.get("estimated_cost_delta") is not None)
+        if objective=="lowest_cost":
+            return cost
+        if objective=="highest_self_consumption":
+            return -solar_kwh
+        return import_kwh
+
+    def _constrained_schedule_search(
+        self,
+        *,
+        objective: str,
+        schedule_rows: list[dict[str, Any]],
+        forecast_rows: list[dict[str, Any]],
+        import_tariff: float | None,
+        export_tariff: float | None,
+    ) -> dict[str, Any]:
+        """Find the best feasible discrete schedule among supported candidate windows.
+
+        This is an exact enumeration over the bounded candidate set generated for
+        each supported Scheduler load. It therefore claims optimality only within
+        that enumerated discrete feasible set, never a global continuous optimum.
+        """
+        devices=[]
+        for row in schedule_rows[:6]:
+            if row.get("quantification_supported") is not True:
+                continue
+            candidates=self._candidate_windows(
+                item=row,
+                forecast_rows=forecast_rows,
+                import_tariff=import_tariff,
+                export_tariff=export_tariff,
+            )
+            if not candidates:
+                continue
+            devices.append({
+                "device_id":row.get("device_id"),
+                "device_name":row.get("device_name"),
+                "device_type":row.get("device_type"),
+                "candidates":candidates,
+            })
+        if not devices:
+            return {
+                "status":"Collecting",
+                "objective":objective,
+                "feasible_schedule_count":0,
+                "evaluated_schedule_count":0,
+                "schedule":[],
+                "reason":"No quantification-supported flexible loads currently have feasible forecast windows.",
+                "solver_method":"bounded_discrete_enumeration",
+                "optimality_scope":"No feasible candidate schedule.",
+                "control_permission":False,
+            }
+
+        best=None
+        evaluated=0
+        feasible=0
+
+        # One start window per supported device. Prevent overlapping schedules for
+        # identical device IDs; different devices may run concurrently.
+        candidate_lists=[d["candidates"] for d in devices]
+        max_combinations=50000
+        for combo in itertools.product(*candidate_lists):
+            evaluated+=1
+            if evaluated>max_combinations:
+                break
+            chosen=[]
+            valid=True
+            for device,window in zip(devices,combo):
+                row={**window,"device_id":device["device_id"],"device_name":device["device_name"],"device_type":device["device_type"]}
+                if any(x["device_id"]==row["device_id"] and self._windows_overlap(x,row) for x in chosen):
+                    valid=False
+                    break
+                chosen.append(row)
+            if not valid:
+                continue
+            feasible+=1
+            value=self._objective_value(chosen,objective)
+            if best is None or value<best["objective_value"]:
+                best={"objective_value":value,"schedule":chosen}
+
+        if best is None:
+            return {
+                "status":"No feasible schedule",
+                "objective":objective,
+                "feasible_schedule_count":feasible,
+                "evaluated_schedule_count":evaluated,
+                "schedule":[],
+                "reason":"The bounded solver did not find a feasible assignment that satisfies the available constraints.",
+                "solver_method":"bounded_discrete_enumeration",
+                "optimality_scope":"No feasible candidate schedule.",
+                "control_permission":False,
+            }
+
+        schedule=best["schedule"]
+        total_energy=sum(self._num(x.get("energy_kwh")) for x in schedule)
+        solar_capture=sum(self._num(x.get("solar_capture_kwh")) for x in schedule)
+        extra_import=sum(self._num(x.get("extra_grid_import_kwh")) for x in schedule)
+        reduced_export=sum(self._num(x.get("reduced_grid_export_kwh")) for x in schedule)
+        cost_delta=sum(self._num(x.get("estimated_cost_delta")) for x in schedule if x.get("estimated_cost_delta") is not None)
+
+        return {
+            "status":"Ready",
+            "objective":objective,
+            "feasible_schedule_count":feasible,
+            "evaluated_schedule_count":evaluated,
+            "search_truncated":evaluated>max_combinations,
+            "schedule":schedule,
+            "planned_energy_kwh":round(total_energy,3),
+            "solar_capture_kwh":round(solar_capture,3),
+            "extra_grid_import_kwh":round(extra_import,3),
+            "reduced_grid_export_kwh":round(reduced_export,3),
+            "estimated_cost_delta":round(cost_delta,4) if import_tariff is not None and export_tariff is not None else None,
+            "solver_method":"bounded_discrete_enumeration",
+            "optimality_scope":"Best schedule found within the enumerated feasible candidate windows for quantification-supported loads only.",
+            "global_continuous_optimum_claimed":False,
+            "recommendation_only":True,
+            "device_need_policy":"Constrained optimization consumes only Scheduler rows that passed the current need-to-run gate.",
+            "control_permission":False,
+        }
+
+    def _constrained_optimization(
+        self,
+        *,
+        scheduler: dict[str, Any],
+        forecast: dict[str, Any],
+        import_tariff: float | None,
+        export_tariff: float | None,
+    ) -> dict[str, Any]:
+        rows=self._scheduler_rows(scheduler)
+        supported=[x for x in rows if x.get("quantification_supported") is True]
+        forecast_rows=forecast.get("planning_hourly") or forecast.get("hourly") or []
+        forecast_rows=[x for x in forecast_rows if isinstance(x,dict)]
+        results={}
+        for objective in ("lowest_cost","highest_self_consumption","lowest_grid_import"):
+            results[objective]=self._constrained_schedule_search(
+                objective=objective,
+                schedule_rows=supported,
+                forecast_rows=forecast_rows[:48],
+                import_tariff=import_tariff,
+                export_tariff=export_tariff,
+            )
+        ready=[x for x in results.values() if x.get("status")=="Ready"]
+        if not ready:
+            return {
+                "status":"Collecting",
+                "recommended_objective":None,
+                "results":results,
+                "solver_method":"bounded_discrete_enumeration",
+                "recommendation_only":True,
+                "control_permission":False,
+            }
+
+        def rank_value(row):
+            objective=row.get("objective")
+            if objective=="lowest_cost":
+                return self._num(row.get("estimated_cost_delta"))
+            if objective=="highest_self_consumption":
+                return -self._num(row.get("solar_capture_kwh"))
+            return self._num(row.get("extra_grid_import_kwh"))
+
+        recommended=min(ready,key=rank_value)
+        return {
+            "status":"Ready",
+            "recommended_objective":recommended.get("objective"),
+            "recommended_schedule":recommended.get("schedule") or [],
+            "results":results,
+            "solver_method":"bounded_discrete_enumeration",
+            "optimality_scope":"Discrete feasible candidate windows only; no global continuous optimum claim.",
+            "recommendation_only":True,
+            "control_permission":False,
+        }
+
     def refresh(self) -> dict[str, Any]:
         flow = self.core.energy_flow.summary() or {}
         flows = flow.get("flows") if isinstance(flow.get("flows"), dict) else flow
@@ -211,6 +588,13 @@ class OptimizationIntelligenceEngine:
         quantified_schedule = [row for row in schedule if row.get("quantification_supported", True) is True]
         role_summary = self._role_summary(quantified_schedule)
 
+        constrained_optimization = self._constrained_optimization(
+            scheduler=scheduler,
+            forecast=forecast,
+            import_tariff=import_tariff,
+            export_tariff=export_tariff,
+        )
+
         # Keep the Scheduler's advisory plan distinct from the subset that is
         # evidence-supported for Opportunity Quantification. Assumption-limited
         # rows remain useful for recommendation order, but never become
@@ -233,6 +617,19 @@ class OptimizationIntelligenceEngine:
                 for row in quantified_schedule
             )
         scheduled_saving = self._number(scheduler.get("estimated_total_saving")) if bool(scheduler.get("tariff_aware")) and quantified_schedule else None
+
+        strategy_comparison = self._strategy_comparison(
+            forecast_solar=forecast_solar,
+            forecast_home=forecast_home,
+            forecast_import=forecast_import,
+            forecast_export=forecast_export,
+            planned_energy=planned_energy,
+            solar_covered_energy=solar_covered_energy,
+            scheduled_saving=scheduled_saving,
+            import_tariff=import_tariff,
+            export_tariff=export_tariff,
+            forecast_confidence=forecast_confidence,
+        )
 
         opportunities: list[dict[str, Any]] = []
 
@@ -1430,6 +1827,8 @@ class OptimizationIntelligenceEngine:
             "opportunity_quantification": opportunity_quantification,
             "battery_load_coordination": battery_load_coordination,
             "daily_energy_orchestrator": daily_energy_orchestrator,
+            "strategy_comparison": strategy_comparison,
+            "constrained_optimization": constrained_optimization,
             "opportunities": opportunities,
             "lost_opportunities": lost,
             "lost_opportunity_status": "Not quantified in 15.0.0 without interval-aligned historical availability and target evidence.",
