@@ -824,6 +824,31 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       notifications:{renderer:'notificationsPage'}
     };
   }
+  isSourceOrGenerationDevice(d){
+    if(!d||typeof d!=='object')return false;
+    if(d.hybrid_inverter===true)return true;
+    const type=String(d.type||'').trim().toLowerCase().replaceAll('-','_').replaceAll(' ','_');
+    const role=String(d.role||'').trim().toLowerCase().replaceAll('-','_').replaceAll(' ','_');
+    const category=String(d.category||'').trim().toLowerCase().replaceAll('-','_').replaceAll(' ','_');
+    const explicitSourceTypes=new Set(['solar','pv','solar_inverter','pv_inverter','inverter','hybrid_inverter','battery_inverter','generator','wind','wind_turbine','grid','grid_meter','smart_meter','energy_meter']);
+    if(explicitSourceTypes.has(type)||explicitSourceTypes.has(role)||explicitSourceTypes.has(category))return true;
+    const identity=[d.name,d.friendly_name,d.manufacturer,d.model].filter(Boolean).join(' ').toLowerCase();
+    if(/\bfronius\b|\binverter\b|\bphotovoltaic\b|\bpv inverter\b|\bsolar inverter\b|\bgrid meter\b|\bsmart meter\b/.test(identity))return true;
+    const mapped=[d.power_entity,d.energy_entity].filter(Boolean).join(' ').toLowerCase();
+    if(/(?:^|[._-])(solar|pv|inverter|grid_meter|smart_meter)(?:[._-]|$)/.test(mapped))return true;
+    return false;
+  }
+
+  analyticsDeviceRows(period='today'){
+    const attrs=this.s('sensor.aion_ems_zeus_device_analytics')?.attributes||{},devices=Array.isArray(attrs.devices)?attrs.devices:[];
+    const key=({today:'energy_today_kwh',week:'energy_week_kwh',month:'energy_month_kwh',year:'energy_year_kwh',total:'energy_total_kwh'})[period]||'energy_today_kwh';
+    return devices
+      .filter(d=>!this.isSourceOrGenerationDevice(d))
+      .map(d=>({...d,energy_kwh:Math.max(0,Number(d[key]??d.energy_kwh??0)||0)}))
+      .filter(d=>d.energy_kwh>0)
+      .sort((a,b)=>b.energy_kwh-a.energy_kwh);
+  }
+
   navigationSections(){return [
     {id:'statistics',label:'Zeus Intelligence',icon:'mdi:brain',pages:['intelligence_center','device_intelligence','mission_memory']},
     {id:'status',label:'System',icon:'mdi:cog-outline',pages:['knowledge','health','system_health','planning_results','planning_learning','planning_behavior']},
@@ -10853,4 +10878,5 @@ if(!customElements.get('aion-ems-zeus-command-center')) customElements.define('a
 
 
 
-/* AION EMS Zeus HACS Version Comparison Test: v14.0.0-alpha.171 */
+
+/* AION EMS Zeus GitHub Runtime Fix Release: v14.0.0-alpha.172 */
