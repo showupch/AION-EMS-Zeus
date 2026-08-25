@@ -80,6 +80,8 @@ Device mappings can use real Home Assistant power and energy entities.
 This creates a reusable device-information layer that can be used by Zeus dashboards and intelligence features.
 
 ---
+<img width="1473" height="920" alt="image" src="https://github.com/user-attachments/assets/bf8f4f7c-0450-475f-be12-eb0161f72f9e" />
+
 
 ## ♨️ Heat Pump Intelligence & Statistics
 
@@ -152,6 +154,7 @@ DHW temperature must come from a real mapped Home Assistant temperature entity.
 If no real temperature sensor is available, Zeus reports the temperature as unavailable.
 
 ---
+<img width="1465" height="754" alt="image" src="https://github.com/user-attachments/assets/8cd57d43-c875-46d9-aa24-4fd4111b0fc3" />
 
 ## 📊 Energy Statistics
 
@@ -251,6 +254,7 @@ Planning can consider information such as:
 Planning results maintain confidence and evidence information rather than presenting every recommendation with equal certainty.
 
 ---
+<img width="1461" height="879" alt="image" src="https://github.com/user-attachments/assets/dcc98fc3-14b9-459c-9a9e-3ecb022aeca4" />
 
 ## 💰 Finance Intelligence
 
@@ -267,6 +271,7 @@ Depending on the configured data, this can include:
 Financial calculations depend on correctly configured Home Assistant entities and tariff information.
 
 ---
+<img width="1411" height="578" alt="image" src="https://github.com/user-attachments/assets/1c21dee2-6742-45c3-896e-1437ab6f23a3" />
 
 ## 🧠 System Intelligence
 
