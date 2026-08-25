@@ -65,8 +65,18 @@ class FinanceEngine:
         candidates.append((self._num(ha_today), "analytics_ha_energy_today"))
 
         mappings = dict((getattr(self.registry, "data", {}) or {}).get("entity_mappings", {}) or {})
-        mapped = self._state_energy_kwh(mappings.get(mapping_field))
-        candidates.append((mapped, f"mapped:{mappings.get(mapping_field)}" if mappings.get(mapping_field) else "mapped_daily"))
+        mapped_entity = str(mappings.get(mapping_field) or "").strip()
+        total_field = mapping_field.replace("_today", "_total") if mapping_field.endswith("_today") else ""
+        total_entity = str(mappings.get(total_field) or "").strip() if total_field else ""
+        duplicate_today_total = bool(mapped_entity and total_entity and mapped_entity == total_entity)
+
+        # If the "today" slot points to the exact same entity as the cumulative
+        # total slot, the raw state is a lifetime counter and must not compete
+        # with canonical daily/Recorder values in Finance.
+        if not duplicate_today_total:
+            mapped = self._state_energy_kwh(mapped_entity)
+            candidates.append((mapped, f"mapped:{mapped_entity}" if mapped_entity else "mapped_daily"))
+
         value, source = max(candidates, key=lambda item: item[0])
         return value, source
 

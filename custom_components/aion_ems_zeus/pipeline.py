@@ -1680,11 +1680,33 @@ class DataLake:
             daily.setdefault(f"{energy_key}_method", "power_integration")
             return
         value = max(float(value), 0.0)
-        if field in today_fields:
+
+        # A configuration export can legally contain the same cumulative entity
+        # in both a *_today and *_total slot (for example a vendor only exposes
+        # one lifetime battery-charge counter). Never trust the field label alone:
+        # when the resolved "today" entity is also mapped as the corresponding
+        # total source, normalize it as a cumulative counter instead of exposing
+        # the lifetime state as today's energy.
+        duplicate_today_total = False
+        if field in today_fields and entity_id:
+            try:
+                mapping = self.data_bus.energy_flow.mapping.summary()
+                mapped = mapping.get("mapped", {}) if isinstance(mapping, dict) else {}
+            except Exception:
+                mapped = {}
+            duplicate_today_total = any(
+                str((mapped.get(total_field) or {}).get("entity_id") or "").strip() == str(entity_id).strip()
+                for total_field in total_fields
+            )
+
+        if field in today_fields and not duplicate_today_total:
             daily[energy_key] = round(value, 4)
             daily[f"{energy_key}_method"] = "measured_daily_energy"
             daily[f"{energy_key}_source"] = entity_id
             return
+        if duplicate_today_total:
+            daily[f"{energy_key}_mapping_normalized"] = "duplicate_today_total_entity"
+
         # Battery totals use Zeus's own persistent delta recorder. The tracker is
         # global rather than day-local, so a Fronius sunset boundary or a source
         # reset cannot silently restart the daily calculation.
@@ -1714,7 +1736,10 @@ class DataLake:
                 daily[energy_key] = round(float(daily.get(energy_key, 0.0) or 0.0) + delta, 4)
             else:
                 daily.setdefault(energy_key, 0.0)
-            daily[f"{energy_key}_method"] = "zeus_persistent_total_delta_recorder"
+            daily[f"{energy_key}_method"] = (
+                "zeus_persistent_total_delta_recorder_duplicate_today_total"
+                if duplicate_today_total else "zeus_persistent_total_delta_recorder"
+            )
             daily[f"{energy_key}_source"] = entity_id
             daily[f"{energy_key}_last_delta_kwh"] = round(delta, 6)
             return

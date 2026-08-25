@@ -12,6 +12,8 @@ import statistics
 
 from homeassistant.util import dt as dt_util
 from homeassistant.components.energy import async_get_manager
+from homeassistant.components.recorder import get_instance, history
+from homeassistant.components.recorder.util import session_scope
 
 
 class HistoricalAnalyticsEngine:
@@ -3959,6 +3961,8 @@ class DeviceAnalyticsEngine:
         self._recorder_status: dict[str, Any] = {"status": "Not loaded", "entity_count": 0, "row_count": 0}
         self._cop_statistics: dict[str, dict[str, Any]] = {}
         self._cop_statistics_status: dict[str, Any] = {"status": "Not loaded", "entity_count": 0, "row_count": 0}
+        self._compressor_history: dict[str, dict[str, Any]] = {}
+        self._compressor_history_status: dict[str, Any] = {"status": "Not loaded", "entity_count": 0, "row_count": 0}
 
 
     async def async_refresh_recorder_energy(self) -> None:
@@ -3973,6 +3977,7 @@ class DeviceAnalyticsEngine:
             self._recorder_days = {}
             self._recorder_status = {"status": "No mapped device energy entities", "entity_count": 0, "row_count": 0}
             await self._async_refresh_cop_statistics()
+            await self._async_refresh_compressor_history()
             return
         try:
             now = dt_util.now()
@@ -4029,6 +4034,7 @@ class DeviceAnalyticsEngine:
             }
 
         await self._async_refresh_cop_statistics()
+        await self._async_refresh_compressor_history()
 
     async def _async_refresh_cop_statistics(self) -> None:
         """Load direct Heat Pump COP statistics from Home Assistant Recorder."""
@@ -4150,6 +4156,313 @@ class DeviceAnalyticsEngine:
             self._cop_statistics = {}
             self._cop_statistics_status = {
                 "status": "Recorder COP statistics unavailable",
+                "entity_count": len(entity_ids),
+                "row_count": 0,
+                "error": f"{type(err).__name__}: {err}",
+            }
+
+    @staticmethod
+    def _normalize_compressor_state(value: Any) -> str | None:
+        state = str(value or "").strip().lower()
+        if state in {"on", "true", "1", "running", "run", "active", "heating", "compressor_on"}:
+            return "on"
+        if state in {"off", "false", "0", "idle", "inactive", "stopped", "stop", "compressor_off"}:
+            return "off"
+        return None
+
+    async def _async_refresh_compressor_history(self) -> None:
+        """Load timestamped Heat Pump compressor transitions from HA Recorder.
+
+        This is evidence foundation only. Zeus derives observed transitions and
+        completed-run durations, but intentionally does not diagnose short
+        cycling or apply manufacturer-independent cycle thresholds here.
+        """
+        devices = [
+            d for d in self.registry.data.get("devices", [])
+            if str(d.get("type") or "") == "heat_pump"
+            and str(d.get("compressor_state_entity") or "").strip()
+        ]
+        entity_ids = list(dict.fromkeys(str(d.get("compressor_state_entity")).strip() for d in devices))
+        if not entity_ids:
+            self._compressor_history = {}
+            self._compressor_history_status = {
+                "status": "No mapped Heat Pump compressor-state entities",
+                "entity_count": 0,
+                "row_count": 0,
+            }
+            return
+
+        now = dt_util.now()
+        start_local = dt_util.start_of_local_day(now - timedelta(days=7))
+        today_start = dt_util.start_of_local_day(now)
+        start_utc = dt_util.as_utc(start_local)
+        end_utc = dt_util.as_utc(now + timedelta(minutes=1))
+
+        def _query():
+            with session_scope(hass=self.hass, read_only=True) as session:
+                return history.get_significant_states_with_session(
+                    self.hass, session, start_utc, end_utc, entity_ids, None,
+                    True, False, False, True,
+                )
+
+        try:
+            raw = await get_instance(self.hass).async_add_executor_job(_query)
+            result: dict[str, dict[str, Any]] = {}
+            total_rows = 0
+            for entity_id in entity_ids:
+                raw_states = list((raw or {}).get(entity_id, []) or [])
+                total_rows += len(raw_states)
+                normalized: list[tuple[datetime, str]] = []
+                ignored = 0
+                for state in raw_states:
+                    value = self._normalize_compressor_state(getattr(state, "state", None))
+                    changed = getattr(state, "last_changed", None) or getattr(state, "last_updated", None)
+                    if value is None or changed is None:
+                        ignored += 1
+                        continue
+                    stamp = dt_util.as_utc(changed)
+                    if normalized and normalized[-1][1] == value:
+                        continue
+                    normalized.append((stamp, value))
+
+                transitions: list[tuple[datetime, str]] = []
+                previous = None
+                active_start: datetime | None = None
+                last_observed_stop: datetime | None = None
+                completed_runs: list[tuple[datetime, datetime, float]] = []
+                observed_off_intervals: list[tuple[datetime, datetime, float]] = []
+                for stamp, value in normalized:
+                    if previous is None:
+                        # The first Recorder row establishes state at the query
+                        # boundary. It is not evidence of an observed start or
+                        # a known OFF interval beginning at the query boundary.
+                        previous = value
+                        continue
+                    if value == previous:
+                        continue
+                    transitions.append((stamp, value))
+                    if value == "on":
+                        if last_observed_stop is not None and stamp > last_observed_stop:
+                            observed_off_intervals.append(
+                                (last_observed_stop, stamp, (stamp - last_observed_stop).total_seconds() / 60.0)
+                            )
+                        active_start = stamp
+                    elif value == "off":
+                        if active_start is not None and stamp > active_start:
+                            completed_runs.append((active_start, stamp, (stamp - active_start).total_seconds() / 60.0))
+                            active_start = None
+                        last_observed_stop = stamp
+                    previous = value
+
+                today_start_utc = dt_util.as_utc(today_start)
+                starts_today = sum(1 for stamp, value in transitions if value == "on" and stamp >= today_start_utc)
+                stops_today = sum(1 for stamp, value in transitions if value == "off" and stamp >= today_start_utc)
+                completed_today = [run for run in completed_runs if run[1] >= today_start_utc]
+                durations = [run[2] for run in completed_runs if run[2] >= 0]
+                off_intervals = [interval[2] for interval in observed_off_intervals if interval[2] >= 0]
+
+                # Self-relative cycle profile. Tukey's lower fence identifies
+                # statistically unusual short runtimes relative to this Heat
+                # Pump's own observed distribution. It is not a manufacturer
+                # short-cycle threshold or equipment-health diagnosis.
+                median_runtime = round(statistics.median(durations), 1) if durations else None
+                q1_runtime = None
+                q3_runtime = None
+                iqr_runtime = None
+                lower_fence_runtime = None
+                short_runtime_outliers: list[float] = []
+                if len(durations) >= 4:
+                    quartiles = statistics.quantiles(durations, n=4, method="inclusive")
+                    q1_runtime = round(quartiles[0], 1)
+                    q3_runtime = round(quartiles[2], 1)
+                    iqr_runtime = round(quartiles[2] - quartiles[0], 1)
+                    lower_fence_raw = quartiles[0] - (1.5 * (quartiles[2] - quartiles[0]))
+                    lower_fence_runtime = round(max(0.0, lower_fence_raw), 1)
+                    short_runtime_outliers = [duration for duration in durations if duration < lower_fence_raw]
+
+                if len(durations) >= 8 and lower_fence_runtime is not None:
+                    cycle_profile_evidence = "Ready"
+                    cycle_profile_confidence = "High" if len(durations) >= 12 else "Medium"
+                    if short_runtime_outliers:
+                        cycle_profile_status = "Short-runtime outliers observed"
+                        cycle_profile_reason = (
+                            f"{len(short_runtime_outliers)} of {len(durations)} completed runs fall below the self-relative "
+                            f"Tukey lower fence ({lower_fence_runtime:.1f} min). This is a statistical evidence flag, not a fault diagnosis."
+                        )
+                    else:
+                        cycle_profile_status = "No runtime outliers"
+                        cycle_profile_reason = (
+                            f"None of {len(durations)} completed runs fall below the self-relative Tukey lower fence "
+                            f"({lower_fence_runtime:.1f} min). No manufacturer short-cycle threshold is applied."
+                        )
+                elif len(durations) >= 4:
+                    cycle_profile_evidence = "Building baseline"
+                    cycle_profile_confidence = "Limited"
+                    cycle_profile_status = "Baseline building"
+                    cycle_profile_reason = (
+                        f"{len(durations)} completed runs define an initial runtime distribution, but Zeus waits for at least 8 "
+                        "completed observed runs before applying self-relative outlier analysis."
+                    )
+                else:
+                    cycle_profile_evidence = "Insufficient"
+                    cycle_profile_confidence = "Unavailable"
+                    cycle_profile_status = "Insufficient evidence"
+                    cycle_profile_reason = "At least 4 completed observed runs are required to establish a self-relative runtime distribution."
+
+                # Restart-interval profile. Only fully observed OFF -> ON gaps
+                # are used; an OFF state already present at the Recorder query
+                # boundary is never treated as a known interval start.
+                median_off_interval = round(statistics.median(off_intervals), 1) if off_intervals else None
+                off_q1 = None
+                off_q3 = None
+                off_iqr = None
+                rapid_restart_lower_fence = None
+                rapid_restart_outliers: list[float] = []
+                if len(off_intervals) >= 4:
+                    off_quartiles = statistics.quantiles(off_intervals, n=4, method="inclusive")
+                    off_q1 = round(off_quartiles[0], 1)
+                    off_q3 = round(off_quartiles[2], 1)
+                    off_iqr = round(off_quartiles[2] - off_quartiles[0], 1)
+                    rapid_restart_lower_fence_raw = off_quartiles[0] - (1.5 * (off_quartiles[2] - off_quartiles[0]))
+                    rapid_restart_lower_fence = round(max(0.0, rapid_restart_lower_fence_raw), 1)
+                    rapid_restart_outliers = [interval for interval in off_intervals if interval < rapid_restart_lower_fence_raw]
+
+                if len(off_intervals) >= 8 and rapid_restart_lower_fence is not None:
+                    restart_profile_evidence = "Ready"
+                    restart_profile_confidence = "High" if len(off_intervals) >= 12 else "Medium"
+                    if rapid_restart_outliers:
+                        restart_profile_status = "Rapid-restart outliers observed"
+                        restart_profile_reason = (
+                            f"{len(rapid_restart_outliers)} of {len(off_intervals)} fully observed OFF-to-ON intervals fall below the "
+                            f"self-relative Tukey lower fence ({rapid_restart_lower_fence:.1f} min). This is a statistical evidence flag, not a fault diagnosis."
+                        )
+                    else:
+                        restart_profile_status = "No restart outliers"
+                        restart_profile_reason = (
+                            f"None of {len(off_intervals)} fully observed OFF-to-ON intervals fall below the self-relative Tukey lower fence "
+                            f"({rapid_restart_lower_fence:.1f} min). No manufacturer minimum-off-time threshold is applied."
+                        )
+                elif len(off_intervals) >= 4:
+                    restart_profile_evidence = "Building baseline"
+                    restart_profile_confidence = "Limited"
+                    restart_profile_status = "Baseline building"
+                    restart_profile_reason = (
+                        f"{len(off_intervals)} fully observed OFF-to-ON intervals define an initial restart distribution, but Zeus waits for at least 8 "
+                        "intervals before applying self-relative outlier analysis."
+                    )
+                else:
+                    restart_profile_evidence = "Insufficient"
+                    restart_profile_confidence = "Unavailable"
+                    restart_profile_status = "Insufficient evidence"
+                    restart_profile_reason = "At least 4 fully observed OFF-to-ON intervals are required to establish a self-relative restart distribution."
+
+                if cycle_profile_evidence == "Ready" and restart_profile_evidence == "Ready":
+                    cycle_pattern_confidence = "High" if cycle_profile_confidence == "High" and restart_profile_confidence == "High" else "Medium"
+                    if short_runtime_outliers and rapid_restart_outliers:
+                        cycle_pattern_status = "Combined cycle outliers observed"
+                        cycle_pattern_reason = (
+                            f"Recorder history contains both {len(short_runtime_outliers)} short-runtime outlier(s) and "
+                            f"{len(rapid_restart_outliers)} rapid-restart outlier(s) relative to this Heat Pump's own 7-day distributions. "
+                            "Zeus is flagging a pattern for review, not diagnosing equipment short cycling."
+                        )
+                    elif short_runtime_outliers:
+                        cycle_pattern_status = "Short-run outliers observed"
+                        cycle_pattern_reason = (
+                            f"Recorder history contains {len(short_runtime_outliers)} self-relative short-runtime outlier(s), while the observed restart-interval "
+                            "profile has no rapid-restart outliers. This is pattern evidence only."
+                        )
+                    elif rapid_restart_outliers:
+                        cycle_pattern_status = "Rapid-restart outliers observed"
+                        cycle_pattern_reason = (
+                            f"Recorder history contains {len(rapid_restart_outliers)} self-relative rapid-restart outlier(s), while the runtime profile has no "
+                            "short-runtime outliers. This is pattern evidence only."
+                        )
+                    else:
+                        cycle_pattern_status = "No cycle outliers"
+                        cycle_pattern_reason = (
+                            f"Across {len(durations)} completed runs and {len(off_intervals)} fully observed restart intervals, neither self-relative lower-fence "
+                            "analysis found short-side outliers. This does not assert manufacturer compliance or equipment health."
+                        )
+                elif cycle_profile_evidence in {"Ready", "Building baseline"} or restart_profile_evidence in {"Ready", "Building baseline"}:
+                    cycle_pattern_confidence = "Limited"
+                    cycle_pattern_status = "Pattern baseline building"
+                    cycle_pattern_reason = "Runtime and restart-interval evidence are not both mature enough for a combined self-relative cycle-pattern verdict."
+                else:
+                    cycle_pattern_confidence = "Unavailable"
+                    cycle_pattern_status = "Insufficient pattern evidence"
+                    cycle_pattern_reason = "Recorder history does not yet contain enough completed runs and fully observed restart intervals for combined cycle-pattern analysis."
+
+                current_state = normalized[-1][1] if normalized else None
+                last_transition_at = transitions[-1][0] if transitions else None
+                last_transition = transitions[-1][1] if transitions else None
+                last_start = next((stamp for stamp, value in reversed(transitions) if value == "on"), None)
+                last_stop = next((stamp for stamp, value in reversed(transitions) if value == "off"), None)
+                current_state_age_min = None
+                state_anchor = last_transition_at or (normalized[-1][0] if normalized else None)
+                if state_anchor is not None:
+                    current_state_age_min = max(0.0, (end_utc - state_anchor).total_seconds() / 60.0)
+
+                result[entity_id] = {
+                    "status": "Ready" if normalized else "No usable Recorder states",
+                    "source": "Home Assistant Recorder significant states",
+                    "window_days": 7,
+                    "raw_state_count": len(raw_states),
+                    "normalized_state_count": len(normalized),
+                    "ignored_state_count": ignored,
+                    "transition_count": len(transitions),
+                    "starts_today": starts_today,
+                    "stops_today": stops_today,
+                    "completed_cycles_today": len(completed_today),
+                    "completed_cycles_7d": len(completed_runs),
+                    "average_runtime_minutes_7d": round(sum(durations) / len(durations), 1) if durations else None,
+                    "shortest_runtime_minutes_7d": round(min(durations), 1) if durations else None,
+                    "longest_runtime_minutes_7d": round(max(durations), 1) if durations else None,
+                    "median_runtime_minutes_7d": median_runtime,
+                    "runtime_q1_minutes_7d": q1_runtime,
+                    "runtime_q3_minutes_7d": q3_runtime,
+                    "runtime_iqr_minutes_7d": iqr_runtime,
+                    "short_runtime_lower_fence_minutes_7d": lower_fence_runtime,
+                    "short_runtime_outlier_count_7d": len(short_runtime_outliers),
+                    "observed_off_interval_count_7d": len(off_intervals),
+                    "median_off_interval_minutes_7d": median_off_interval,
+                    "off_interval_q1_minutes_7d": off_q1,
+                    "off_interval_q3_minutes_7d": off_q3,
+                    "off_interval_iqr_minutes_7d": off_iqr,
+                    "rapid_restart_lower_fence_minutes_7d": rapid_restart_lower_fence,
+                    "rapid_restart_outlier_count_7d": len(rapid_restart_outliers),
+                    "restart_profile_evidence": restart_profile_evidence,
+                    "restart_profile_confidence": restart_profile_confidence,
+                    "restart_profile_status": restart_profile_status,
+                    "restart_profile_reason": restart_profile_reason,
+                    "cycle_pattern_status": cycle_pattern_status,
+                    "cycle_pattern_confidence": cycle_pattern_confidence,
+                    "cycle_pattern_reason": cycle_pattern_reason,
+                    "cycle_profile_evidence": cycle_profile_evidence,
+                    "cycle_profile_confidence": cycle_profile_confidence,
+                    "cycle_profile_status": cycle_profile_status,
+                    "cycle_profile_reason": cycle_profile_reason,
+                    "current_recorder_state": current_state,
+                    "current_state_age_minutes": round(current_state_age_min, 1) if current_state_age_min is not None else None,
+                    "last_transition": last_transition,
+                    "last_transition_at": last_transition_at.isoformat() if last_transition_at else None,
+                    "last_start_at": last_start.isoformat() if last_start else None,
+                    "last_stop_at": last_stop.isoformat() if last_stop else None,
+                    "query_start": start_utc.isoformat(),
+                    "query_end": end_utc.isoformat(),
+                    "diagnostic_policy": "Observed Recorder transitions only; no short-cycle threshold or equipment diagnosis is applied.",
+                }
+            self._compressor_history = result
+            self._compressor_history_status = {
+                "status": "Ready",
+                "entity_count": len(entity_ids),
+                "row_count": total_rows,
+                "source": "Home Assistant Recorder significant states",
+                "window_days": 7,
+            }
+        except Exception as err:
+            self._compressor_history = {}
+            self._compressor_history_status = {
+                "status": "Recorder compressor history unavailable",
                 "entity_count": len(entity_ids),
                 "row_count": 0,
                 "error": f"{type(err).__name__}: {err}",
@@ -4601,6 +4914,487 @@ class DeviceAnalyticsEngine:
                     except (TypeError, ValueError):
                         pass
 
+            heat_pump_inputs = {}
+            if str(device.get("type") or "") == "heat_pump":
+                for hp_key in (
+                    "thermal_power_entity", "thermal_energy_entity",
+                    "supply_temperature_entity", "return_temperature_entity",
+                    "outdoor_temperature_entity", "compressor_state_entity",
+                    "compressor_runtime_entity", "compressor_starts_entity",
+                    "dhw_temperature_entity", "dhw_energy_entity",
+                    "heating_energy_entity", "cooling_energy_entity",
+                    "operating_mode_entity", "target_temperature_entity",
+                    "jaz_entity",
+                    "heat_carrier_forward_entity", "heat_carrier_return_entity",
+                    "source_in_temperature_entity", "source_out_temperature_entity",
+                    "source_pump_speed_entity", "compressor_activity_entity",
+                    "compressor_speed_entity", "compressor_target_speed_entity",
+                    "dhw_target_temperature_entity",
+                ):
+                    hp_entity = str(device.get(hp_key) or "").strip()
+                    if not hp_entity:
+                        continue
+                    hp_state = self.hass.states.get(hp_entity)
+                    raw_value = hp_state.state if hp_state else None
+                    heat_pump_inputs[hp_key] = {
+                        "entity_id": hp_entity,
+                        "available": bool(hp_state and str(raw_value).strip().lower() not in {"unknown", "unavailable", "none", ""}),
+                        "state": raw_value,
+                        "unit": hp_state.attributes.get("unit_of_measurement") if hp_state else None,
+                        "device_class": hp_state.attributes.get("device_class") if hp_state else None,
+                    }
+
+            heat_pump_intelligence = {}
+            if str(device.get("type") or "") == "heat_pump":
+                def hp_number(key: str) -> float | None:
+                    row = heat_pump_inputs.get(key) or {}
+                    value = row.get("state")
+                    try:
+                        number = float(value)
+                    except (TypeError, ValueError):
+                        return None
+                    return number if row.get("available") else None
+
+                def hp_unit(key: str) -> str | None:
+                    return (heat_pump_inputs.get(key) or {}).get("unit")
+
+                def delta_pair(a_key: str, b_key: str) -> dict[str, Any]:
+                    a = hp_number(a_key)
+                    b = hp_number(b_key)
+                    ua = hp_unit(a_key)
+                    ub = hp_unit(b_key)
+                    if a is None or b is None:
+                        return {"available": False, "value": None, "unit": ua or ub, "reason": "Both mapped measurements are required."}
+                    if ua and ub and ua != ub:
+                        return {"available": False, "value": None, "unit": None, "reason": "Mapped measurement units differ; Zeus will not convert implicitly."}
+                    return {"available": True, "value": round(a - b, 3), "unit": ua or ub, "reason": "Direct difference of mapped Home Assistant measurements."}
+
+                heat_carrier_delta = delta_pair("heat_carrier_forward_entity", "heat_carrier_return_entity")
+                source_delta = delta_pair("source_in_temperature_entity", "source_out_temperature_entity")
+                heating_system_delta = delta_pair("supply_temperature_entity", "return_temperature_entity")
+                target_error = delta_pair("supply_temperature_entity", "target_temperature_entity")
+
+                thermal_power = hp_number("thermal_power_entity")
+                thermal_power_unit = hp_unit("thermal_power_entity")
+                electrical_power_w = max(0.0, float(current_power_w or 0.0))
+                thermal_power_w = None
+                if thermal_power is not None:
+                    if str(thermal_power_unit or "") == "kW":
+                        thermal_power_w = thermal_power * 1000.0
+                    elif str(thermal_power_unit or "") == "W":
+                        thermal_power_w = thermal_power
+
+                derived_live_cop = None
+                derived_live_cop_reason = "Mapped thermal power and electrical power are required."
+                if thermal_power_w is not None and electrical_power_w > 50.0 and thermal_power_w >= 0.0:
+                    derived_live_cop = round(thermal_power_w / electrical_power_w, 3)
+                    derived_live_cop_reason = "Thermal power ÷ measured electrical power; both are live mapped measurements."
+
+                compressor_state = (heat_pump_inputs.get("compressor_state_entity") or {}).get("state")
+                compressor_activity = (heat_pump_inputs.get("compressor_activity_entity") or {}).get("state")
+                compressor_speed = hp_number("compressor_speed_entity")
+                compressor_speed_unit = hp_unit("compressor_speed_entity")
+                compressor_target = hp_number("compressor_target_speed_entity")
+                compressor_target_unit = hp_unit("compressor_target_speed_entity")
+                operating_mode = (heat_pump_inputs.get("operating_mode_entity") or {}).get("state")
+
+                # Heat Pump Intelligence v2: interpret only evidence Zeus can
+                # prove from mapped live measurements and its own Recorder
+                # history. No manufacturer curve or universal efficiency
+                # threshold is introduced here.
+                compressor_binary = self._normalize_compressor_state(compressor_state)
+                if compressor_binary == "on":
+                    interpreted_state = "Running"
+                    interpreted_state_reason = "Mapped compressor state reports active operation."
+                elif compressor_binary == "off" and electrical_power_w > 0.0:
+                    interpreted_state = "Standby"
+                    interpreted_state_reason = "Mapped compressor state is off while measured electrical power remains above zero."
+                elif compressor_binary == "off":
+                    interpreted_state = "Idle"
+                    interpreted_state_reason = "Mapped compressor state is off and measured electrical power is zero."
+                elif electrical_power_w > 10.0:
+                    interpreted_state = "Running"
+                    interpreted_state_reason = "Compressor state is not mapped; measured electrical power is used only as fallback activity evidence."
+                else:
+                    interpreted_state = "Idle"
+                    interpreted_state_reason = "No mapped compressor activity is available and measured electrical power is near zero."
+
+                # Confidence for the operating-state conclusion must be
+                # established before Observed Activity reuses it for
+                # Standby/Idle.  Keep this single source of truth ahead of
+                # the activity classifier to avoid initialization-order bugs.
+                if compressor_binary is not None and power_entity:
+                    state_confidence = "High"
+                    state_confidence_reason = "Mapped compressor state and measured electrical power directly support the operating-state conclusion."
+                elif compressor_binary is not None:
+                    state_confidence = "Medium"
+                    state_confidence_reason = "Mapped compressor state supports activity, but electrical power is not mapped for standby confirmation."
+                elif power_entity:
+                    state_confidence = "Limited"
+                    state_confidence_reason = "Operating state uses electrical power fallback because compressor state is unavailable."
+                else:
+                    state_confidence = "Unavailable"
+                    state_confidence_reason = "No authoritative compressor state or electrical-power evidence is mapped."
+
+                mode_text = str(operating_mode or "").strip()
+                mode_lower = mode_text.lower().replace("_", " ")
+                if any(token in mode_lower for token in ("dhw", "domestic hot water", "hot water", "warmwasser")):
+                    mode_context = "DHW"
+                elif any(token in mode_lower for token in ("cool", "cooling", "kühlen", "kuehlen")):
+                    mode_context = "Cooling"
+                elif any(token in mode_lower for token in ("heat", "heating", "heizen", "heiz")):
+                    mode_context = "Heating"
+                elif mode_text:
+                    mode_context = "Reported mode"
+                else:
+                    mode_context = "Unavailable"
+
+                # Heat Pump Observed Activity Foundation: classify thermal activity
+                # only when independent mapped evidence supports it. Reported mode
+                # strings are evidence, not manufacturer-specific commands.
+                def hp_activity_label(value: Any) -> str | None:
+                    text = str(value or "").strip().lower().replace("_", " ")
+                    if not text:
+                        return None
+                    if any(token in text for token in ("dhw", "domestic hot water", "hot water", "warmwasser")):
+                        return "DHW"
+                    if any(token in text for token in ("cool", "cooling", "kühlen", "kuehlen")):
+                        return "Cooling"
+                    if any(token in text for token in ("heat", "heating", "heizen", "heiz")):
+                        return "Heating"
+                    return None
+
+                activity_from_compressor = hp_activity_label(compressor_activity)
+                activity_from_mode = hp_activity_label(operating_mode)
+                # Reuse the already-proven operating interpretation for inactive
+                # activity states. This deliberately avoids a second, parallel
+                # standby/idle decision path drifting from Intelligence v2.
+                if interpreted_state in {"Standby", "Idle"}:
+                    observed_activity = interpreted_state
+                    observed_activity_confidence = state_confidence
+                    observed_activity_source = "Compressor + power" if power_entity else "Compressor state"
+                    observed_activity_reason = interpreted_state_reason
+                    activity_mode_evidence = "Not active"
+                    activity_mode_reason = "Thermal mode is intentionally not inferred while the compressor is stopped."
+                elif compressor_binary == "on":
+                    if activity_from_compressor and activity_from_mode and activity_from_compressor != activity_from_mode:
+                        observed_activity = "Ambiguous"
+                        observed_activity_confidence = "Limited"
+                        observed_activity_source = "Conflicting mapped modes"
+                        observed_activity_reason = "Mapped compressor-activity and operating-mode evidence disagree on the active thermal mode."
+                        activity_mode_evidence = "Conflict"
+                        activity_mode_reason = f"Compressor activity indicates {activity_from_compressor}; operating mode indicates {activity_from_mode}."
+                    else:
+                        thermal_activity = activity_from_compressor or activity_from_mode
+                        if thermal_activity:
+                            observed_activity = thermal_activity
+                            observed_activity_confidence = "High" if activity_from_compressor and activity_from_mode else "Medium"
+                            observed_activity_source = "Compressor activity + mode" if activity_from_compressor and activity_from_mode else ("Compressor activity" if activity_from_compressor else "Reported mode")
+                            observed_activity_reason = f"Active compressor operation is paired with mapped {thermal_activity} mode evidence."
+                            activity_mode_evidence = thermal_activity
+                            activity_mode_reason = "Mapped active-mode evidence supports the observed thermal activity."
+                        else:
+                            observed_activity = "Active · mode unknown"
+                            observed_activity_confidence = "High"
+                            observed_activity_source = "Compressor state"
+                            observed_activity_reason = "Mapped compressor state proves active operation, but no mapped evidence identifies Heating, DHW or Cooling."
+                            activity_mode_evidence = "Unavailable"
+                            activity_mode_reason = "No mapped compressor-activity or operating-mode value identifies a thermal mode."
+                elif activity_from_compressor and electrical_power_w > 10.0:
+                    observed_activity = activity_from_compressor
+                    observed_activity_confidence = "Limited"
+                    observed_activity_source = "Activity + power fallback"
+                    observed_activity_reason = "Compressor state is unavailable; mapped activity text and measured power provide limited fallback evidence."
+                    activity_mode_evidence = activity_from_compressor
+                    activity_mode_reason = "Mapped compressor-activity text identifies the thermal mode."
+                else:
+                    observed_activity = "Unavailable"
+                    observed_activity_confidence = "Unavailable"
+                    observed_activity_source = "Insufficient evidence"
+                    observed_activity_reason = "Mapped evidence is insufficient to classify observed thermal activity safely."
+                    activity_mode_evidence = activity_from_mode or "Unavailable"
+                    activity_mode_reason = "Reported mode alone is not used to prove active thermal operation."
+
+                available_input_count = sum(1 for item in heat_pump_inputs.values() if item.get("available"))
+                has_efficiency_evidence = bool(cop_available or derived_live_cop is not None)
+
+                # Keep the aggregate confidence fields for API compatibility, but
+                # Intelligence v2.1 exposes confidence per conclusion. A strong
+                # standby conclusion must not imply that COP or mode evidence is
+                # equally complete.
+                if compressor_binary is not None and power_entity and has_efficiency_evidence:
+                    evidence_confidence = "High"
+                    confidence_reason = "Compressor state, electrical power and live efficiency evidence are mapped."
+                elif compressor_binary is not None and power_entity:
+                    evidence_confidence = "Medium"
+                    confidence_reason = "Compressor state and electrical power are mapped; live efficiency evidence is incomplete."
+                elif power_entity or available_input_count >= 2:
+                    evidence_confidence = "Limited"
+                    confidence_reason = "Some live Heat Pump evidence is available, but authoritative compressor/power context is incomplete."
+                else:
+                    evidence_confidence = "Unavailable"
+                    confidence_reason = "Insufficient mapped live evidence for Heat Pump interpretation."
+
+                if mode_text:
+                    mode_confidence = "High"
+                    mode_confidence_reason = "Mode context is reported directly by the mapped Home Assistant operating-mode entity."
+                else:
+                    mode_confidence = "Unavailable"
+                    mode_confidence_reason = "No mapped operating-mode value is available."
+
+                cop_today = ((self._cop_statistics.get(cop_entity) or {}).get("today") or {}) if cop_entity else {}
+                cop_today_avg = cop_today.get("average")
+                cop_today_buckets = int(cop_today.get("bucket_count") or 0)
+                cop_self_delta_pct = None
+                cop_self_assessment = "Unavailable"
+                cop_self_reason = "A positive direct COP and sufficient active Recorder evidence are required."
+                if cop_value is not None and cop_value <= 0:
+                    cop_self_assessment = "Inactive"
+                    cop_self_reason = "Mapped direct COP is zero/inactive; Zeus does not score efficiency while the Heat Pump is inactive."
+                elif cop_value is not None and cop_value > 0 and isinstance(cop_today_avg, (int, float)) and cop_today_avg > 0 and cop_today_buckets >= 2:
+                    cop_self_delta_pct = round(((cop_value - float(cop_today_avg)) / float(cop_today_avg)) * 100.0, 1)
+                    if cop_self_delta_pct >= 15.0:
+                        cop_self_assessment = "Above today average"
+                    elif cop_self_delta_pct <= -15.0:
+                        cop_self_assessment = "Below own today average"
+                    else:
+                        cop_self_assessment = "Near own today average"
+                    cop_self_reason = "Current direct COP compared only with this Heat Pump's active COP average from today."
+                elif cop_value is not None and cop_value > 0:
+                    cop_self_assessment = "Collecting evidence"
+                    cop_self_reason = "Current COP is valid; more active Recorder buckets are required for self-comparison."
+
+                if cop_value is not None and cop_value <= 0 and compressor_binary == "off":
+                    cop_confidence = "High"
+                    cop_confidence_reason = "Mapped direct COP and compressor state agree that efficiency scoring is inactive."
+                elif cop_value is not None and cop_value <= 0:
+                    cop_confidence = "Medium"
+                    cop_confidence_reason = "Mapped direct COP is inactive, but compressor evidence does not independently confirm an inactive operating state."
+                elif cop_value is not None and cop_value > 0 and cop_today_buckets >= 2:
+                    cop_confidence = "High"
+                    cop_confidence_reason = "Valid direct COP is supported by sufficient active Recorder evidence for self-comparison."
+                elif cop_value is not None and cop_value > 0:
+                    cop_confidence = "Medium"
+                    cop_confidence_reason = "Current direct COP is valid, but more active Recorder evidence is needed for a strong self-relative conclusion."
+                elif derived_live_cop is not None:
+                    cop_confidence = "Limited"
+                    cop_confidence_reason = "Live COP can be derived from mapped thermal and electrical power, but self-relative scoring still requires direct COP history."
+                else:
+                    cop_confidence = "Unavailable"
+                    cop_confidence_reason = "No valid live COP evidence is available for an efficiency conclusion."
+
+                # Cross-check independent live signals before Zeus presents a
+                # strong interpretation. This is intentionally conservative:
+                # standby consumption is not a contradiction, and a zero COP
+                # immediately after compressor start is treated as transitional
+                # rather than a fault.
+                evidence_coherence_status = "Unavailable"
+                evidence_coherence_reason = "Independent compressor, power and COP evidence is insufficient for a coherence check."
+                evidence_coherence_confidence = "Unavailable"
+                evidence_coherence_confidence_reason = "No authoritative compressor state is available for cross-checking."
+                if compressor_binary == "off":
+                    if cop_value is not None and cop_value > 0:
+                        evidence_coherence_status = "Conflicting evidence"
+                        evidence_coherence_reason = "Compressor state reports off while the mapped direct COP remains positive."
+                        evidence_coherence_confidence = "High"
+                        evidence_coherence_confidence_reason = "The contradiction is between two directly mapped Home Assistant signals."
+                    elif power_entity and cop_value is not None and cop_value <= 0:
+                        evidence_coherence_status = "Consistent"
+                        evidence_coherence_reason = "Compressor off, measured electrical demand and inactive direct COP agree with an inactive/standby state."
+                        evidence_coherence_confidence = "High"
+                        evidence_coherence_confidence_reason = "Compressor state, electrical power and direct COP provide independent agreeing evidence."
+                    elif power_entity:
+                        evidence_coherence_status = "Consistent"
+                        evidence_coherence_reason = "Compressor off and measured electrical demand are compatible with idle or standby operation; COP cross-check is unavailable."
+                        evidence_coherence_confidence = "Medium"
+                        evidence_coherence_confidence_reason = "Two mapped signals agree, but direct COP is unavailable for an independent efficiency cross-check."
+                    else:
+                        evidence_coherence_status = "Partial"
+                        evidence_coherence_reason = "Compressor state is available, but electrical power and COP evidence are incomplete."
+                        evidence_coherence_confidence = "Limited"
+                        evidence_coherence_confidence_reason = "Only part of the expected independent evidence is mapped."
+                elif compressor_binary == "on":
+                    if power_entity and electrical_power_w <= 10.0:
+                        evidence_coherence_status = "Conflicting evidence"
+                        evidence_coherence_reason = "Compressor state reports on while measured electrical power is near zero."
+                        evidence_coherence_confidence = "High"
+                        evidence_coherence_confidence_reason = "The contradiction is between directly mapped compressor-state and power signals."
+                    elif cop_value is not None and cop_value <= 0:
+                        evidence_coherence_status = "Transitional"
+                        evidence_coherence_reason = "Compressor is running but direct COP is still inactive/zero; Zeus waits for thermal evidence before judging this as a conflict."
+                        evidence_coherence_confidence = "Medium"
+                        evidence_coherence_confidence_reason = "Compressor activity is authoritative, but COP can lag during startup or thermal measurement transitions."
+                    elif power_entity and cop_value is not None and cop_value > 0:
+                        evidence_coherence_status = "Consistent"
+                        evidence_coherence_reason = "Compressor running, measured electrical demand and positive direct COP agree with active heat-pump operation."
+                        evidence_coherence_confidence = "High"
+                        evidence_coherence_confidence_reason = "Three independent mapped signals agree on active operation."
+                    elif power_entity:
+                        evidence_coherence_status = "Partial"
+                        evidence_coherence_reason = "Compressor and electrical power support active operation; direct COP cross-check is unavailable."
+                        evidence_coherence_confidence = "Medium"
+                        evidence_coherence_confidence_reason = "Two mapped operating signals agree, but efficiency evidence is incomplete."
+                    else:
+                        evidence_coherence_status = "Partial"
+                        evidence_coherence_reason = "Compressor reports active operation, but independent electrical-power and COP checks are incomplete."
+                        evidence_coherence_confidence = "Limited"
+                        evidence_coherence_confidence_reason = "Only part of the expected independent evidence is mapped."
+
+                # Evidence triage converts coherence into a conservative user-facing
+                # verdict. This is explicitly about the quality/agreement of mapped
+                # evidence, not a diagnosis of Heat Pump hardware health.
+                if evidence_coherence_status == "Consistent":
+                    evidence_verdict = "No evidence conflict"
+                    evidence_verdict_reason = "Independent mapped signals agree with the current operating interpretation; this is an evidence verdict, not an equipment-health diagnosis."
+                elif evidence_coherence_status == "Transitional":
+                    evidence_verdict = "Observe transition"
+                    evidence_verdict_reason = "Mapped signals can legitimately disagree during startup or thermal measurement transitions; Zeus waits for the evidence to settle."
+                elif evidence_coherence_status == "Conflicting evidence":
+                    evidence_verdict = "Review mapped evidence"
+                    evidence_verdict_reason = "Authoritative mapped signals contradict each other. Review the source entities before drawing an equipment conclusion."
+                elif evidence_coherence_status == "Partial":
+                    evidence_verdict = "Limited evidence"
+                    evidence_verdict_reason = "The available mapped signals support only a partial cross-check; Zeus withholds a stronger evidence verdict."
+                else:
+                    evidence_verdict = "Insufficient evidence"
+                    evidence_verdict_reason = "There is not enough independent mapped evidence for a reliable cross-signal verdict."
+
+                compressor_entity = str(device.get("compressor_state_entity") or "").strip()
+                cycle_evidence = dict(self._compressor_history.get(compressor_entity) or {}) if compressor_entity else {}
+                cycle_evidence_status = str(cycle_evidence.get("status") or "Unavailable")
+                if cycle_evidence_status == "Ready":
+                    cycle_pattern_status = str(cycle_evidence.get("cycle_pattern_status") or "Insufficient pattern evidence")
+                    cycle_pattern_reason = str(cycle_evidence.get("cycle_pattern_reason") or "Combined runtime and restart evidence unavailable.")
+                    cycle_profile_status = str(cycle_evidence.get("cycle_profile_status") or "Insufficient evidence")
+                    cycle_profile_reason = str(cycle_evidence.get("cycle_profile_reason") or "Self-relative runtime profile unavailable.")
+                    if cycle_pattern_status == "No cycle outliers":
+                        cycle_analysis_status = "No cycle outliers"
+                        cycle_analysis_reason = cycle_pattern_reason
+                    elif cycle_pattern_status in {"Combined cycle outliers observed", "Short-run outliers observed", "Rapid-restart outliers observed"}:
+                        cycle_analysis_status = "Review cycle outliers"
+                        cycle_analysis_reason = cycle_pattern_reason
+                    elif cycle_pattern_status == "Pattern baseline building":
+                        cycle_analysis_status = "Pattern baseline building"
+                        cycle_analysis_reason = cycle_pattern_reason
+                    elif cycle_profile_status == "No runtime outliers":
+                        cycle_analysis_status = "Restart baseline building"
+                        cycle_analysis_reason = "Runtime evidence is mature, but more fully observed OFF-to-ON intervals are required before Zeus makes a combined cycle-pattern conclusion."
+                    elif cycle_profile_status == "Short-runtime outliers observed":
+                        cycle_analysis_status = "Review runtime outliers"
+                        cycle_analysis_reason = cycle_profile_reason
+                    else:
+                        cycle_analysis_status = "Baseline building"
+                        cycle_analysis_reason = cycle_profile_reason
+                else:
+                    cycle_analysis_status = "Unavailable"
+                    cycle_analysis_reason = "Timestamped compressor start/stop transitions are not yet available from Home Assistant Recorder; Zeus does not infer cycles from a live state or cumulative starts counter."
+
+                standby_power_w = round(electrical_power_w, 1) if interpreted_state == "Standby" else None
+
+                heat_pump_intelligence = {
+                    "status": "Ready" if heat_pump_inputs else "No mapped advanced inputs",
+                    "heat_carrier_delta_t": heat_carrier_delta,
+                    "source_delta_t": source_delta,
+                    "heating_system_delta_t": heating_system_delta,
+                    "heating_flow_target_error": target_error,
+                    "derived_live_cop": derived_live_cop,
+                    "derived_live_cop_reason": derived_live_cop_reason,
+                    "thermal_power_w": round(thermal_power_w, 1) if thermal_power_w is not None else None,
+                    "electrical_power_w": round(electrical_power_w, 1),
+                    "compressor_state": compressor_state,
+                    "compressor_activity": compressor_activity,
+                    "compressor_speed": compressor_speed,
+                    "compressor_speed_unit": compressor_speed_unit,
+                    "compressor_target_speed": compressor_target,
+                    "compressor_target_speed_unit": compressor_target_unit,
+                    "operating_mode": operating_mode,
+                    "intelligence_version": 2,
+                    "interpreted_operating_state": interpreted_state,
+                    "interpreted_operating_state_reason": interpreted_state_reason,
+                    "mode_context": mode_context,
+                    "evidence_confidence": evidence_confidence,
+                    "evidence_confidence_reason": confidence_reason,
+                    "state_confidence": state_confidence,
+                    "state_confidence_reason": state_confidence_reason,
+                    "mode_confidence": mode_confidence,
+                    "mode_confidence_reason": mode_confidence_reason,
+                    "observed_activity": observed_activity,
+                    "observed_activity_confidence": observed_activity_confidence,
+                    "observed_activity_reason": observed_activity_reason,
+                    "observed_activity_source": observed_activity_source,
+                    "observed_activity_mode_evidence": activity_mode_evidence,
+                    "observed_activity_mode_evidence_reason": activity_mode_reason,
+                    "cop_confidence": cop_confidence,
+                    "cop_confidence_reason": cop_confidence_reason,
+                    "evidence_coherence_status": evidence_coherence_status,
+                    "evidence_coherence_reason": evidence_coherence_reason,
+                    "evidence_coherence_confidence": evidence_coherence_confidence,
+                    "evidence_coherence_confidence_reason": evidence_coherence_confidence_reason,
+                    "evidence_verdict": evidence_verdict,
+                    "evidence_verdict_reason": evidence_verdict_reason,
+                    "available_input_count": available_input_count,
+                    "standby_power_w": standby_power_w,
+                    "cop_self_assessment": cop_self_assessment,
+                    "cop_self_delta_percent": cop_self_delta_pct,
+                    "cop_self_assessment_reason": cop_self_reason,
+                    "cycle_analysis_status": cycle_analysis_status,
+                    "cycle_analysis_reason": cycle_analysis_reason,
+                    "cycle_evidence_status": cycle_evidence_status,
+                    "cycle_evidence_source": cycle_evidence.get("source"),
+                    "cycle_evidence_window_days": cycle_evidence.get("window_days"),
+                    "cycle_raw_state_count": cycle_evidence.get("raw_state_count"),
+                    "cycle_transition_count": cycle_evidence.get("transition_count"),
+                    "cycle_starts_today": cycle_evidence.get("starts_today"),
+                    "cycle_stops_today": cycle_evidence.get("stops_today"),
+                    "cycle_completed_today": cycle_evidence.get("completed_cycles_today"),
+                    "cycle_completed_7d": cycle_evidence.get("completed_cycles_7d"),
+                    "cycle_average_runtime_minutes_7d": cycle_evidence.get("average_runtime_minutes_7d"),
+                    "cycle_shortest_runtime_minutes_7d": cycle_evidence.get("shortest_runtime_minutes_7d"),
+                    "cycle_longest_runtime_minutes_7d": cycle_evidence.get("longest_runtime_minutes_7d"),
+                    "cycle_median_runtime_minutes_7d": cycle_evidence.get("median_runtime_minutes_7d"),
+                    "cycle_runtime_q1_minutes_7d": cycle_evidence.get("runtime_q1_minutes_7d"),
+                    "cycle_runtime_q3_minutes_7d": cycle_evidence.get("runtime_q3_minutes_7d"),
+                    "cycle_runtime_iqr_minutes_7d": cycle_evidence.get("runtime_iqr_minutes_7d"),
+                    "cycle_short_runtime_lower_fence_minutes_7d": cycle_evidence.get("short_runtime_lower_fence_minutes_7d"),
+                    "cycle_short_runtime_outlier_count_7d": cycle_evidence.get("short_runtime_outlier_count_7d"),
+                    "cycle_observed_off_interval_count_7d": cycle_evidence.get("observed_off_interval_count_7d"),
+                    "cycle_median_off_interval_minutes_7d": cycle_evidence.get("median_off_interval_minutes_7d"),
+                    "cycle_off_interval_q1_minutes_7d": cycle_evidence.get("off_interval_q1_minutes_7d"),
+                    "cycle_off_interval_q3_minutes_7d": cycle_evidence.get("off_interval_q3_minutes_7d"),
+                    "cycle_off_interval_iqr_minutes_7d": cycle_evidence.get("off_interval_iqr_minutes_7d"),
+                    "cycle_rapid_restart_lower_fence_minutes_7d": cycle_evidence.get("rapid_restart_lower_fence_minutes_7d"),
+                    "cycle_rapid_restart_outlier_count_7d": cycle_evidence.get("rapid_restart_outlier_count_7d"),
+                    "cycle_restart_profile_evidence": cycle_evidence.get("restart_profile_evidence"),
+                    "cycle_restart_profile_confidence": cycle_evidence.get("restart_profile_confidence"),
+                    "cycle_restart_profile_status": cycle_evidence.get("restart_profile_status"),
+                    "cycle_restart_profile_reason": cycle_evidence.get("restart_profile_reason"),
+                    "cycle_pattern_status": cycle_evidence.get("cycle_pattern_status"),
+                    "cycle_pattern_confidence": cycle_evidence.get("cycle_pattern_confidence"),
+                    "cycle_pattern_reason": cycle_evidence.get("cycle_pattern_reason"),
+                    "cycle_profile_evidence": cycle_evidence.get("cycle_profile_evidence"),
+                    "cycle_profile_confidence": cycle_evidence.get("cycle_profile_confidence"),
+                    "cycle_profile_status": cycle_evidence.get("cycle_profile_status"),
+                    "cycle_profile_reason": cycle_evidence.get("cycle_profile_reason"),
+                    "cycle_current_recorder_state": cycle_evidence.get("current_recorder_state"),
+                    "cycle_current_state_age_minutes": cycle_evidence.get("current_state_age_minutes"),
+                    "cycle_last_transition": cycle_evidence.get("last_transition"),
+                    "cycle_last_transition_at": cycle_evidence.get("last_transition_at"),
+                    "cycle_last_start_at": cycle_evidence.get("last_start_at"),
+                    "cycle_last_stop_at": cycle_evidence.get("last_stop_at"),
+                    "cycle_evidence_policy": cycle_evidence.get("diagnostic_policy") or "Observed Recorder transitions only; no short-cycle threshold or equipment diagnosis is applied.",
+                    "dhw_temperature": hp_number("dhw_temperature_entity"),
+                    "dhw_temperature_unit": hp_unit("dhw_temperature_entity"),
+                    "dhw_target_temperature": hp_number("dhw_target_temperature_entity"),
+                    "dhw_target_temperature_unit": hp_unit("dhw_target_temperature_entity"),
+                    "heating_energy_state": hp_number("heating_energy_entity"),
+                    "heating_energy_unit": hp_unit("heating_energy_entity"),
+                    "dhw_energy_state": hp_number("dhw_energy_entity"),
+                    "dhw_energy_unit": hp_unit("dhw_energy_entity"),
+                    "cooling_energy_state": hp_number("cooling_energy_entity"),
+                    "cooling_energy_unit": hp_unit("cooling_energy_entity"),
+                    "policy": "Measured relationships only. Zeus does not infer manufacturer limits, expected COP, or thermal output when the required measurement is missing.",
+                }
+
             devices.append({
                 "id": device_id,
                 "name": device.get("name") or device_id,
@@ -4625,6 +5419,10 @@ class DeviceAnalyticsEngine:
                 "cop_week_bucket_count": ((self._cop_statistics.get(cop_entity) or {}).get("week") or {}).get("bucket_count") if cop_entity else 0,
                 "cop_month_bucket_count": ((self._cop_statistics.get(cop_entity) or {}).get("month") or {}).get("bucket_count") if cop_entity else 0,
                 "cop_year_bucket_count": ((self._cop_statistics.get(cop_entity) or {}).get("year") or {}).get("bucket_count") if cop_entity else 0,
+                "heat_pump_inputs": heat_pump_inputs,
+                "heat_pump_input_count": len(heat_pump_inputs),
+                "heat_pump_input_policy": "Optional canonical Home Assistant entity mappings; missing values are never estimated.",
+                "heat_pump_intelligence": heat_pump_intelligence,
                 "energy_today_kwh": round(energy, 3),
                 "energy_week_kwh": round(week_energy, 3),
                 "energy_month_kwh": round(month_energy, 3),

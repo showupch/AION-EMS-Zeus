@@ -105,6 +105,30 @@ class RegistryEngine:
         solar_power_entity: str | None = None,
         temperature_entity: str | None = None,
         cop_entity: str | None = None,
+        thermal_power_entity: str | None = None,
+        thermal_energy_entity: str | None = None,
+        supply_temperature_entity: str | None = None,
+        return_temperature_entity: str | None = None,
+        outdoor_temperature_entity: str | None = None,
+        compressor_state_entity: str | None = None,
+        compressor_runtime_entity: str | None = None,
+        compressor_starts_entity: str | None = None,
+        dhw_temperature_entity: str | None = None,
+        dhw_energy_entity: str | None = None,
+        heating_energy_entity: str | None = None,
+        cooling_energy_entity: str | None = None,
+        operating_mode_entity: str | None = None,
+        target_temperature_entity: str | None = None,
+        jaz_entity: str | None = None,
+        heat_carrier_forward_entity: str | None = None,
+        heat_carrier_return_entity: str | None = None,
+        source_in_temperature_entity: str | None = None,
+        source_out_temperature_entity: str | None = None,
+        source_pump_speed_entity: str | None = None,
+        compressor_activity_entity: str | None = None,
+        compressor_speed_entity: str | None = None,
+        compressor_target_speed_entity: str | None = None,
+        dhw_target_temperature_entity: str | None = None,
     ) -> dict[str, Any]:
         return {
             "id": device_id,
@@ -128,6 +152,30 @@ class RegistryEngine:
             "solar_power_entity": solar_power_entity,
             "temperature_entity": temperature_entity,
             "cop_entity": cop_entity,
+            "thermal_power_entity": thermal_power_entity,
+            "thermal_energy_entity": thermal_energy_entity,
+            "supply_temperature_entity": supply_temperature_entity,
+            "return_temperature_entity": return_temperature_entity,
+            "outdoor_temperature_entity": outdoor_temperature_entity,
+            "compressor_state_entity": compressor_state_entity,
+            "compressor_runtime_entity": compressor_runtime_entity,
+            "compressor_starts_entity": compressor_starts_entity,
+            "dhw_temperature_entity": dhw_temperature_entity,
+            "dhw_energy_entity": dhw_energy_entity,
+            "heating_energy_entity": heating_energy_entity,
+            "cooling_energy_entity": cooling_energy_entity,
+            "operating_mode_entity": operating_mode_entity,
+            "target_temperature_entity": target_temperature_entity,
+            "jaz_entity": jaz_entity,
+            "heat_carrier_forward_entity": heat_carrier_forward_entity,
+            "heat_carrier_return_entity": heat_carrier_return_entity,
+            "source_in_temperature_entity": source_in_temperature_entity,
+            "source_out_temperature_entity": source_out_temperature_entity,
+            "source_pump_speed_entity": source_pump_speed_entity,
+            "compressor_activity_entity": compressor_activity_entity,
+            "compressor_speed_entity": compressor_speed_entity,
+            "compressor_target_speed_entity": compressor_target_speed_entity,
+            "dhw_target_temperature_entity": dhw_target_temperature_entity,
             "created_by": "aion_ems",
             "site_id": "home",
         }
@@ -228,6 +276,64 @@ class RegistryEngine:
                         issues.append({"severity": "error", "code": "COP_ENTITY_INVALID", "message": "cop_entity must expose a numeric COP value."})
                     elif unit and unit.lower() not in {"cop", "ratio"}:
                         issues.append({"severity": "warning", "code": "COP_UNIT_UNUSUAL", "message": f"COP sensor unit is '{unit}'. Expected COP or a dimensionless ratio."})
+        heat_pump_optional = {
+            "thermal_power_entity": ("power", {"W", "kW"}),
+            "thermal_energy_entity": ("energy", {"Wh", "kWh", "MWh"}),
+            "dhw_energy_entity": ("energy", {"Wh", "kWh", "MWh"}),
+            "heating_energy_entity": ("energy", {"Wh", "kWh", "MWh"}),
+            "cooling_energy_entity": ("energy", {"Wh", "kWh", "MWh"}),
+            "supply_temperature_entity": ("temperature", {"°C", "C", "°F", "F", "K"}),
+            "return_temperature_entity": ("temperature", {"°C", "C", "°F", "F", "K"}),
+            "outdoor_temperature_entity": ("temperature", {"°C", "C", "°F", "F", "K"}),
+            "dhw_temperature_entity": ("temperature", {"°C", "C", "°F", "F", "K"}),
+            "target_temperature_entity": ("temperature", {"°C", "C", "°F", "F", "K"}),
+            "heat_carrier_forward_entity": ("temperature", {"°C", "C", "°F", "F", "K"}),
+            "heat_carrier_return_entity": ("temperature", {"°C", "C", "°F", "F", "K"}),
+            "source_in_temperature_entity": ("temperature", {"°C", "C", "°F", "F", "K"}),
+            "source_out_temperature_entity": ("temperature", {"°C", "C", "°F", "F", "K"}),
+            "dhw_target_temperature_entity": ("temperature", {"°C", "C", "°F", "F", "K"}),
+        }
+        for key, (expected_class, units) in heat_pump_optional.items():
+            entity_id = device.get(key)
+            if not entity_id:
+                continue
+            if str(device.get("type") or "") != "heat_pump":
+                issues.append({"severity": "error", "code": "HEAT_PUMP_INPUT_DEVICE_TYPE_INVALID", "message": f"{key} is only supported for Heat Pump devices."})
+                continue
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                issues.append({"severity": "error", "code": "ENTITY_NOT_FOUND", "message": f"{key} entity does not exist."})
+                continue
+            unit = str(state.attributes.get("unit_of_measurement") or "").strip()
+            device_class = str(state.attributes.get("device_class") or "").strip().lower()
+            domain = str(entity_id).split(".", 1)[0].lower()
+            numeric_state = False
+            try:
+                float(state.state)
+                numeric_state = True
+            except (TypeError, ValueError):
+                numeric_state = False
+
+            # Target Temperature is a controller setpoint, not necessarily a
+            # measured sensor. Home Assistant integrations commonly expose
+            # writable/requested temperatures as number.* entities and some do
+            # not attach device_class=temperature even when the value is °C.
+            target_setpoint_valid = bool(
+                key == "target_temperature_entity"
+                and domain == "number"
+                and numeric_state
+            )
+            if unit not in units and device_class != expected_class and not target_setpoint_valid:
+                issues.append({"severity": "error", "code": "HEAT_PUMP_INPUT_TYPE_MISMATCH", "message": f"{key} must be a compatible {expected_class} entity."})
+        for key in ("compressor_state_entity", "compressor_runtime_entity", "compressor_starts_entity", "operating_mode_entity", "jaz_entity", "source_pump_speed_entity", "compressor_activity_entity", "compressor_speed_entity", "compressor_target_speed_entity"):
+            entity_id = device.get(key)
+            if not entity_id:
+                continue
+            if str(device.get("type") or "") != "heat_pump":
+                issues.append({"severity": "error", "code": "HEAT_PUMP_INPUT_DEVICE_TYPE_INVALID", "message": f"{key} is only supported for Heat Pump devices."})
+            elif self.hass.states.get(entity_id) is None:
+                issues.append({"severity": "error", "code": "ENTITY_NOT_FOUND", "message": f"{key} entity does not exist."})
+
         for key in ("state_entity", "availability_entity"):
             entity_id = device.get(key)
             if not entity_id:
