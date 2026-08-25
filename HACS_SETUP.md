@@ -1,6 +1,6 @@
 # AION EMS Zeus — HACS Foundation
 
-Version: `14.0.0-alpha.22.18.1.78`
+Version: `14.5.0`
 
 This repository is prepared for installation as a **HACS custom repository**.
 
@@ -51,11 +51,10 @@ The repository now contains:
   - name
   - version
 
-## Alpha status
+## Stable release status
 
-Zeus is still an alpha project. Use it through HACS as a **custom repository**.
-Default HACS catalog inclusion should wait until Zeus is no longer alpha/beta
-and the HACS/Home Assistant validation requirements are fully satisfied.
+Zeus v14.5.0 is a stable GitHub/HACS release. Existing HACS installations can
+receive stable updates through the repository release channel.
 
 ## Important
 

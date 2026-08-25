@@ -1,4 +1,8 @@
-AION EMS Zeus v14.0.0-alpha.22.18.1.58
-Source baseline: v14.0.0-alpha.22.18.1.57 (user-confirmed official baseline)
-Scope: Remove stray compact/tablet header A pseudo-element only; preserve header controls and all other Zeus behavior.
-Packaging: Current .58 BASELINE/RELEASE_NOTES only; obsolete top-level release texts excluded.
+AION EMS Zeus v14.5.15 — Heat Pump Observed Activity Foundation
+
+Baseline: v14.5.13 — Heat Pump Restart Pattern Intelligence
+Scope: UI text-fit only for Heat Pump cycle verdict values.
+Packaging: Cumulative source package with release notes v14.5.6 through v14.5.15.
+Validation: PASS — 83 Python files; 78 registered routes; 44 renderer contracts; navigation registry, aliases, component identity and mirrored frontend.
+Functional change: display value `No self-relative cycle outliers` shortened to `No cycle outliers` for Cycle analysis and Cycle-pattern verdict. Detailed self-relative semantics remain in explanatory text.
+No Heat Pump analytical calculations, Recorder evidence logic, thresholds, Kostal/solar logic, or other functionality changed.
