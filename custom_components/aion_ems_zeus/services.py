@@ -159,6 +159,60 @@ def _device_schema(require_all=True):
     })
 
 
+def _device_update_schema():
+    """Device update schema without injected defaults.
+
+    Defaults are correct for Add Device, but unsafe for Update Device because
+    they can overwrite persisted metadata/mappings when an older frontend omits
+    a field. The update handler merges only fields actually supplied.
+    """
+    return vol.Schema({
+        vol.Required("device_id"): cv.string,
+        vol.Optional("name"): cv.string,
+        vol.Optional("power_entity"): cv.entity_id,
+        vol.Optional("energy_entity"): cv.entity_id,
+        vol.Optional("energy_type"): vol.In(["auto", "daily", "total_increasing"]),
+        vol.Optional("state_entity"): cv.entity_id,
+        vol.Optional("availability_entity"): cv.entity_id,
+        vol.Optional("device_type"): cv.string,
+        vol.Optional("category"): cv.string,
+        vol.Optional("room_id"): cv.string,
+        vol.Optional("group_ids"): vol.All(cv.ensure_list, [cv.string]),
+        vol.Optional("priority"): cv.string,
+        vol.Optional("icon"): cv.icon,
+        vol.Optional("enabled"): cv.boolean,
+        vol.Optional("notes"): cv.string,
+        vol.Optional("hybrid_inverter"): cv.boolean,
+        vol.Optional("solar_power_entity"): cv.entity_id,
+        vol.Optional("temperature_entity"): cv.entity_id,
+        vol.Optional("cop_entity"): cv.entity_id,
+        vol.Optional("thermal_power_entity"): cv.entity_id,
+        vol.Optional("thermal_energy_entity"): cv.entity_id,
+        vol.Optional("supply_temperature_entity"): cv.entity_id,
+        vol.Optional("return_temperature_entity"): cv.entity_id,
+        vol.Optional("outdoor_temperature_entity"): cv.entity_id,
+        vol.Optional("compressor_state_entity"): cv.entity_id,
+        vol.Optional("compressor_runtime_entity"): cv.entity_id,
+        vol.Optional("compressor_starts_entity"): cv.entity_id,
+        vol.Optional("dhw_temperature_entity"): cv.entity_id,
+        vol.Optional("dhw_energy_entity"): cv.entity_id,
+        vol.Optional("heating_energy_entity"): cv.entity_id,
+        vol.Optional("cooling_energy_entity"): cv.entity_id,
+        vol.Optional("operating_mode_entity"): cv.entity_id,
+        vol.Optional("target_temperature_entity"): cv.entity_id,
+        vol.Optional("jaz_entity"): cv.entity_id,
+        vol.Optional("heat_carrier_forward_entity"): cv.entity_id,
+        vol.Optional("heat_carrier_return_entity"): cv.entity_id,
+        vol.Optional("source_in_temperature_entity"): cv.entity_id,
+        vol.Optional("source_out_temperature_entity"): cv.entity_id,
+        vol.Optional("source_pump_speed_entity"): cv.entity_id,
+        vol.Optional("compressor_activity_entity"): cv.entity_id,
+        vol.Optional("compressor_speed_entity"): cv.entity_id,
+        vol.Optional("compressor_target_speed_entity"): cv.entity_id,
+        vol.Optional("dhw_target_temperature_entity"): cv.entity_id,
+    })
+
+
 async def async_setup_services(hass: HomeAssistant) -> None:
     """Register services once."""
     global REGISTERED
@@ -346,7 +400,71 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         core.refresh_pipeline()
 
     async def update_device(call: ServiceCall) -> None:
-        await add_device(call)
+        """Update a device without dropping fields omitted by older/cached frontends."""
+        core = _core(hass)
+        device_id = call.data["device_id"]
+        existing = next(
+            (dict(item) for item in core.registry.data.get("devices", [])
+             if str(item.get("id")) == str(device_id)),
+            {},
+        )
+        merged = dict(existing)
+        merged.update(dict(call.data))
+        # Build through the canonical registry constructor so types and energy
+        # classification remain normalized, but preserve every known mapping.
+        device = core.registry.build_device(
+            device_id=device_id,
+            name=merged.get("name") or existing.get("name") or device_id,
+            power_entity=merged.get("power_entity") or existing.get("power_entity"),
+            energy_entity=merged.get("energy_entity") or existing.get("energy_entity"),
+            energy_type=merged.get("energy_type", existing.get("energy_type", "auto")),
+            enabled=merged.get("enabled", existing.get("enabled", True)),
+            device_type=merged.get("device_type", merged.get("type", existing.get("type", "custom"))),
+            category=merged.get("category", existing.get("category", "other")),
+            room_id=merged.get("room_id", existing.get("room_id", "unassigned")),
+            group_ids=merged.get("group_ids", existing.get("group_ids", [])),
+            state_entity=merged.get("state_entity", existing.get("state_entity")),
+            availability_entity=merged.get("availability_entity", existing.get("availability_entity")),
+            priority=merged.get("priority", existing.get("priority", "medium")),
+            icon=merged.get("icon", existing.get("icon", "mdi:power-plug")),
+            notes=merged.get("notes", existing.get("notes", "")),
+            hybrid_inverter=merged.get("hybrid_inverter", existing.get("hybrid_inverter", False)),
+            solar_power_entity=merged.get("solar_power_entity", existing.get("solar_power_entity")),
+            temperature_entity=merged.get("temperature_entity", existing.get("temperature_entity")),
+            cop_entity=merged.get("cop_entity", existing.get("cop_entity")),
+            thermal_power_entity=merged.get("thermal_power_entity", existing.get("thermal_power_entity")),
+            thermal_energy_entity=merged.get("thermal_energy_entity", existing.get("thermal_energy_entity")),
+            supply_temperature_entity=merged.get("supply_temperature_entity", existing.get("supply_temperature_entity")),
+            return_temperature_entity=merged.get("return_temperature_entity", existing.get("return_temperature_entity")),
+            outdoor_temperature_entity=merged.get("outdoor_temperature_entity", existing.get("outdoor_temperature_entity")),
+            compressor_state_entity=merged.get("compressor_state_entity", existing.get("compressor_state_entity")),
+            compressor_runtime_entity=merged.get("compressor_runtime_entity", existing.get("compressor_runtime_entity")),
+            compressor_starts_entity=merged.get("compressor_starts_entity", existing.get("compressor_starts_entity")),
+            dhw_temperature_entity=merged.get("dhw_temperature_entity", existing.get("dhw_temperature_entity")),
+            dhw_energy_entity=merged.get("dhw_energy_entity", existing.get("dhw_energy_entity")),
+            heating_energy_entity=merged.get("heating_energy_entity", existing.get("heating_energy_entity")),
+            cooling_energy_entity=merged.get("cooling_energy_entity", existing.get("cooling_energy_entity")),
+            operating_mode_entity=merged.get("operating_mode_entity", existing.get("operating_mode_entity")),
+            target_temperature_entity=merged.get("target_temperature_entity", existing.get("target_temperature_entity")),
+            jaz_entity=merged.get("jaz_entity", existing.get("jaz_entity")),
+            heat_carrier_forward_entity=merged.get("heat_carrier_forward_entity", existing.get("heat_carrier_forward_entity")),
+            heat_carrier_return_entity=merged.get("heat_carrier_return_entity", existing.get("heat_carrier_return_entity")),
+            source_in_temperature_entity=merged.get("source_in_temperature_entity", existing.get("source_in_temperature_entity")),
+            source_out_temperature_entity=merged.get("source_out_temperature_entity", existing.get("source_out_temperature_entity")),
+            source_pump_speed_entity=merged.get("source_pump_speed_entity", existing.get("source_pump_speed_entity")),
+            compressor_activity_entity=merged.get("compressor_activity_entity", existing.get("compressor_activity_entity")),
+            compressor_speed_entity=merged.get("compressor_speed_entity", existing.get("compressor_speed_entity")),
+            compressor_target_speed_entity=merged.get("compressor_target_speed_entity", existing.get("compressor_target_speed_entity")),
+            dhw_target_temperature_entity=merged.get("dhw_target_temperature_entity", existing.get("dhw_target_temperature_entity")),
+        )
+        issues = await core.registry.async_add_device(device)
+        core.device_import_manager.last_validation = {
+            "status": "Updated" if not any(i["severity"] == "error" for i in issues) else "Error",
+            "device": device,
+            "issues": issues,
+            "message": "Device update completed with persistence-safe field merge.",
+        }
+        core.refresh_pipeline()
 
     async def remove_device(call: ServiceCall) -> None:
         core = _core(hass)
@@ -930,7 +1048,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     }))
 
     hass.services.async_register(DOMAIN, SERVICE_ADD_DEVICE, add_device, schema=_device_schema())
-    hass.services.async_register(DOMAIN, SERVICE_UPDATE_DEVICE, update_device, schema=_device_schema(False))
+    hass.services.async_register(DOMAIN, SERVICE_UPDATE_DEVICE, update_device, schema=_device_update_schema())
     hass.services.async_register(DOMAIN, SERVICE_REMOVE_DEVICE, remove_device, schema=vol.Schema({
         vol.Required("device_id"): cv.string,
     }))

@@ -497,6 +497,11 @@ class AionCore:
         self.data_lake.refresh_mapped_energy_today()
         self.data_lake.refresh_summary()
 
+        # Home Energy Timeline is event-facing UI and must observe every mapped
+        # or registered-device state refresh. Keeping it behind the 15-minute
+        # decision cadence can miss an entire EV/device session.
+        self._guarded_refresh("observation_knowledge_live", self.observation_knowledge)
+
         now = datetime.now(timezone.utc)
         if (
             self._last_topology_refresh is None

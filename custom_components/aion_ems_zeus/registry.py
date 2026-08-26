@@ -73,11 +73,32 @@ class RegistryEngine:
             self.data["sources"].setdefault("tariffs", {"enabled": False, "currency": "CHF", "import_tariff": None, "export_tariff": None, "standing_charge": 0.0, "vat_included": True})
         self.data["schema_version"] = 4
         # v9 migration: classify every existing energy entity without deleting data.
+        heat_pump_optional_fields = (
+            "cop_entity", "thermal_power_entity", "thermal_energy_entity",
+            "supply_temperature_entity", "return_temperature_entity",
+            "outdoor_temperature_entity", "compressor_state_entity",
+            "compressor_runtime_entity", "compressor_starts_entity",
+            "dhw_temperature_entity", "dhw_energy_entity",
+            "heating_energy_entity", "cooling_energy_entity",
+            "operating_mode_entity", "target_temperature_entity", "jaz_entity",
+            "heat_carrier_forward_entity", "heat_carrier_return_entity",
+            "source_in_temperature_entity", "source_out_temperature_entity",
+            "source_pump_speed_entity", "compressor_activity_entity",
+            "compressor_speed_entity", "compressor_target_speed_entity",
+            "dhw_target_temperature_entity",
+        )
         for device in self.data.get("devices", []):
             requested = str(device.get("energy_type") or "auto")
             device["energy_type"] = self.detect_energy_type(device.get("energy_entity"), requested)
-            if str(device.get("type") or "").lower() in {"solar_inverter", "inverter", "pv_inverter", "microinverter"}:
+            dtype = str(device.get("type") or "").lower()
+            if dtype in {"solar_inverter", "inverter", "pv_inverter", "microinverter"}:
                 device.setdefault("site_id", "home")
+            if dtype == "heat_pump":
+                # Older 14.4.x registry records predate some Advanced Heat Pump
+                # keys. Preserve existing values and add explicit nulls for
+                # unsupported/unconfigured inputs so exports are schema-stable.
+                for field in heat_pump_optional_fields:
+                    device.setdefault(field, None)
         await self.async_save()
         self.event_bus.publish("RegistryLoaded", "RegistryEngine", self.summary())
 

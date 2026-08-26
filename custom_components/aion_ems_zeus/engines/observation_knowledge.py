@@ -89,9 +89,100 @@ class ObservationKnowledgeEngine:
             "soc": self._num(flow.get("battery_soc_percent"), -1),
         }
 
+    def _registered_device_activity(self) -> dict[str, dict[str, Any]]:
+        """Return compact active/inactive evidence for registered consuming devices."""
+        result: dict[str, dict[str, Any]] = {}
+        devices = list((getattr(self.registry, "data", {}) or {}).get("devices", []) or [])
+        for device in devices:
+            if not isinstance(device, dict) or device.get("enabled") is False:
+                continue
+            device_id = str(device.get("id") or "").strip()
+            if not device_id:
+                continue
+            dtype = str(device.get("type") or "device").strip().lower()
+            if dtype in {"solar_inverter", "inverter", "battery", "energy_meter", "smart_meter"}:
+                continue
+            name = str(device.get("name") or device_id).strip()
+            power_entity = str(device.get("power_entity") or "").strip()
+            power_w = 0.0
+            if power_entity:
+                state = self.hass.states.get(power_entity)
+                if state is not None:
+                    try:
+                        raw = float(state.state)
+                        unit = str(state.attributes.get("unit_of_measurement") or "W").strip().lower()
+                        power_w = raw * 1000.0 if unit == "kw" else raw
+                    except (TypeError, ValueError):
+                        power_w = 0.0
+            active = power_w > 50.0
+            activity = ""
+            if dtype == "heat_pump":
+                compressor_entity = str(device.get("compressor_state_entity") or device.get("compressor_activity_entity") or "").strip()
+                compressor_state = self.hass.states.get(compressor_entity) if compressor_entity else None
+                activity = str(getattr(compressor_state, "state", "") or "").strip().lower()
+                if activity:
+                    active = activity not in {"off", "idle", "standby", "inactive", "0", "false", "unknown", "unavailable"}
+            result[device_id] = {"name": name, "type": dtype, "active": bool(active), "power_w": max(power_w, 0.0), "activity": activity}
+        return result
+
+    def _observe_registered_devices(self) -> None:
+        """Persist meaningful registered-device start/stop transitions."""
+        current = self._registered_device_activity()
+        previous = dict(self.data.get("previous_devices") or {})
+        if previous:
+            for device_id, item in current.items():
+                before = previous.get(device_id)
+                if not isinstance(before, dict):
+                    continue
+                was_active, is_active = bool(before.get("active")), bool(item.get("active"))
+                if was_active == is_active:
+                    continue
+                name, dtype = str(item.get("name") or device_id), str(item.get("type") or "device")
+                power_w = float(item.get("power_w") or 0.0)
+                if dtype == "heat_pump":
+                    activity = str(item.get("activity") or "").strip()
+                    if is_active:
+                        mode = activity.replace("_", " ").title() if activity and activity not in {"on", "true", "1"} else "Running"
+                        title = f"{name} {mode.lower()} started" if mode != "Running" else f"{name} started"
+                    else:
+                        title = f"{name} stopped"
+                    kind = "heat_pump"
+                elif dtype == "water_heater":
+                    title, kind = f"{name} {'started' if is_active else 'stopped'}", "water_heater"
+                elif dtype == "ev_charger":
+                    title, kind = f"{name} charging {'started' if is_active else 'stopped'}", "ev"
+                else:
+                    title, kind = f"{name} {'started' if is_active else 'stopped'}", "device"
+                detail = f"Measured power {power_w:.0f} W." if is_active else "Measured power returned below the active threshold."
+                self._add_observation(kind, title, detail, {"device_id": device_id, "power_w": round(power_w, 1)}, 100)
+        elif current:
+            # First baseline after install/restart: preserve truth without claiming
+            # that Zeus witnessed the actual start transition. Active registered
+            # devices are recorded as "active" so the Timeline is immediately useful.
+            for device_id, item in current.items():
+                if not bool(item.get("active")):
+                    continue
+                name = str(item.get("name") or device_id)
+                dtype = str(item.get("type") or "device")
+                power_w = float(item.get("power_w") or 0.0)
+                if dtype == "ev_charger":
+                    title, kind = f"{name} charging active", "ev"
+                elif dtype == "heat_pump":
+                    activity = str(item.get("activity") or "").strip()
+                    mode = activity.replace("_", " ").title() if activity and activity not in {"on", "true", "1"} else "Running"
+                    title, kind = f"{name} {mode.lower()} active", "heat_pump"
+                elif dtype == "water_heater":
+                    title, kind = f"{name} active", "water_heater"
+                else:
+                    title, kind = f"{name} active", "device"
+                self._add_observation(kind, title, f"Active at Timeline baseline · measured power {power_w:.0f} W.", {"device_id": device_id, "power_w": round(power_w, 1), "baseline": True}, 100)
+        self.data["previous_devices"] = current
+
     def _add_observation(self, kind: str, title: str, detail: str, evidence: dict[str, Any], confidence: int = 100) -> None:
         now = self._iso_now()
-        fingerprint = f"{kind}:{title}:{now[:13]}"
+        # Deduplicate only identical events within the same minute. Hour-level
+        # fingerprints suppressed valid start -> stop -> start cycles in one hour.
+        fingerprint = f"{kind}:{title}:{now[:16]}"
         if any(x.get("fingerprint") == fingerprint for x in self.data["observations"][:20]):
             return
         self.data["observations"].insert(0, {
@@ -261,6 +352,7 @@ class ObservationKnowledgeEngine:
     def refresh(self) -> dict[str, Any]:
         current = self._flow_values()
         self._observe_transitions(current)
+        self._observe_registered_devices()
         rows = self._daily_rows()
         snapshots = self._snapshots()
         hyper = self.hyper.summary() or {}
