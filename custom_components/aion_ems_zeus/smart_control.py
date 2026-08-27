@@ -498,7 +498,7 @@ class SmartControlSafetyEngine:
             "master_execution_lock_reason": (
                 "Real ELWA execution is explicitly enabled for this device; all readiness and arm gates remain mandatory."
                 if master_enabled else
-                "Real ELWA execution is disabled by default in v14.7.0-alpha.39.1. Enable it only during a supervised handover."
+                "Real ELWA execution is disabled by default after upgrade. Enable it only during an explicit supervised handover."
             ),
             "strict_execution_target_ok": strict_target_ok,
             "emergency_stop": emergency_stop,
@@ -570,10 +570,18 @@ class SmartControlSafetyEngine:
             handover_phase = "WAIT_READINESS"
             handover_label = "Ownership accepted; safety readiness incomplete"
             handover_next = "Resolve the remaining readiness gates before any execution arming step."
-        else:
+        elif not arm_effective:
             handover_phase = "READY_TO_ARM"
             handover_label = "Handover ready for supervised execution arming"
-            handover_next = "All handover/readiness gates pass. Complete arm confirmation, then deliberately enable the execution master when ready."
+            handover_next = "All handover/readiness gates pass. Complete the execution-arm request and operator confirmation."
+        elif not master_enabled:
+            handover_phase = "ARMED_MASTER_OFF"
+            handover_label = "Zeus ownership armed; execution master OFF"
+            handover_next = "Arm is valid. Deliberately enable the execution master when real ELWA control is required."
+        else:
+            handover_phase = "ZEUS_READY"
+            handover_label = "Zeus owns ELWA; supervised execution ready"
+            handover_next = "Ownership, readiness, arm and master gates are satisfied. Runtime strategy and safety logic decide whether a write is needed."
 
         rollback_available = bool(previous_controller_entity)
         handover_steps = [
