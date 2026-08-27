@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .device_roles import is_consuming_load
 from .period_authority import canonical_period_windows, date_in_period
+from .device_profiles import get_device_profile
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -157,13 +158,18 @@ class HistoricalAnalyticsEngine:
                 },
                 blocking=True, return_response=True,
             )
+            # Mirror Home Assistant Energy frontend semantics exactly.
+            # For a Today range, getSuggestedPeriod() resolves to "hour".
+            # Energy requests only `change`, then calculateStatisticsSumGrowth()
+            # sums every hourly change row for each configured statistic.
+            today_end = dt_util.start_of_local_day(now + timedelta(days=1)) - timedelta(microseconds=1)
             today_response = await self.hass.services.async_call(
                 "recorder", "get_statistics",
                 {
                     "statistic_ids": entity_ids,
                     "start_time": today_start,
-                    "end_time": now + timedelta(minutes=1),
-                    "period": "5minute",
+                    "end_time": today_end,
+                    "period": "hour",
                     "types": ["change"],
                     "units": {"energy": "kWh"},
                 },
@@ -207,26 +213,49 @@ class HistoricalAnalyticsEngine:
                         stamp = self._ha_stat_datetime(row.get("start"))
                         if value is None or stamp is None or value < -0.001:
                             continue
-                        day = dt_util.as_local(stamp).date().isoformat()
+                        local_stamp = dt_util.as_local(stamp)
+                        # Recorder day/change buckets can be stamped at the UTC
+                        # instant corresponding to local midnight. With a positive
+                        # timezone offset, the boundary row returned by the
+                        # completed-history query can therefore map to *today* in
+                        # local time even though end_time == today_start. Today is
+                        # built separately from hourly/change rows below, exactly
+                        # like HA Energy. Exclude any completed-history row whose
+                        # local calendar date is today to prevent counting the same
+                        # battery movement once as a day bucket and again as hourly
+                        # changes.
+                        if local_stamp.date() >= now.date():
+                            continue
+                        day = local_stamp.date().isoformat()
                         result[key][day] = round(result[key].get(day, 0.0) + max(value, 0.0), 4)
 
+                    # Exact equivalent of HA frontend
+                    # calculateStatisticSumGrowth(): sum all non-null `change`
+                    # rows returned for the selected Today/hour period.
                     today_total = 0.0
                     today_rows = 0
                     for row in list((raw_today or {}).get(entity_id) or []):
                         if not isinstance(row, dict):
                             continue
-                        value = self._ha_stat_number(row.get("change"))
                         stamp = self._ha_stat_datetime(row.get("start"))
-                        if value is None or stamp is None or value < -0.001:
+                        if stamp is None:
                             continue
                         local_stamp = dt_util.as_local(stamp)
-                        if local_stamp < today_start or local_stamp > now + timedelta(minutes=5):
+                        if local_stamp.date() != now.date():
                             continue
-                        today_total += max(value, 0.0)
+                        value = self._ha_stat_number(row.get("change"))
+                        if value is None:
+                            continue
+                        # HA sums returned change values; negative reset handling
+                        # is already normalized by Recorder for sum statistics.
+                        today_total += value
                         today_rows += 1
+
                     if today_rows:
                         today_key = now.date().isoformat()
-                        result[key][today_key] = round(result[key].get(today_key, 0.0) + today_total, 4)
+                        result[key][today_key] = round(
+                            result[key].get(today_key, 0.0) + today_total, 4
+                        )
             self._ha_energy_days = result
 
             hourly_by_start: dict[str, dict[str, Any]] = {}
@@ -271,8 +300,12 @@ class HistoricalAnalyticsEngine:
             self._ha_energy_status = {
                 "status": "Ready",
                 "source": "Home Assistant Energy source set + Recorder statistics · local-day aligned",
+                "today_battery_authority": "Exact HA Energy semantics · hourly Recorder changes",
+                "today_energy_method": "sum hourly change rows from local midnight to end of day",
                 "entities": display_entities,
                 "entity_sets": {key: list(values) for key, values in selected_groups.items() if values},
+                "ha_energy_battery_charge_entities": list(selected_groups.get("battery_charge_energy_kwh") or []),
+                "ha_energy_battery_discharge_entities": list(selected_groups.get("battery_discharge_energy_kwh") or []),
                 "days": {key: len(values) for key, values in result.items()},
                 "refreshed_at": now.isoformat(),
             }
@@ -283,7 +316,10 @@ class HistoricalAnalyticsEngine:
             self._ha_battery_status = {
                 "status": "Ready",
                 "source": self._ha_energy_status["source"],
+                "today_authority": self._ha_energy_status.get("today_battery_authority"),
                 "charge_entity": selected.get("battery_charge_energy_kwh"),
+                "charge_entities": list(selected_groups.get("battery_charge_energy_kwh") or []),
+                "discharge_entities": list(selected_groups.get("battery_discharge_energy_kwh") or []),
                 "discharge_entity": selected.get("battery_discharge_energy_kwh"),
                 "charge_days": len(self._ha_battery_days["charge"]),
                 "discharge_days": len(self._ha_battery_days["discharge"]),
@@ -352,6 +388,12 @@ class HistoricalAnalyticsEngine:
                 continue
             state = self.hass.states.get(entity_id)
             if state is None or str(state.state).strip().lower() in {"", "unknown", "unavailable", "none"}:
+                continue
+            state_class = str(state.attributes.get("state_class") or "").strip().lower()
+            # A Today slot may be mapped to the same cumulative meter used by
+            # Home Assistant Energy. Its raw state is lifetime energy, not today's
+            # energy. Recorder already provides the correct local-day delta.
+            if state_class in {"total", "total_increasing"}:
                 continue
             try:
                 value = float(state.state)
@@ -460,13 +502,12 @@ class HistoricalAnalyticsEngine:
                     continue
                 recorder_value = max(float(values[day] or 0.0), 0.0)
                 if day == today_key and energy_key in {"battery_charge_energy_kwh", "battery_discharge_energy_kwh"}:
-                    # Recorder day statistics can lag or briefly regress during the
-                    # live day. DataLake also accumulates the canonical mapped
-                    # battery meter continuously. Never let a stale Recorder
-                    # refresh erase battery energy already measured today.
-                    live_value = max(float(row.get(energy_key, 0.0) or 0.0), 0.0)
-                    row[energy_key] = round(max(live_value, recorder_value), 4)
-                    row[f"{energy_key}_method"] = "live_datalake_max_home_assistant_energy_statistics"
+                    # Home Assistant Recorder is the canonical authority for the
+                    # in-progress Energy Dashboard day. Never merge a DataLake
+                    # power-integration/lifetime value with it via max(): doing so
+                    # can double-count battery movement and inflate Today.
+                    row[energy_key] = round(recorder_value, 4)
+                    row[f"{energy_key}_method"] = "home_assistant_energy_statistics_today"
                     row[f"{energy_key}_source"] = stat_entities.get(energy_key) or row.get(f"{energy_key}_source")
                     continue
                 row[energy_key] = recorder_value
@@ -3972,7 +4013,21 @@ class DeviceAnalyticsEngine:
         reset/measurement meters use the daily maximum (or final state).
         """
         devices = [d for d in self.registry.data.get("devices", []) if is_consuming_load(d) and d.get("energy_entity")]
-        entity_ids = list(dict.fromkeys(str(d.get("energy_entity")) for d in devices if d.get("energy_entity")))
+        # Recorder energy is also needed for mapped Heat Pump DHW sub-meters.
+        # These are thermal DHW meters, not the Heat Pump's main electrical
+        # consumption meter, so keep them as separate statistics sources.
+        recorder_sources: list[dict[str, Any]] = list(devices)
+        for device in self.registry.data.get("devices", []):
+            if str(device.get("type") or "") != "heat_pump":
+                continue
+            dhw_entity = str(device.get("dhw_energy_entity") or "").strip()
+            if not dhw_entity:
+                continue
+            recorder_sources.append({
+                "energy_entity": dhw_entity,
+                "energy_type": "auto",
+            })
+        entity_ids = list(dict.fromkeys(str(d.get("energy_entity")) for d in recorder_sources if d.get("energy_entity")))
         if not entity_ids:
             self._recorder_days = {}
             self._recorder_status = {"status": "No mapped device energy entities", "entity_count": 0, "row_count": 0}
@@ -3997,7 +4052,7 @@ class DeviceAnalyticsEngine:
             )
             raw_stats = (response or {}).get("statistics", response or {})
             result: dict[str, dict[str, float]] = {}
-            for device in devices:
+            for device in recorder_sources:
                 entity_id = str(device.get("energy_entity"))
                 state = self.hass.states.get(entity_id)
                 state_class = str((state.attributes.get("state_class") if state else "") or "").lower()
@@ -4162,13 +4217,57 @@ class DeviceAnalyticsEngine:
             }
 
     @staticmethod
-    def _normalize_compressor_state(value: Any) -> str | None:
+    def _normalize_compressor_state(value: Any, state_map: dict[str, Any] | None = None) -> str | None:
+        """Normalize compressor evidence without guessing numeric vendor enums.
+
+        Text/binary states use the manufacturer-independent vocabulary. Numeric
+        values other than canonical 0/1 are interpreted only when the selected
+        device profile supplies an explicit map. This prevents vendor enums such
+        as ``8`` from being silently treated as activity evidence.
+        """
         state = str(value or "").strip().lower()
+        mapping = {str(k).strip().lower(): str(v).strip().lower() for k, v in dict(state_map or {}).items()}
+        mapped = mapping.get(state)
+        if mapped in {"on", "running", "active"}:
+            return "on"
+        if mapped in {"off", "idle", "inactive", "stopped"}:
+            return "off"
         if state in {"on", "true", "1", "running", "run", "active", "heating", "compressor_on"}:
             return "on"
         if state in {"off", "false", "0", "idle", "inactive", "stopped", "stop", "compressor_off"}:
             return "off"
         return None
+
+    @staticmethod
+    def _normalize_operating_mode(value: Any, state_map: dict[str, Any] | None = None) -> tuple[str, str]:
+        """Return normalized Heat Pump mode context plus evidence reason."""
+        raw = str(value or "").strip()
+        state = raw.lower().replace("_", " ")
+        mapping = {str(k).strip().lower(): str(v).strip() for k, v in dict(state_map or {}).items()}
+        mapped = mapping.get(raw.lower())
+        if mapped:
+            target = mapped.strip().lower().replace("_", " ")
+            if target in {"dhw", "domestic hot water", "hot water"}:
+                return "DHW", f"Profile map translates raw operating mode {raw!r} to DHW."
+            if target in {"cooling", "cool"}:
+                return "Cooling", f"Profile map translates raw operating mode {raw!r} to Cooling."
+            if target in {"heating", "heat"}:
+                return "Heating", f"Profile map translates raw operating mode {raw!r} to Heating."
+            if target in {"idle", "standby", "off", "inactive"}:
+                return "Idle", f"Profile map translates raw operating mode {raw!r} to Idle/Standby."
+            if target in {"automatic", "auto", "scheduled", "mixed", "multi mode", "multi-mode"}:
+                return "Automatic", f"Profile map identifies raw operating mode {raw!r} as a multi-mode schedule; it does not prove the current thermal activity."
+        if any(token in state for token in ("dhw", "domestic hot water", "hot water", "warmwasser")):
+            return "DHW", "Mapped operating-mode text identifies DHW."
+        if any(token in state for token in ("cool", "cooling", "kühlen", "kuehlen")):
+            return "Cooling", "Mapped operating-mode text identifies Cooling."
+        if any(token in state for token in ("heat", "heating", "heizen", "heiz")):
+            return "Heating", "Mapped operating-mode text identifies Heating."
+        if raw and re.fullmatch(r"[-+]?\d+(?:\.\d+)?", raw):
+            return "Unavailable", f"Raw numeric operating mode {raw!r} requires an explicit device-profile state map; Zeus will not guess vendor enum semantics."
+        if raw:
+            return "Reported mode", "Mapped operating-mode text is preserved as evidence but does not match a normalized Heating/DHW/Cooling token."
+        return "Unavailable", "No mapped operating-mode evidence is available."
 
     async def _async_refresh_compressor_history(self) -> None:
         """Load timestamped Heat Pump compressor transitions from HA Recorder.
@@ -4183,6 +4282,7 @@ class DeviceAnalyticsEngine:
             and str(d.get("compressor_state_entity") or "").strip()
         ]
         entity_ids = list(dict.fromkeys(str(d.get("compressor_state_entity")).strip() for d in devices))
+        entity_devices = {str(d.get("compressor_state_entity") or "").strip(): d for d in devices}
         if not entity_ids:
             self._compressor_history = {}
             self._compressor_history_status = {
@@ -4214,8 +4314,12 @@ class DeviceAnalyticsEngine:
                 total_rows += len(raw_states)
                 normalized: list[tuple[datetime, str]] = []
                 ignored = 0
+                device = entity_devices.get(entity_id) or {}
+                profile = get_device_profile(device.get("device_profile")) or {}
+                state_normalization = dict(profile.get("state_normalization") or {})
+                compressor_state_map = dict(state_normalization.get("compressor_state") or {})
                 for state in raw_states:
-                    value = self._normalize_compressor_state(getattr(state, "state", None))
+                    value = self._normalize_compressor_state(getattr(state, "state", None), compressor_state_map)
                     changed = getattr(state, "last_changed", None) or getattr(state, "last_updated", None)
                     if value is None or changed is None:
                         ignored += 1
@@ -4958,7 +5062,7 @@ class DeviceAnalyticsEngine:
                 def hp_unit(key: str) -> str | None:
                     return (heat_pump_inputs.get(key) or {}).get("unit")
 
-                def delta_pair(a_key: str, b_key: str) -> dict[str, Any]:
+                def delta_pair(a_key: str, b_key: str, *, label: str) -> dict[str, Any]:
                     a = hp_number(a_key)
                     b = hp_number(b_key)
                     ua = hp_unit(a_key)
@@ -4967,12 +5071,25 @@ class DeviceAnalyticsEngine:
                         return {"available": False, "value": None, "unit": ua or ub, "reason": "Both mapped measurements are required."}
                     if ua and ub and ua != ub:
                         return {"available": False, "value": None, "unit": None, "reason": "Mapped measurement units differ; Zeus will not convert implicitly."}
-                    return {"available": True, "value": round(a - b, 3), "unit": ua or ub, "reason": "Direct difference of mapped Home Assistant measurements."}
+                    delta = a - b
+                    # Evidence sanity guard, not a manufacturer performance threshold.
+                    # A temperature difference above 40 K/C is far outside the
+                    # intended meaning of these paired circuit fields and is more
+                    # useful as a mapping-review signal than as fake intelligence.
+                    temp_units = {"°c", "c", "°f", "f", "k"}
+                    normalized_unit = str(ua or ub or "").strip().lower()
+                    if normalized_unit in temp_units and abs(delta) > 40.0:
+                        return {
+                            "available": False, "value": None, "unit": ua or ub,
+                            "reason": f"{label} withheld: mapped values differ by {abs(delta):.1f} {ua or ub}. Review the two source mappings; Zeus does not use implausible circuit deltas as intelligence.",
+                            "raw_a": round(a, 3), "raw_b": round(b, 3), "sanity": "mapping_review",
+                        }
+                    return {"available": True, "value": round(delta, 3), "unit": ua or ub, "reason": "Direct difference of mapped Home Assistant measurements.", "sanity": "accepted"}
 
-                heat_carrier_delta = delta_pair("heat_carrier_forward_entity", "heat_carrier_return_entity")
-                source_delta = delta_pair("source_in_temperature_entity", "source_out_temperature_entity")
-                heating_system_delta = delta_pair("supply_temperature_entity", "return_temperature_entity")
-                target_error = delta_pair("supply_temperature_entity", "target_temperature_entity")
+                heat_carrier_delta = delta_pair("heat_carrier_forward_entity", "heat_carrier_return_entity", label="Heat-carrier ΔT")
+                source_delta = delta_pair("source_in_temperature_entity", "source_out_temperature_entity", label="Source / brine ΔT")
+                heating_system_delta = delta_pair("supply_temperature_entity", "return_temperature_entity", label="Heating-system ΔT")
+                target_error = delta_pair("supply_temperature_entity", "target_temperature_entity", label="Actual vs target flow")
 
                 thermal_power = hp_number("thermal_power_entity")
                 thermal_power_unit = hp_unit("thermal_power_entity")
@@ -5000,9 +5117,22 @@ class DeviceAnalyticsEngine:
 
                 # Heat Pump Intelligence v2: interpret only evidence Zeus can
                 # prove from mapped live measurements and its own Recorder
-                # history. No manufacturer curve or universal efficiency
-                # threshold is introduced here.
-                compressor_binary = self._normalize_compressor_state(compressor_state)
+                # history. Numeric vendor enums require explicit profile maps.
+                hp_profile = get_device_profile(device.get("device_profile")) or {}
+                state_normalization = dict(hp_profile.get("state_normalization") or {})
+                compressor_state_map = dict(state_normalization.get("compressor_state") or {})
+                operating_mode_map = dict(state_normalization.get("operating_mode") or {})
+                compressor_binary = self._normalize_compressor_state(compressor_state, compressor_state_map)
+                compressor_state_raw = None if compressor_state is None else str(compressor_state)
+                compressor_state_normalization_reason = (
+                    f"Raw compressor state {compressor_state_raw!r} normalized to {compressor_binary.upper()} by canonical/profile mapping."
+                    if compressor_binary is not None
+                    else (
+                        f"Raw numeric compressor state {compressor_state_raw!r} requires an explicit device-profile state map; Zeus will not guess vendor enum semantics."
+                        if compressor_state_raw and re.fullmatch(r"[-+]?\d+(?:\.\d+)?", compressor_state_raw.strip())
+                        else "Mapped compressor state is not recognized by the manufacturer-independent normalizer."
+                    )
+                )
                 if compressor_binary == "on":
                     interpreted_state = "Running"
                     interpreted_state_reason = "Mapped compressor state reports active operation."
@@ -5037,17 +5167,7 @@ class DeviceAnalyticsEngine:
                     state_confidence_reason = "No authoritative compressor state or electrical-power evidence is mapped."
 
                 mode_text = str(operating_mode or "").strip()
-                mode_lower = mode_text.lower().replace("_", " ")
-                if any(token in mode_lower for token in ("dhw", "domestic hot water", "hot water", "warmwasser")):
-                    mode_context = "DHW"
-                elif any(token in mode_lower for token in ("cool", "cooling", "kühlen", "kuehlen")):
-                    mode_context = "Cooling"
-                elif any(token in mode_lower for token in ("heat", "heating", "heizen", "heiz")):
-                    mode_context = "Heating"
-                elif mode_text:
-                    mode_context = "Reported mode"
-                else:
-                    mode_context = "Unavailable"
+                mode_context, mode_normalization_reason = self._normalize_operating_mode(operating_mode, operating_mode_map)
 
                 # Heat Pump Observed Activity Foundation: classify thermal activity
                 # only when independent mapped evidence supports it. Reported mode
@@ -5065,7 +5185,11 @@ class DeviceAnalyticsEngine:
                     return None
 
                 activity_from_compressor = hp_activity_label(compressor_activity)
-                activity_from_mode = hp_activity_label(operating_mode)
+                # A permissive/scheduled operating mode (for example Vitocal
+                # "Heizen Kühlen Warmwasser (Zeitprogramm)") describes what the
+                # controller may do, not what it is doing now. Never let that
+                # multi-mode string falsely prove DHW/Heating/Cooling activity.
+                activity_from_mode = None if mode_context in {"Automatic", "Reported mode"} else hp_activity_label(operating_mode)
                 # Reuse the already-proven operating interpretation for inactive
                 # activity states. This deliberately avoids a second, parallel
                 # standby/idle decision path drifting from Intelligence v2.
@@ -5302,12 +5426,18 @@ class DeviceAnalyticsEngine:
                     "thermal_power_w": round(thermal_power_w, 1) if thermal_power_w is not None else None,
                     "electrical_power_w": round(electrical_power_w, 1),
                     "compressor_state": compressor_state,
+                    "compressor_state_normalized": compressor_binary,
+                    "compressor_state_normalization_reason": compressor_state_normalization_reason,
                     "compressor_activity": compressor_activity,
                     "compressor_speed": compressor_speed,
                     "compressor_speed_unit": compressor_speed_unit,
                     "compressor_target_speed": compressor_target,
                     "compressor_target_speed_unit": compressor_target_unit,
                     "operating_mode": operating_mode,
+                    "operating_mode_normalized": mode_context,
+                    "operating_mode_normalization_reason": mode_normalization_reason,
+                    "device_profile": device.get("device_profile"),
+                    "state_normalization_profile": hp_profile.get("label") if hp_profile else None,
                     "intelligence_version": 2,
                     "interpreted_operating_state": interpreted_state,
                     "interpreted_operating_state_reason": interpreted_state_reason,
@@ -5395,6 +5525,13 @@ class DeviceAnalyticsEngine:
                     "policy": "Measured relationships only. Zeus does not infer manufacturer limits, expected COP, or thermal output when the required measurement is missing.",
                 }
 
+            hp_dhw_period = None
+            hp_dhw_energy_entity = ""
+            if str(device.get("type") or "") == "heat_pump":
+                hp_dhw_energy_entity = str(device.get("dhw_energy_entity") or "").strip()
+                if hp_dhw_energy_entity:
+                    hp_dhw_period = self._recorder_periods({"energy_entity": hp_dhw_energy_entity}, today)
+
             devices.append({
                 "id": device_id,
                 "name": device.get("name") or device_id,
@@ -5423,6 +5560,12 @@ class DeviceAnalyticsEngine:
                 "heat_pump_input_count": len(heat_pump_inputs),
                 "heat_pump_input_policy": "Optional canonical Home Assistant entity mappings; missing values are never estimated.",
                 "heat_pump_intelligence": heat_pump_intelligence,
+                "dhw_energy_entity": hp_dhw_energy_entity or None,
+                "dhw_energy_method": "ha_recorder_daily_statistics" if hp_dhw_period is not None else None,
+                "dhw_energy_today_kwh": round(float(hp_dhw_period.get("today", 0.0)), 3) if hp_dhw_period is not None else None,
+                "dhw_energy_week_kwh": round(float(hp_dhw_period.get("week", 0.0)), 3) if hp_dhw_period is not None else None,
+                "dhw_energy_month_kwh": round(float(hp_dhw_period.get("month", 0.0)), 3) if hp_dhw_period is not None else None,
+                "dhw_energy_year_kwh": round(float(hp_dhw_period.get("year", 0.0)), 3) if hp_dhw_period is not None else None,
                 "energy_today_kwh": round(energy, 3),
                 "energy_week_kwh": round(week_energy, 3),
                 "energy_month_kwh": round(month_energy, 3),

@@ -62,6 +62,7 @@ from .recommendation_priority_engine import RecommendationPriorityEngine
 from .system_story_engine import SystemStoryEngine
 from .energy_snapshot import EnergySnapshotService
 from .device_energy_attribution import DeviceEnergyAttributionEngine
+from .smart_control import SmartControlSafetyEngine
 from .knowledge_v2 import (
     KnowledgeEngineV2,
     LearningIntelligenceV2,
@@ -213,6 +214,9 @@ class AionCore:
         self.correlation_confidence = CorrelationConfidenceEngine(self.event_bus, self)
         self.recommendation_priority = RecommendationPriorityEngine(self.event_bus, self)
         self.system_story = SystemStoryEngine(self.event_bus, self)
+        # Smart Control V1 is intentionally read-only. It exposes control
+        # eligibility and safety gates but has no actuator execution path.
+        self.smart_control = SmartControlSafetyEngine(self.event_bus, self.registry)
 
         # Event-driven synchronization is started last, after all dependencies exist.
         self.update_engine = UpdateEngine(
@@ -223,6 +227,8 @@ class AionCore:
         )
         self._unsub_auto_capture = None
         self._unsub_planning_capture = None
+        self._unsub_smart_control_keepalive = None
+        self._unsub_smart_control_listener = None
         self._startup_mapping_restore_unsubs: list = []
         self._startup_recovery_unsubs: list = []
         self._last_decision_refresh: datetime | None = None
@@ -266,6 +272,13 @@ class AionCore:
         # refresh forecast-dependent engines once more so the newest rows are live.
         self._refresh_decision_and_api_engines()
         await self.update_engine.async_start()
+        # Supervised ELWA execution is evaluated on every tracked evidence change
+        # and on a low-cost 5 s scheduler. The scheduler only writes when the
+        # configured keepalive is due or the safe request changes.
+        self._unsub_smart_control_listener = self.update_engine.add_listener(self.smart_control.async_evaluate_execution)
+        async def _smart_control_tick(_now=None):
+            await self.smart_control.async_evaluate_execution()
+        self._unsub_smart_control_keepalive = async_track_time_interval(self.hass, _smart_control_tick, timedelta(seconds=5))
         self._schedule_startup_mapping_restore()
         self._schedule_startup_engine_recovery()
         self.start_auto_capture()
@@ -283,10 +296,18 @@ class AionCore:
         )
 
     async def async_unload(self) -> None:
+        # If Zeus owns an active ELWA session, attempt one safe 0 W before unload.
+        await self.smart_control.async_shutdown_execution()
         self.stop_auto_capture()
         if self._unsub_planning_capture:
             self._unsub_planning_capture()
             self._unsub_planning_capture = None
+        if self._unsub_smart_control_keepalive:
+            self._unsub_smart_control_keepalive()
+            self._unsub_smart_control_keepalive = None
+        if self._unsub_smart_control_listener:
+            self._unsub_smart_control_listener()
+            self._unsub_smart_control_listener = None
         self._cancel_startup_mapping_restore()
         self._cancel_startup_engine_recovery()
         await self.update_engine.async_stop()
@@ -399,6 +420,7 @@ class AionCore:
             "Settings API",
             "QA & Diagnostics Center",
             "Optimization Intelligence Engine",
+            "Smart Control & Safety Foundation",
             "Root Cause Intelligence Engine",
             "Correlation & Confidence Engine",
         ]
@@ -417,7 +439,20 @@ class AionCore:
         for device in self.registry.data.get("devices", []):
             if not device.get("enabled", True):
                 continue
-            for key in ("power_entity", "energy_entity", "state_entity", "availability_entity"):
+            for key in (
+                "power_entity",
+                "energy_entity",
+                "state_entity",
+                "availability_entity",
+                # Smart Control / simulator evidence must be watched live so
+                # safety decisions never wait for the slower decision cadence.
+                "control_entity",
+                "control_boiler_temperature_entity",
+                "control_element_temperature_entity",
+                "control_surplus_entity",
+                "control_lockout_entity",
+                "control_previous_controller_entity",
+            ):
                 entity_id = device.get(key)
                 if entity_id:
                     entities.add(entity_id)
@@ -471,6 +506,7 @@ class AionCore:
             ("capability", self.capability),
             ("notifications", self.notifications),
             ("settings_api", self.settings_api),
+            ("smart_control", self.smart_control),
             ("dashboard_api", self.dashboard_api),
         )
         for name, engine in ordered_engines:
@@ -501,6 +537,11 @@ class AionCore:
         # or registered-device state refresh. Keeping it behind the 15-minute
         # decision cadence can miss an entire EV/device session.
         self._guarded_refresh("observation_knowledge_live", self.observation_knowledge)
+
+        # Smart Control simulation is safety-facing UI. Lockout, surplus and
+        # thermal evidence changes must be reflected immediately and must not
+        # wait for the 15-minute decision refresh.
+        self._guarded_refresh("smart_control_live", self.smart_control)
 
         now = datetime.now(timezone.utc)
         if (
@@ -624,6 +665,7 @@ class AionCore:
             "notifications": self.notifications.summary(),
             "dashboard_api": self.dashboard_api.summary(),
             "settings_api": self.settings_api.summary(),
+            "smart_control": self.smart_control.summary(),
             "diagnostics": self.diagnostics.summary(),
             "knowledge": self.knowledge.summary(),
             "learning_intelligence_v2": self.learning_intelligence_v2.summary(),

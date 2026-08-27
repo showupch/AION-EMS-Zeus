@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+import re
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -449,10 +450,78 @@ def _scheduler_preview_attributes(core) -> dict[str, Any]:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
     core = hass.data[DOMAIN][entry.entry_id]
 
+    _update_check = {"checked_at": None, "status": "checking", "latest_version": None, "latest_channel": None, "release_url": None, "error": None}
+
+    def _version_key(value: str) -> tuple:
+        """Return a small SemVer-compatible comparison key for Zeus releases.
+
+        Stable ``14.7.0`` must sort after a prerelease such as ``14.7.0-alpha.39.10`` while a
+        later development base such as ``14.7.0-alpha`` still sorts after an
+        older stable ``14.6.12``. Build metadata is ignored.
+        """
+        raw = str(value or "").strip().lstrip("v").split("+", 1)[0]
+        base, sep, prerelease = raw.partition("-")
+        nums = [int(x) for x in re.findall(r"\d+", base)[:3]]
+        while len(nums) < 3:
+            nums.append(0)
+        pre_key = []
+        if sep:
+            for part in re.findall(r"\d+|[A-Za-z]+", prerelease):
+                pre_key.append((1, int(part)) if part.isdigit() else (0, part.lower()))
+        # Stable release rank 1; prerelease rank 0.
+        return (nums[0], nums[1], nums[2], 0 if sep else 1, tuple(pre_key))
+
+    async def _refresh_update_status(force: bool = False) -> None:
+        now = datetime.now(timezone.utc)
+        checked = _update_check.get("checked_at")
+        if not force and checked and (now - checked).total_seconds() < 21600:
+            return
+        _update_check["checked_at"] = now
+        try:
+            from homeassistant.helpers.aiohttp_client import async_get_clientsession
+            session = async_get_clientsession(hass)
+            url = "https://api.github.com/repos/showupch/AION-EMS-Zeus/releases?per_page=10"
+            async with session.get(url, headers={"Accept": "application/vnd.github+json"}, timeout=10) as response:
+                response.raise_for_status()
+                releases = await response.json()
+            candidates = [r for r in releases if isinstance(r, dict) and not r.get("draft") and r.get("tag_name")]
+            if not candidates:
+                raise RuntimeError("No published GitHub release found")
+            # Zeus' user-facing update status follows the latest stable GitHub
+            # release when one exists. Local alpha/dev builds may legitimately
+            # be newer than that stable release and must not be labelled simply
+            # "UP TO DATE".
+            stable_candidates = [r for r in candidates if not r.get("prerelease")]
+            latest = stable_candidates[0] if stable_candidates else candidates[0]
+            latest_version = str(latest.get("tag_name") or "").lstrip("v")
+            latest_channel = "prerelease" if latest.get("prerelease") else "stable"
+            installed = str(VERSION).lstrip("v")
+            installed_key = _version_key(installed)
+            latest_key = _version_key(latest_version)
+            installed_is_development = bool(re.search(r"(?:^|[-._])(alpha|beta|rc|dev|pre)(?:[-._]|$)", installed, re.I))
+            if latest_key > installed_key:
+                update_status = "update_available"
+            elif installed_is_development and installed_key > latest_key:
+                update_status = "development_build"
+            else:
+                update_status = "up_to_date"
+            _update_check.update({
+                "status": update_status,
+                "latest_version": latest_version,
+                "latest_channel": latest_channel,
+                "release_url": latest.get("html_url"),
+                "error": None,
+            })
+        except Exception as err:
+            _LOGGER.debug("Zeus update check unavailable: %s", err)
+            _update_check.update({"status": "unable_to_check", "error": str(err)[:180]})
+
     async def _async_update_data():
         # The event-driven UpdateEngine owns computation. The coordinator only
-        # publishes the latest snapshot and delivers queued notifications.
+        # publishes the latest snapshot, delivers notifications and performs a
+        # low-frequency read-only Zeus release check.
         await core.notifications.async_deliver(hass)
+        await _refresh_update_status()
         return {"version": core.version, "published_at": datetime.now(timezone.utc).isoformat()}
 
     coordinator = DataUpdateCoordinator(
@@ -1009,9 +1078,81 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         }
 
     sensors = [
-        SimpleSensor(coordinator, core, "Platform Status", "platform_status", "mdi:home-lightning-bolt", lambda c: "Ready", lambda c: {"version": VERSION, "status": "Zeus AI Advisor ready", "architecture": "zeus-12-1-decision-intelligence", "engines": c.engine_names()}),
+        SimpleSensor(coordinator, core, "Platform Status", "platform_status", "mdi:home-lightning-bolt", lambda c: "Ready", lambda c: {"version": VERSION, "status": "Zeus AI Advisor ready", "architecture": "zeus-12-1-decision-intelligence", "engines": c.engine_names(), "update_status": _update_check.get("status"), "latest_version": _update_check.get("latest_version"), "latest_channel": _update_check.get("latest_channel"), "update_available": _update_check.get("status") == "update_available", "release_url": _update_check.get("release_url"), "update_checked_at": _update_check.get("checked_at").isoformat() if _update_check.get("checked_at") else None, "update_error": _update_check.get("error")}),
         SimpleSensor(coordinator, core, "Performance Diagnostics", "performance_diagnostics", "mdi:speedometer", lambda c: c.update_engine.summary().get("status", "Running"), _performance_attributes),
         SimpleSensor(coordinator, core, "Registry Summary", "registry_summary", "mdi:database-cog-outline", lambda c: c.registry.summary().get("status"), lambda c: c.registry.summary()),
+        SimpleSensor(
+            coordinator,
+            core,
+            "Smart Control Safety",
+            "smart_control_safety",
+            "mdi:shield-lock-outline",
+            lambda c: c.smart_control.summary().get("mode", "recommendation_only"),
+            lambda c: {
+                "status": c.smart_control.summary().get("status"),
+                "foundation_version": c.smart_control.summary().get("foundation_version"),
+                "mode": c.smart_control.summary().get("mode"),
+                "execution_path": c.smart_control.summary().get("execution_path"),
+                "automatic_control_enabled": c.smart_control.summary().get("automatic_control_enabled", False),
+                "supervised_control_enabled": c.smart_control.summary().get("supervised_control_enabled", False),
+                "recommendation_only": c.smart_control.summary().get("recommendation_only", True),
+                "fail_closed": c.smart_control.summary().get("fail_closed", True),
+                "registered_devices": c.smart_control.summary().get("registered_devices", 0),
+                "controllable_candidates": c.smart_control.summary().get("controllable_candidates", 0),
+                "permissioned_candidates": c.smart_control.summary().get("permissioned_candidates", 0),
+                "simulations": list(c.smart_control.summary().get("simulations") or []),
+                "simulation_count": c.smart_control.summary().get("simulation_count", 0),
+                "simulation_history": list(c.smart_control.summary().get("simulation_history") or [])[:40],
+                "simulation_history_count": c.smart_control.summary().get("simulation_history_count", 0),
+                "latest_simulation_transition": c.smart_control.summary().get("latest_simulation_transition"),
+                "devices": [
+                    {
+                        "device_id": d.get("device_id"),
+                        "name": d.get("name"),
+                        "type": d.get("type"),
+                        "status": d.get("status"),
+                        "enabled": d.get("enabled"),
+                        "controllable": d.get("controllable"),
+                        "control_permission": d.get("control_permission"),
+                        "actuator_configured": d.get("actuator_configured"),
+                        "actuator_type": d.get("actuator_type"),
+                        "power_limits_w": d.get("power_limits_w"),
+                        "execution_allowed": d.get("execution_allowed", False),
+                        "blocked_reasons": list(d.get("blocked_reasons") or [])[:4],
+                    }
+                    for d in c.smart_control.summary().get("devices", [])
+                ],
+            },
+        ),
+        SimpleSensor(
+            coordinator,
+            core,
+            "Smart Control Simulation",
+            "smart_control_simulation",
+            "mdi:timeline-clock-outline",
+            lambda c: (
+                (c.smart_control.summary().get("latest_simulation_transition") or {}).get("decision")
+                or "Waiting"
+            ),
+            lambda c: {
+                "timestamp": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("timestamp"),
+                "device_id": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("device_id"),
+                "name": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("name"),
+                "requested_power_w": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("requested_power_w"),
+                "requested_power_kw": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("requested_power_kw"),
+                "reason": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("reason"),
+                "current_power_w": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("current_power_w"),
+                "actual_power_w": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("actual_power_w"),
+                "power_error_w": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("power_error_w"),
+                "power_error_percent": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("power_error_percent"),
+                "comparison": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("comparison"),
+                "surplus_w": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("surplus_w"),
+                "boiler_temperature_c": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("boiler_temperature_c"),
+                "element_temperature_c": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("element_temperature_c"),
+                "lockout_active": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("lockout_active"),
+                "would_execute": False,
+            },
+        ),
         SimpleSensor(coordinator, core, "Entity Discovery", "entity_discovery", "mdi:magnify-scan", lambda c: c.discovery.summary().get("status"), lambda c: c.discovery.summary()),
         SimpleSensor(coordinator, core, "Energy Mapping", "energy_mapping", "mdi:transmission-tower-import", lambda c: c.energy_mapping.public_summary().get("status"), lambda c: c.energy_mapping.public_summary()),
         SimpleSensor(coordinator, core, "Energy Flow", "energy_flow", "mdi:home-lightning-bolt-outline", lambda c: c.energy_flow.summary().get("status"), lambda c: c.energy_flow.summary()),

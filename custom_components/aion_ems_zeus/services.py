@@ -156,6 +156,38 @@ def _device_schema(require_all=True):
         vol.Optional("compressor_speed_entity"): cv.entity_id,
         vol.Optional("compressor_target_speed_entity"): cv.entity_id,
         vol.Optional("dhw_target_temperature_entity"): cv.entity_id,
+        vol.Optional("controllable", default=False): cv.boolean,
+        vol.Optional("control_permission", default=False): cv.boolean,
+        vol.Optional("actuator_type"): vol.In(["entity", "service", "modbus"]),
+        vol.Optional("control_entity"): cv.entity_id,
+        vol.Optional("control_service"): cv.string,
+        vol.Optional("control_min_power_w"): vol.Coerce(float),
+        vol.Optional("control_max_power_w"): vol.Coerce(float),
+        vol.Optional("control_hub"): cv.string,
+        vol.Optional("control_unit"): vol.Coerce(int),
+        vol.Optional("control_address"): vol.Coerce(int),
+        vol.Optional("control_boiler_temperature_entity"): cv.entity_id,
+        vol.Optional("control_element_temperature_entity"): cv.entity_id,
+        vol.Optional("control_surplus_entity"): cv.entity_id,
+        vol.Optional("control_lockout_entity"): cv.entity_id,
+        vol.Optional("control_stop_temperature_c"): vol.Coerce(float),
+        vol.Optional("control_restart_temperature_c"): vol.Coerce(float),
+        vol.Optional("device_profile"): cv.string,
+        vol.Optional("control_solar_start_threshold_w"): vol.Coerce(float),
+        vol.Optional("control_solar_factor"): vol.Coerce(float),
+        vol.Optional("control_solar_export_reserve_w"): vol.Coerce(float),
+        vol.Optional("control_element_taper_start_c"): vol.Coerce(float),
+        vol.Optional("control_element_hard_stop_c"): vol.Coerce(float),
+        vol.Optional("control_grid_backup_start_c"): vol.Coerce(float),
+        vol.Optional("control_grid_backup_stop_c"): vol.Coerce(float),
+        vol.Optional("control_keepalive_interval_s"): vol.Coerce(float),
+        vol.Optional("control_owner"): vol.In(["home_assistant", "zeus"]),
+        vol.Optional("control_previous_controller_entity"): cv.entity_id,
+        vol.Optional("control_handover_confirmed", default=False): cv.boolean,
+        vol.Optional("control_execution_arm_requested", default=False): cv.boolean,
+        vol.Optional("control_execution_arm_confirmed", default=False): cv.boolean,
+        vol.Optional("control_execution_master_enabled", default=False): cv.boolean,
+        vol.Optional("control_emergency_stop", default=False): cv.boolean,
     })
 
 
@@ -210,6 +242,38 @@ def _device_update_schema():
         vol.Optional("compressor_speed_entity"): cv.entity_id,
         vol.Optional("compressor_target_speed_entity"): cv.entity_id,
         vol.Optional("dhw_target_temperature_entity"): cv.entity_id,
+        vol.Optional("controllable"): cv.boolean,
+        vol.Optional("control_permission"): cv.boolean,
+        vol.Optional("actuator_type"): vol.In(["entity", "service", "modbus"]),
+        vol.Optional("control_entity"): cv.entity_id,
+        vol.Optional("control_service"): cv.string,
+        vol.Optional("control_min_power_w"): vol.Coerce(float),
+        vol.Optional("control_max_power_w"): vol.Coerce(float),
+        vol.Optional("control_hub"): cv.string,
+        vol.Optional("control_unit"): vol.Coerce(int),
+        vol.Optional("control_address"): vol.Coerce(int),
+        vol.Optional("control_boiler_temperature_entity"): cv.entity_id,
+        vol.Optional("control_element_temperature_entity"): cv.entity_id,
+        vol.Optional("control_surplus_entity"): cv.entity_id,
+        vol.Optional("control_lockout_entity"): cv.entity_id,
+        vol.Optional("control_stop_temperature_c"): vol.Coerce(float),
+        vol.Optional("control_restart_temperature_c"): vol.Coerce(float),
+        vol.Optional("device_profile"): cv.string,
+        vol.Optional("control_solar_start_threshold_w"): vol.Coerce(float),
+        vol.Optional("control_solar_factor"): vol.Coerce(float),
+        vol.Optional("control_solar_export_reserve_w"): vol.Coerce(float),
+        vol.Optional("control_element_taper_start_c"): vol.Coerce(float),
+        vol.Optional("control_element_hard_stop_c"): vol.Coerce(float),
+        vol.Optional("control_grid_backup_start_c"): vol.Coerce(float),
+        vol.Optional("control_grid_backup_stop_c"): vol.Coerce(float),
+        vol.Optional("control_keepalive_interval_s"): vol.Coerce(float),
+        vol.Optional("control_owner"): vol.In(["home_assistant", "zeus"]),
+        vol.Optional("control_previous_controller_entity"): cv.entity_id,
+        vol.Optional("control_handover_confirmed"): cv.boolean,
+        vol.Optional("control_execution_arm_requested"): cv.boolean,
+        vol.Optional("control_execution_arm_confirmed"): cv.boolean,
+        vol.Optional("control_execution_master_enabled"): cv.boolean,
+        vol.Optional("control_emergency_stop"): cv.boolean,
     })
 
 
@@ -394,10 +458,44 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             compressor_speed_entity=call.data.get("compressor_speed_entity"),
             compressor_target_speed_entity=call.data.get("compressor_target_speed_entity"),
             dhw_target_temperature_entity=call.data.get("dhw_target_temperature_entity"),
+            controllable=call.data.get("controllable", False),
+            control_permission=call.data.get("control_permission", False),
+            actuator_type=call.data.get("actuator_type"),
+            control_entity=call.data.get("control_entity"),
+            control_service=call.data.get("control_service"),
+            control_min_power_w=call.data.get("control_min_power_w"),
+            control_max_power_w=call.data.get("control_max_power_w"),
+            control_hub=call.data.get("control_hub"),
+            control_unit=call.data.get("control_unit"),
+            control_address=call.data.get("control_address"),
+            control_boiler_temperature_entity=call.data.get("control_boiler_temperature_entity"),
+            control_element_temperature_entity=call.data.get("control_element_temperature_entity"),
+            control_surplus_entity=call.data.get("control_surplus_entity"),
+            control_lockout_entity=call.data.get("control_lockout_entity"),
+            control_stop_temperature_c=call.data.get("control_stop_temperature_c"),
+            control_restart_temperature_c=call.data.get("control_restart_temperature_c"),
+            device_profile=call.data.get("device_profile"),
+            control_solar_start_threshold_w=call.data.get("control_solar_start_threshold_w"),
+            control_solar_factor=call.data.get("control_solar_factor"),
+            control_solar_export_reserve_w=call.data.get("control_solar_export_reserve_w"),
+            control_element_taper_start_c=call.data.get("control_element_taper_start_c"),
+            control_element_hard_stop_c=call.data.get("control_element_hard_stop_c"),
+            control_grid_backup_start_c=call.data.get("control_grid_backup_start_c"),
+            control_grid_backup_stop_c=call.data.get("control_grid_backup_stop_c"),
+            control_keepalive_interval_s=call.data.get("control_keepalive_interval_s"),
+            control_owner=call.data.get("control_owner"),
+            control_previous_controller_entity=call.data.get("control_previous_controller_entity"),
+            control_handover_confirmed=call.data.get("control_handover_confirmed", False),
+            control_execution_arm_requested=call.data.get("control_execution_arm_requested", False),
+            control_execution_arm_confirmed=call.data.get("control_execution_arm_confirmed", False),
+            control_execution_master_enabled=call.data.get("control_execution_master_enabled", False),
+            control_emergency_stop=call.data.get("control_emergency_stop", False),
         )
         issues = await core.registry.async_add_device(device)
         core.device_import_manager.last_validation = {"status": "Imported" if not any(i["severity"] == "error" for i in issues) else "Error", "device": device, "issues": issues, "message": "Device import completed."}
+        core.update_engine.refresh_tracked_entities()
         core.refresh_pipeline()
+        await core.smart_control.async_evaluate_execution()
 
     async def update_device(call: ServiceCall) -> None:
         """Update a device without dropping fields omitted by older/cached frontends."""
@@ -410,6 +508,23 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         )
         merged = dict(existing)
         merged.update(dict(call.data))
+        # Control numeric metadata is safety-critical. Never replace a valid
+        # persisted Modbus/power/temperature value with a missing/non-finite one.
+        import math
+        for key in (
+            "control_min_power_w", "control_max_power_w", "control_unit",
+            "control_address", "control_stop_temperature_c",
+            "control_restart_temperature_c", "control_solar_start_threshold_w",
+            "control_solar_factor", "control_solar_export_reserve_w", "control_element_taper_start_c",
+            "control_element_hard_stop_c", "control_grid_backup_start_c",
+            "control_grid_backup_stop_c", "control_keepalive_interval_s",
+        ):
+            value = merged.get(key)
+            invalid = value is None
+            if isinstance(value, float) and not math.isfinite(value):
+                invalid = True
+            if invalid and existing.get(key) is not None:
+                merged[key] = existing.get(key)
         # Build through the canonical registry constructor so types and energy
         # classification remain normalized, but preserve every known mapping.
         device = core.registry.build_device(
@@ -456,6 +571,38 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             compressor_speed_entity=merged.get("compressor_speed_entity", existing.get("compressor_speed_entity")),
             compressor_target_speed_entity=merged.get("compressor_target_speed_entity", existing.get("compressor_target_speed_entity")),
             dhw_target_temperature_entity=merged.get("dhw_target_temperature_entity", existing.get("dhw_target_temperature_entity")),
+            controllable=merged.get("controllable", existing.get("controllable", False)),
+            control_permission=merged.get("control_permission", existing.get("control_permission", False)),
+            actuator_type=merged.get("actuator_type", existing.get("actuator_type")),
+            control_entity=merged.get("control_entity", existing.get("control_entity")),
+            control_service=merged.get("control_service", existing.get("control_service")),
+            control_min_power_w=merged.get("control_min_power_w", existing.get("control_min_power_w")),
+            control_max_power_w=merged.get("control_max_power_w", existing.get("control_max_power_w")),
+            control_hub=merged.get("control_hub", existing.get("control_hub")),
+            control_unit=merged.get("control_unit", existing.get("control_unit")),
+            control_address=merged.get("control_address", existing.get("control_address")),
+            control_boiler_temperature_entity=merged.get("control_boiler_temperature_entity", existing.get("control_boiler_temperature_entity")),
+            control_element_temperature_entity=merged.get("control_element_temperature_entity", existing.get("control_element_temperature_entity")),
+            control_surplus_entity=merged.get("control_surplus_entity", existing.get("control_surplus_entity")),
+            control_lockout_entity=merged.get("control_lockout_entity", existing.get("control_lockout_entity")),
+            control_stop_temperature_c=merged.get("control_stop_temperature_c", existing.get("control_stop_temperature_c")),
+            control_restart_temperature_c=merged.get("control_restart_temperature_c", existing.get("control_restart_temperature_c")),
+            device_profile=merged.get("device_profile", existing.get("device_profile")),
+            control_solar_start_threshold_w=merged.get("control_solar_start_threshold_w", existing.get("control_solar_start_threshold_w")),
+            control_solar_factor=merged.get("control_solar_factor", existing.get("control_solar_factor")),
+            control_solar_export_reserve_w=merged.get("control_solar_export_reserve_w", existing.get("control_solar_export_reserve_w")),
+            control_element_taper_start_c=merged.get("control_element_taper_start_c", existing.get("control_element_taper_start_c")),
+            control_element_hard_stop_c=merged.get("control_element_hard_stop_c", existing.get("control_element_hard_stop_c")),
+            control_grid_backup_start_c=merged.get("control_grid_backup_start_c", existing.get("control_grid_backup_start_c")),
+            control_grid_backup_stop_c=merged.get("control_grid_backup_stop_c", existing.get("control_grid_backup_stop_c")),
+            control_keepalive_interval_s=merged.get("control_keepalive_interval_s", existing.get("control_keepalive_interval_s")),
+            control_owner=merged.get("control_owner", existing.get("control_owner", "home_assistant")),
+            control_previous_controller_entity=merged.get("control_previous_controller_entity", existing.get("control_previous_controller_entity")),
+            control_handover_confirmed=merged.get("control_handover_confirmed", existing.get("control_handover_confirmed", False)),
+            control_execution_arm_requested=merged.get("control_execution_arm_requested", existing.get("control_execution_arm_requested", False)),
+            control_execution_arm_confirmed=merged.get("control_execution_arm_confirmed", existing.get("control_execution_arm_confirmed", False)),
+            control_execution_master_enabled=merged.get("control_execution_master_enabled", existing.get("control_execution_master_enabled", False)),
+            control_emergency_stop=merged.get("control_emergency_stop", existing.get("control_emergency_stop", False)),
         )
         issues = await core.registry.async_add_device(device)
         core.device_import_manager.last_validation = {
@@ -464,7 +611,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             "issues": issues,
             "message": "Device update completed with persistence-safe field merge.",
         }
+        core.update_engine.refresh_tracked_entities()
         core.refresh_pipeline()
+        await core.smart_control.async_evaluate_execution()
 
     async def remove_device(call: ServiceCall) -> None:
         core = _core(hass)
