@@ -86,6 +86,7 @@ class RegistryEngine:
             "dhw_electrical_energy_entity", "dhw_thermal_energy_entity",
             "cooling_electrical_power_entity", "cooling_electrical_energy_entity",
             "cooling_thermal_power_entity", "cooling_thermal_energy_entity",
+            "separate_heating_dhw_measurements", "cooling_measurements_enabled",
             "operating_mode_entity", "target_temperature_entity", "jaz_entity",
             "heat_carrier_forward_entity", "heat_carrier_return_entity",
             "source_in_temperature_entity", "source_out_temperature_entity",
@@ -105,6 +106,21 @@ class RegistryEngine:
                 # unsupported/unconfigured inputs so exports are schema-stable.
                 for field in heat_pump_optional_fields:
                     device.setdefault(field, None)
+                # Adaptive Mapping UI migration: existing explicit circuit mappings
+                # automatically keep the matching advanced section enabled. Users
+                # can still disable an empty section later without losing evidence.
+                if device.get("separate_heating_dhw_measurements") is None:
+                    device["separate_heating_dhw_measurements"] = any(device.get(key) for key in (
+                        "heating_electrical_power_entity", "heating_thermal_power_entity",
+                        "heating_electrical_energy_entity", "heating_thermal_energy_entity",
+                        "dhw_electrical_power_entity", "dhw_thermal_power_entity",
+                        "dhw_electrical_energy_entity", "dhw_thermal_energy_entity",
+                    ))
+                if device.get("cooling_measurements_enabled") is None:
+                    device["cooling_measurements_enabled"] = any(device.get(key) for key in (
+                        "cooling_electrical_power_entity", "cooling_electrical_energy_entity",
+                        "cooling_thermal_power_entity", "cooling_thermal_energy_entity",
+                    ))
                 # Heat Pump Circuit Mapping v2 semantic migration: legacy generic
                 # circuit-energy mappings stay unclassified. Never guess electrical
                 # vs thermal; explicit v2 fields are authoritative once mapped.
@@ -159,6 +175,8 @@ class RegistryEngine:
         cooling_electrical_energy_entity: str | None = None,
         cooling_thermal_power_entity: str | None = None,
         cooling_thermal_energy_entity: str | None = None,
+        separate_heating_dhw_measurements: bool = False,
+        cooling_measurements_enabled: bool = False,
         operating_mode_entity: str | None = None,
         target_temperature_entity: str | None = None,
         jaz_entity: str | None = None,
@@ -281,6 +299,8 @@ class RegistryEngine:
             "cooling_electrical_energy_entity": cooling_electrical_energy_entity,
             "cooling_thermal_power_entity": cooling_thermal_power_entity,
             "cooling_thermal_energy_entity": cooling_thermal_energy_entity,
+            "separate_heating_dhw_measurements": bool(separate_heating_dhw_measurements),
+            "cooling_measurements_enabled": bool(cooling_measurements_enabled),
             "operating_mode_entity": operating_mode_entity,
             "target_temperature_entity": target_temperature_entity,
             "jaz_entity": jaz_entity,
