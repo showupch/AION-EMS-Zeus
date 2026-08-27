@@ -1,6 +1,6 @@
 # AION EMS Zeus — HACS Foundation
 
-Version: `14.5.0`
+Version: `14.8.0`
 
 This repository is prepared for installation as a **HACS custom repository**.
 
@@ -53,7 +53,7 @@ The repository now contains:
 
 ## Stable release status
 
-Zeus v14.5.0 is a stable GitHub/HACS release. Existing HACS installations can
+Zeus v14.8.0 is a stable GitHub/HACS release. Existing HACS installations can
 receive stable updates through the repository release channel.
 
 ## Important
