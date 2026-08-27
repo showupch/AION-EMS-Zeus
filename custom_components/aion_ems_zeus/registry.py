@@ -80,6 +80,12 @@ class RegistryEngine:
             "compressor_runtime_entity", "compressor_starts_entity",
             "dhw_temperature_entity", "dhw_energy_entity",
             "heating_energy_entity", "cooling_energy_entity",
+            "heating_electrical_power_entity", "heating_thermal_power_entity",
+            "heating_electrical_energy_entity", "heating_thermal_energy_entity",
+            "dhw_electrical_power_entity", "dhw_thermal_power_entity",
+            "dhw_electrical_energy_entity", "dhw_thermal_energy_entity",
+            "cooling_electrical_power_entity", "cooling_electrical_energy_entity",
+            "cooling_thermal_power_entity", "cooling_thermal_energy_entity",
             "operating_mode_entity", "target_temperature_entity", "jaz_entity",
             "heat_carrier_forward_entity", "heat_carrier_return_entity",
             "source_in_temperature_entity", "source_out_temperature_entity",
@@ -99,6 +105,9 @@ class RegistryEngine:
                 # unsupported/unconfigured inputs so exports are schema-stable.
                 for field in heat_pump_optional_fields:
                     device.setdefault(field, None)
+                # Heat Pump Circuit Mapping v2 semantic migration: legacy generic
+                # circuit-energy mappings stay unclassified. Never guess electrical
+                # vs thermal; explicit v2 fields are authoritative once mapped.
         await self.async_save()
         self.event_bus.publish("RegistryLoaded", "RegistryEngine", self.summary())
 
@@ -138,6 +147,18 @@ class RegistryEngine:
         dhw_energy_entity: str | None = None,
         heating_energy_entity: str | None = None,
         cooling_energy_entity: str | None = None,
+        heating_electrical_power_entity: str | None = None,
+        heating_thermal_power_entity: str | None = None,
+        heating_electrical_energy_entity: str | None = None,
+        heating_thermal_energy_entity: str | None = None,
+        dhw_electrical_power_entity: str | None = None,
+        dhw_thermal_power_entity: str | None = None,
+        dhw_electrical_energy_entity: str | None = None,
+        dhw_thermal_energy_entity: str | None = None,
+        cooling_electrical_power_entity: str | None = None,
+        cooling_electrical_energy_entity: str | None = None,
+        cooling_thermal_power_entity: str | None = None,
+        cooling_thermal_energy_entity: str | None = None,
         operating_mode_entity: str | None = None,
         target_temperature_entity: str | None = None,
         jaz_entity: str | None = None,
@@ -248,6 +269,18 @@ class RegistryEngine:
             "dhw_energy_entity": dhw_energy_entity,
             "heating_energy_entity": heating_energy_entity,
             "cooling_energy_entity": cooling_energy_entity,
+            "heating_electrical_power_entity": heating_electrical_power_entity,
+            "heating_thermal_power_entity": heating_thermal_power_entity,
+            "heating_electrical_energy_entity": heating_electrical_energy_entity,
+            "heating_thermal_energy_entity": heating_thermal_energy_entity,
+            "dhw_electrical_power_entity": dhw_electrical_power_entity,
+            "dhw_thermal_power_entity": dhw_thermal_power_entity,
+            "dhw_electrical_energy_entity": dhw_electrical_energy_entity,
+            "dhw_thermal_energy_entity": dhw_thermal_energy_entity,
+            "cooling_electrical_power_entity": cooling_electrical_power_entity,
+            "cooling_electrical_energy_entity": cooling_electrical_energy_entity,
+            "cooling_thermal_power_entity": cooling_thermal_power_entity,
+            "cooling_thermal_energy_entity": cooling_thermal_energy_entity,
             "operating_mode_entity": operating_mode_entity,
             "target_temperature_entity": target_temperature_entity,
             "jaz_entity": jaz_entity,

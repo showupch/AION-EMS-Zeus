@@ -4020,7 +4020,7 @@ class DeviceAnalyticsEngine:
         for device in self.registry.data.get("devices", []):
             if str(device.get("type") or "") != "heat_pump":
                 continue
-            dhw_entity = str(device.get("dhw_energy_entity") or "").strip()
+            dhw_entity = str(device.get("dhw_thermal_energy_entity") or device.get("dhw_energy_entity") or "").strip()
             if not dhw_entity:
                 continue
             recorder_sources.append({
@@ -5518,17 +5518,17 @@ class DeviceAnalyticsEngine:
                     "dhw_target_temperature_unit": hp_unit("dhw_target_temperature_entity"),
                     "heating_energy_state": hp_number("heating_energy_entity"),
                     "heating_energy_unit": hp_unit("heating_energy_entity"),
-                    "dhw_energy_state": hp_number("dhw_energy_entity"),
-                    "dhw_energy_unit": hp_unit("dhw_energy_entity"),
-                    "cooling_energy_state": hp_number("cooling_energy_entity"),
-                    "cooling_energy_unit": hp_unit("cooling_energy_entity"),
+                    "dhw_energy_state": hp_number("dhw_thermal_energy_entity") if device.get("dhw_thermal_energy_entity") else hp_number("dhw_energy_entity"),
+                    "dhw_energy_unit": hp_unit("dhw_thermal_energy_entity") if device.get("dhw_thermal_energy_entity") else hp_unit("dhw_energy_entity"),
+                    "cooling_energy_state": hp_number("cooling_thermal_energy_entity") if device.get("cooling_thermal_energy_entity") else hp_number("cooling_energy_entity"),
+                    "cooling_energy_unit": hp_unit("cooling_thermal_energy_entity") if device.get("cooling_thermal_energy_entity") else hp_unit("cooling_energy_entity"),
                     "policy": "Measured relationships only. Zeus does not infer manufacturer limits, expected COP, or thermal output when the required measurement is missing.",
                 }
 
             hp_dhw_period = None
             hp_dhw_energy_entity = ""
             if str(device.get("type") or "") == "heat_pump":
-                hp_dhw_energy_entity = str(device.get("dhw_energy_entity") or "").strip()
+                hp_dhw_energy_entity = str(device.get("dhw_thermal_energy_entity") or device.get("dhw_energy_entity") or "").strip()
                 if hp_dhw_energy_entity:
                     hp_dhw_period = self._recorder_periods({"energy_entity": hp_dhw_energy_entity}, today)
 
