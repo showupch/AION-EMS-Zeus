@@ -1,0 +1,32 @@
+name: Zeus Forecast audit
+
+on:
+  push:
+    branches:
+      - zeus-forecast-next
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download exact v14.8.10.2 release asset
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 2 -o baseline.zip https://github.com/showupch/AION-EMS-Zeus/releases/download/v14.8.10.2/aion_ems_zeus.zip
+          echo 'facc77af3450a8668e85eb154dac7c873315915a3d6535aa35c179a4d114801d  baseline.zip' | sha256sum -c -
+          unzip -q baseline.zip -d baseline
+      - name: Map Forecast implementation
+        run: |
+          set -euo pipefail
+          echo '=== PACKAGE FILES RELEVANT TO FORECAST ==='
+          find baseline -type f | sed 's#^baseline/##' | grep -Ei 'forecast|weather|predict|planning|solar|energy|frontend' | sort || true
+          echo
+          echo '=== FORECAST REFERENCES ==='
+          grep -RniE --include='*.py' --include='*.js' --include='*.json' --include='*.html' --include='*.css' 'forecast|weather|irradiance|cloud|temperature forecast|solar forecast|generation forecast|load forecast|prediction|predicted' baseline | head -n 1200 || true
+          echo
+          echo '=== TOP-LEVEL MANIFEST / SERVICES / CORE REFERENCES ==='
+          grep -nEi 'forecast|weather|predict' baseline/manifest.json baseline/services.yaml baseline/core.py baseline/__init__.py 2>/dev/null || true
