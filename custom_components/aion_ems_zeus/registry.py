@@ -46,6 +46,7 @@ class RegistryEngine:
             "topology_settings": {"default_site_id": "home", "balance_tolerance_percent": 10},
             "home_settings": {"battery_capacity_kwh": None, "owner_name": "", "home_name": "Home", "use_owner_name": True, "story_style": "friendly", "briefing_length": "normal", "data_epoch": None},
             "sources": {"weather": {"entity_id": None, "enabled": False}, "tariffs": {"enabled": False, "currency": "CHF", "import_tariff": None, "export_tariff": None, "standing_charge": 0.0, "vat_included": True}},
+            "switch_hub": [],
         }
 
     async def async_load(self) -> None:
@@ -71,6 +72,7 @@ class RegistryEngine:
             home_settings.setdefault("data_epoch", None)
             self.data.setdefault("sources", {"weather": {"entity_id": None, "enabled": False}})
             self.data["sources"].setdefault("tariffs", {"enabled": False, "currency": "CHF", "import_tariff": None, "export_tariff": None, "standing_charge": 0.0, "vat_included": True})
+            self.data.setdefault("switch_hub", [])
         self.data["schema_version"] = 4
         # v9 migration: classify every existing energy entity without deleting data.
         heat_pump_optional_fields = (
@@ -90,11 +92,31 @@ class RegistryEngine:
             "operating_mode_entity", "target_temperature_entity", "jaz_entity",
             "heat_carrier_forward_entity", "heat_carrier_return_entity",
             "source_in_temperature_entity", "source_out_temperature_entity",
-            "source_pump_speed_entity", "compressor_activity_entity",
+            "source_pump_speed_entity", "heat_carrier_pump_speed_entity", "compressor_activity_entity",
             "compressor_speed_entity", "compressor_target_speed_entity",
             "dhw_target_temperature_entity",
         )
         for device in self.data.get("devices", []):
+            # v14.8.10.5: Zeus Direct Modbus owns the live ELWA power and
+            # element-temperature evidence.  Direct mode therefore wires the
+            # registered device to Zeus-native HA sensors instead of requiring
+            # duplicate Home Assistant Modbus YAML sensors.
+            if (
+                str(device.get("type") or "") == "water_heater"
+                and str(device.get("device_profile") or "") == "my_pv_elwa"
+                and bool(str(device.get("control_elwa_ip") or "").strip())
+            ):
+                device["power_entity"] = "sensor.zeus_elwa_power"
+                device["temperature_entity"] = "sensor.zeus_elwa_temperature"
+                # Direct Modbus owns element-temperature evidence too. Keep the
+                # separate boiler/DHW sensor untouched: register 1001 is the
+                # ELWA element temperature, not the tank temperature.
+                device["control_element_temperature_entity"] = "sensor.zeus_elwa_temperature"
+                # alpha.13 cleanup: a legacy UI bug could persist the optional
+                # helper with the domain duplicated. It is not a real entity and
+                # must not remain visible or act as an interlock.
+                if str(device.get("control_lockout_entity") or "").startswith("input_boolean.input_boolean_"):
+                    device["control_lockout_entity"] = None
             requested = str(device.get("energy_type") or "auto")
             device["energy_type"] = self.detect_energy_type(device.get("energy_entity"), requested)
             dtype = str(device.get("type") or "").lower()
@@ -134,8 +156,8 @@ class RegistryEngine:
         self,
         device_id: str,
         name: str,
-        power_entity: str,
-        energy_entity: str,
+        power_entity: str | None,
+        energy_entity: str | None,
         energy_type: str = "auto",
         enabled: bool = True,
         device_type: str = "custom",
@@ -185,18 +207,21 @@ class RegistryEngine:
         source_in_temperature_entity: str | None = None,
         source_out_temperature_entity: str | None = None,
         source_pump_speed_entity: str | None = None,
+        heat_carrier_pump_speed_entity: str | None = None,
         compressor_activity_entity: str | None = None,
         compressor_speed_entity: str | None = None,
         compressor_target_speed_entity: str | None = None,
         dhw_target_temperature_entity: str | None = None,
         controllable: bool = False,
         control_permission: bool = False,
+        control_dual_permission_armed: bool = False,
         actuator_type: str | None = None,
         control_entity: str | None = None,
         control_service: str | None = None,
         control_min_power_w: float | None = None,
         control_max_power_w: float | None = None,
         control_hub: str | None = None,
+        control_elwa_ip: str | None = None,
         control_unit: int | None = None,
         control_address: int | None = None,
         control_boiler_temperature_entity: str | None = None,
@@ -221,6 +246,11 @@ class RegistryEngine:
         control_execution_arm_confirmed: bool = False,
         control_execution_master_enabled: bool = False,
         control_emergency_stop: bool = False,
+        control_goe_id: str | None = None,
+        control_mqtt_topic: str | None = None,
+        control_grid_power_entity: str | None = None,
+        control_battery_power_entity: str | None = None,
+        control_publish_interval_s: float | None = None,
     ) -> dict[str, Any]:
         return {
             "id": device_id,
@@ -239,12 +269,14 @@ class RegistryEngine:
             "icon": icon,
             "controllable": bool(controllable),
             "control_permission": bool(control_permission),
+            "control_dual_permission_armed": bool(control_dual_permission_armed),
             "actuator_type": actuator_type,
             "control_entity": control_entity,
             "control_service": control_service,
             "control_min_power_w": control_min_power_w,
             "control_max_power_w": control_max_power_w,
             "control_hub": control_hub,
+            "control_elwa_ip": control_elwa_ip,
             "control_unit": control_unit,
             "control_address": control_address,
             "control_boiler_temperature_entity": control_boiler_temperature_entity,
@@ -269,6 +301,11 @@ class RegistryEngine:
             "control_execution_arm_confirmed": bool(control_execution_arm_confirmed),
             "control_execution_master_enabled": bool(control_execution_master_enabled),
             "control_emergency_stop": bool(control_emergency_stop),
+            "control_goe_id": control_goe_id,
+            "control_mqtt_topic": control_mqtt_topic,
+            "control_grid_power_entity": control_grid_power_entity,
+            "control_battery_power_entity": control_battery_power_entity,
+            "control_publish_interval_s": control_publish_interval_s,
             "automation_entity": None,
             "notes": notes,
             "hybrid_inverter": bool(hybrid_inverter),
@@ -309,6 +346,7 @@ class RegistryEngine:
             "source_in_temperature_entity": source_in_temperature_entity,
             "source_out_temperature_entity": source_out_temperature_entity,
             "source_pump_speed_entity": source_pump_speed_entity,
+            "heat_carrier_pump_speed_entity": heat_carrier_pump_speed_entity,
             "compressor_activity_entity": compressor_activity_entity,
             "compressor_speed_entity": compressor_speed_entity,
             "compressor_target_speed_entity": compressor_target_speed_entity,
@@ -345,13 +383,27 @@ class RegistryEngine:
             issues.append({"severity": "error", "code": "DEVICE_ID_REQUIRED", "message": "Device ID is required."})
         if not device.get("name"):
             issues.append({"severity": "error", "code": "DEVICE_NAME_REQUIRED", "message": "Device name is required."})
-        if not device.get("power_entity"):
-            issues.append({"severity": "error", "code": "POWER_ENTITY_REQUIRED", "message": "Power entity is required."})
-        if not device.get("energy_entity"):
-            issues.append({"severity": "error", "code": "ENERGY_ENTITY_REQUIRED", "message": "Energy entity is required (daily or total increasing)."})
+        device_type = str(device.get("type") or "")
+        hp_classified_electrical = device_type == "heat_pump" and any(device.get(key) for key in (
+            "heating_electrical_power_entity", "heating_electrical_energy_entity",
+            "dhw_electrical_power_entity", "dhw_electrical_energy_entity",
+        ))
+        elwa_direct = (
+            device_type == "water_heater"
+            and str(device.get("device_profile") or "") == "my_pv_elwa"
+            and bool(str(device.get("control_elwa_ip") or "").strip())
+        )
+        if not device.get("power_entity") and not hp_classified_electrical and not elwa_direct:
+            issues.append({"severity": "error", "code": "POWER_ENTITY_REQUIRED", "message": "Power entity is required unless the Heat Pump has classified electrical mappings or my-PV ELWA uses Zeus Direct Modbus."})
+        if not device.get("energy_entity") and not hp_classified_electrical and not elwa_direct:
+            issues.append({"severity": "error", "code": "ENERGY_ENTITY_REQUIRED", "message": "Energy entity is required unless the Heat Pump has classified electrical mappings or my-PV ELWA uses Zeus Direct Modbus."})
         for key, expected_class, units in (("power_entity", "power", {"W", "kW"}), ("energy_entity", "energy", {"Wh", "kWh", "MWh"})):
             entity_id = device.get(key)
             if not entity_id:
+                continue
+            if elwa_direct and key == "power_entity" and entity_id == "sensor.zeus_elwa_power":
+                # The native entity is created by this integration and can be
+                # unknown until the first successful direct Modbus poll.
                 continue
             if entity_id.startswith(("sensor.aion_ems_zeus_", "binary_sensor.aion_ems_zeus_", "switch.aion_ems_zeus_")):
                 issues.append({"severity": "error", "code": "CIRCULAR_AION_MAPPING", "message": f"{key} cannot use an AION output entity."})
@@ -376,6 +428,8 @@ class RegistryEngine:
         if energy_type not in {"daily", "total_increasing", "auto"}:
             issues.append({"severity": "error", "code": "ENERGY_TYPE_INVALID", "message": "Energy type must be Auto, Daily, or Total Increasing."})
         temperature_entity = device.get("temperature_entity")
+        if elwa_direct and temperature_entity == "sensor.zeus_elwa_temperature":
+            temperature_entity = None  # native direct sensor; validated by transport diagnostics
         if temperature_entity:
             if str(temperature_entity).startswith(("sensor.aion_ems_zeus_", "binary_sensor.aion_ems_zeus_", "switch.aion_ems_zeus_")):
                 issues.append({"severity": "error", "code": "CIRCULAR_AION_MAPPING", "message": "temperature_entity cannot use an AION output entity."})
@@ -462,7 +516,7 @@ class RegistryEngine:
             )
             if unit not in units and device_class != expected_class and not target_setpoint_valid:
                 issues.append({"severity": "error", "code": "HEAT_PUMP_INPUT_TYPE_MISMATCH", "message": f"{key} must be a compatible {expected_class} entity."})
-        for key in ("compressor_state_entity", "compressor_runtime_entity", "compressor_starts_entity", "operating_mode_entity", "jaz_entity", "source_pump_speed_entity", "compressor_activity_entity", "compressor_speed_entity", "compressor_target_speed_entity"):
+        for key in ("compressor_state_entity", "compressor_runtime_entity", "compressor_starts_entity", "operating_mode_entity", "jaz_entity", "source_pump_speed_entity", "heat_carrier_pump_speed_entity", "compressor_activity_entity", "compressor_speed_entity", "compressor_target_speed_entity"):
             entity_id = device.get(key)
             if not entity_id:
                 continue
@@ -480,6 +534,19 @@ class RegistryEngine:
         return issues
 
     async def async_add_device(self, device: dict[str, Any]) -> list[dict[str, Any]]:
+        # Direct ELWA setup is IP-only for normal users. Zeus publishes and
+        # automatically maps its own native power/temperature sensors.
+        elwa_direct = (
+            str(device.get("type") or "") == "water_heater"
+            and str(device.get("device_profile") or "") == "my_pv_elwa"
+            and bool(str(device.get("control_elwa_ip") or "").strip())
+        )
+        if elwa_direct:
+            device["power_entity"] = "sensor.zeus_elwa_power"
+            device["temperature_entity"] = "sensor.zeus_elwa_temperature"
+            device["control_element_temperature_entity"] = "sensor.zeus_elwa_temperature"
+            if str(device.get("control_lockout_entity") or "").startswith("input_boolean.input_boolean_"):
+                device["control_lockout_entity"] = None
         issues = self.validate_device(device)
         if any(i["severity"] == "error" for i in issues):
             return issues

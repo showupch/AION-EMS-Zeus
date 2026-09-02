@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from .device_roles import is_consuming_load
+
 BAD_STATES = {"unknown", "unavailable", "none", ""}
 POWER_UNITS = {"W", "kW"}
 ENERGY_UNITS = {"Wh", "kWh", "MWh"}
@@ -173,8 +175,27 @@ class DataQualityEngine:
         for device in devices[:40]:
             if not device.get("enabled", True):
                 continue
+            consuming_load = is_consuming_load(device)
             power = self._validate_entity("Power", device.get("power_entity"), "power", now)
             energy = self._validate_entity("Energy", device.get("energy_entity"), "energy", now)
+
+            # Device-health authority:
+            # - End-use loads require Power + Energy.
+            # - Generation/source/meter devices use cumulative Energy as the
+            #   authoritative health channel. Their live Power input is optional
+            #   for this DEVICE-health score because some valid source devices
+            #   expose only lifetime/period energy in Home Assistant.
+            #   If optional Power is healthy we still display it; if not, it is
+            #   explicitly marked N/A rather than creating a false 50% warning.
+            if consuming_load:
+                power["applicable"] = True
+                energy["applicable"] = True
+            else:
+                power["applicable"] = bool(power.get("score", 0) > 0)
+                energy["applicable"] = True
+                if not power["applicable"]:
+                    power["status"] = "Not applicable"
+
             optional: list[dict[str, Any]] = []
             for key, label in (("state_entity", "State"), ("availability_entity", "Availability")):
                 entity_id = device.get(key)
@@ -185,7 +206,12 @@ class DataQualityEngine:
                         "entity_id": entity_id,
                         "status": "Healthy" if state and str(state.state).lower() not in BAD_STATES else "Warning",
                     })
-            score = round((power["score"] + energy["score"]) / 2)
+            scored_inputs = [item for item in (power, energy) if item.get("applicable", True)]
+            score = (
+                round(sum(item["score"] for item in scored_inputs) / len(scored_inputs))
+                if scored_inputs
+                else 100
+            )
             output.append({
                 "id": device.get("id"),
                 "name": device.get("name") or device.get("id") or "Device",

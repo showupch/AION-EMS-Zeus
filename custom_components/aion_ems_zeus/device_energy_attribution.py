@@ -573,7 +573,7 @@ class DeviceEnergyAttributionEngine:
                 generator += self._num(row.get("generator_kwh"))
                 battery += self._num(row.get("battery_kwh"))
                 grid += self._num(row.get("grid_kwh"))
-                if row.get("quality") == "Measured power flow":
+                if str(row.get("quality") or "").startswith("Measured power"):
                     measured += 1
                 elif row:
                     estimated += 1

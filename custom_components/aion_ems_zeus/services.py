@@ -70,6 +70,8 @@ from .const import (
     SERVICE_CREATE_NAS_BACKUP,
     SERVICE_REFRESH_PLUGIN_DISCOVERY,
     SERVICE_RUN_QA_HEALTH_CHECK,
+    SERVICE_SAVE_SWITCH_HUB_DEVICE,
+    SERVICE_REMOVE_SWITCH_HUB_DEVICE,
     SERVICE_REGISTER_BATTERY_PROFILE,
     SERVICE_CLEAR_BATTERY_PROFILE,
     SERVICE_PREVIEW_HA_ENERGY_IMPORT,
@@ -104,6 +106,7 @@ async def _refresh_aion_entities(hass: HomeAssistant) -> None:
                 "sensor.aion_ems_zeus_optimizer_preview",
                 "sensor.aion_ems_zeus_scheduler_preview",
                 "sensor.aion_ems_zeus_qa_diagnostics",
+                "sensor.aion_ems_zeus_switch_hub",
             ]
         },
         blocking=True,
@@ -115,8 +118,8 @@ def _device_schema(require_all=True):
     return vol.Schema({
         req("device_id"): cv.string,
         req("name"): cv.string,
-        req("power_entity"): cv.entity_id,
-        req("energy_entity"): cv.entity_id,
+        req("power_entity"): vol.Any("", cv.entity_id),
+        req("energy_entity"): vol.Any("", cv.entity_id),
         vol.Optional("energy_type", default="auto"): vol.In(["auto", "daily", "total_increasing"]),
         vol.Optional("state_entity"): cv.entity_id,
         vol.Optional("availability_entity"): cv.entity_id,
@@ -166,18 +169,20 @@ def _device_schema(require_all=True):
         vol.Optional("source_in_temperature_entity"): cv.entity_id,
         vol.Optional("source_out_temperature_entity"): cv.entity_id,
         vol.Optional("source_pump_speed_entity"): cv.entity_id,
+        vol.Optional("heat_carrier_pump_speed_entity"): cv.entity_id,
         vol.Optional("compressor_activity_entity"): cv.entity_id,
         vol.Optional("compressor_speed_entity"): cv.entity_id,
         vol.Optional("compressor_target_speed_entity"): cv.entity_id,
         vol.Optional("dhw_target_temperature_entity"): cv.entity_id,
         vol.Optional("controllable", default=False): cv.boolean,
         vol.Optional("control_permission", default=False): cv.boolean,
-        vol.Optional("actuator_type"): vol.In(["entity", "service", "modbus"]),
+        vol.Optional("actuator_type"): vol.In(["entity", "service", "modbus", "mqtt"]),
         vol.Optional("control_entity"): cv.entity_id,
         vol.Optional("control_service"): cv.string,
         vol.Optional("control_min_power_w"): vol.Coerce(float),
         vol.Optional("control_max_power_w"): vol.Coerce(float),
         vol.Optional("control_hub"): cv.string,
+        vol.Optional("control_elwa_ip"): cv.string,
         vol.Optional("control_unit"): vol.Coerce(int),
         vol.Optional("control_address"): vol.Coerce(int),
         vol.Optional("control_boiler_temperature_entity"): cv.entity_id,
@@ -202,7 +207,19 @@ def _device_schema(require_all=True):
         vol.Optional("control_execution_arm_confirmed", default=False): cv.boolean,
         vol.Optional("control_execution_master_enabled", default=False): cv.boolean,
         vol.Optional("control_emergency_stop", default=False): cv.boolean,
+        vol.Optional("control_goe_id"): cv.string,
+        vol.Optional("control_mqtt_topic"): cv.string,
+        vol.Optional("control_grid_power_entity"): cv.entity_id,
+        vol.Optional("control_battery_power_entity"): cv.entity_id,
+        vol.Optional("control_publish_interval_s"): vol.Coerce(float),
     })
+
+
+def _entity_id_or_empty(value):
+    """Accept a valid HA entity id or an explicit empty string for editor clears."""
+    if value == "":
+        return ""
+    return cv.entity_id(value)
 
 
 def _device_update_schema():
@@ -215,11 +232,11 @@ def _device_update_schema():
     return vol.Schema({
         vol.Required("device_id"): cv.string,
         vol.Optional("name"): cv.string,
-        vol.Optional("power_entity"): cv.entity_id,
-        vol.Optional("energy_entity"): cv.entity_id,
+        vol.Optional("power_entity"): _entity_id_or_empty,
+        vol.Optional("energy_entity"): _entity_id_or_empty,
         vol.Optional("energy_type"): vol.In(["auto", "daily", "total_increasing"]),
-        vol.Optional("state_entity"): cv.entity_id,
-        vol.Optional("availability_entity"): cv.entity_id,
+        vol.Optional("state_entity"): _entity_id_or_empty,
+        vol.Optional("availability_entity"): _entity_id_or_empty,
         vol.Optional("device_type"): cv.string,
         vol.Optional("category"): cv.string,
         vol.Optional("room_id"): cv.string,
@@ -229,61 +246,63 @@ def _device_update_schema():
         vol.Optional("enabled"): cv.boolean,
         vol.Optional("notes"): cv.string,
         vol.Optional("hybrid_inverter"): cv.boolean,
-        vol.Optional("solar_power_entity"): cv.entity_id,
-        vol.Optional("temperature_entity"): cv.entity_id,
-        vol.Optional("cop_entity"): cv.entity_id,
-        vol.Optional("thermal_power_entity"): cv.entity_id,
-        vol.Optional("thermal_energy_entity"): cv.entity_id,
-        vol.Optional("supply_temperature_entity"): cv.entity_id,
-        vol.Optional("return_temperature_entity"): cv.entity_id,
-        vol.Optional("outdoor_temperature_entity"): cv.entity_id,
-        vol.Optional("compressor_state_entity"): cv.entity_id,
-        vol.Optional("compressor_runtime_entity"): cv.entity_id,
-        vol.Optional("compressor_starts_entity"): cv.entity_id,
-        vol.Optional("dhw_temperature_entity"): cv.entity_id,
-        vol.Optional("dhw_energy_entity"): cv.entity_id,
-        vol.Optional("heating_energy_entity"): cv.entity_id,
-        vol.Optional("cooling_energy_entity"): cv.entity_id,
-        vol.Optional("heating_electrical_power_entity"): cv.entity_id,
-        vol.Optional("heating_thermal_power_entity"): cv.entity_id,
-        vol.Optional("heating_electrical_energy_entity"): cv.entity_id,
-        vol.Optional("heating_thermal_energy_entity"): cv.entity_id,
-        vol.Optional("dhw_electrical_power_entity"): cv.entity_id,
-        vol.Optional("dhw_thermal_power_entity"): cv.entity_id,
-        vol.Optional("dhw_electrical_energy_entity"): cv.entity_id,
-        vol.Optional("dhw_thermal_energy_entity"): cv.entity_id,
-        vol.Optional("cooling_electrical_power_entity"): cv.entity_id,
-        vol.Optional("cooling_electrical_energy_entity"): cv.entity_id,
-        vol.Optional("cooling_thermal_power_entity"): cv.entity_id,
-        vol.Optional("cooling_thermal_energy_entity"): cv.entity_id,
+        vol.Optional("solar_power_entity"): _entity_id_or_empty,
+        vol.Optional("temperature_entity"): _entity_id_or_empty,
+        vol.Optional("cop_entity"): _entity_id_or_empty,
+        vol.Optional("thermal_power_entity"): _entity_id_or_empty,
+        vol.Optional("thermal_energy_entity"): _entity_id_or_empty,
+        vol.Optional("supply_temperature_entity"): _entity_id_or_empty,
+        vol.Optional("return_temperature_entity"): _entity_id_or_empty,
+        vol.Optional("outdoor_temperature_entity"): _entity_id_or_empty,
+        vol.Optional("compressor_state_entity"): _entity_id_or_empty,
+        vol.Optional("compressor_runtime_entity"): _entity_id_or_empty,
+        vol.Optional("compressor_starts_entity"): _entity_id_or_empty,
+        vol.Optional("dhw_temperature_entity"): _entity_id_or_empty,
+        vol.Optional("dhw_energy_entity"): _entity_id_or_empty,
+        vol.Optional("heating_energy_entity"): _entity_id_or_empty,
+        vol.Optional("cooling_energy_entity"): _entity_id_or_empty,
+        vol.Optional("heating_electrical_power_entity"): _entity_id_or_empty,
+        vol.Optional("heating_thermal_power_entity"): _entity_id_or_empty,
+        vol.Optional("heating_electrical_energy_entity"): _entity_id_or_empty,
+        vol.Optional("heating_thermal_energy_entity"): _entity_id_or_empty,
+        vol.Optional("dhw_electrical_power_entity"): _entity_id_or_empty,
+        vol.Optional("dhw_thermal_power_entity"): _entity_id_or_empty,
+        vol.Optional("dhw_electrical_energy_entity"): _entity_id_or_empty,
+        vol.Optional("dhw_thermal_energy_entity"): _entity_id_or_empty,
+        vol.Optional("cooling_electrical_power_entity"): _entity_id_or_empty,
+        vol.Optional("cooling_electrical_energy_entity"): _entity_id_or_empty,
+        vol.Optional("cooling_thermal_power_entity"): _entity_id_or_empty,
+        vol.Optional("cooling_thermal_energy_entity"): _entity_id_or_empty,
         vol.Optional("separate_heating_dhw_measurements"): cv.boolean,
         vol.Optional("cooling_measurements_enabled"): cv.boolean,
-        vol.Optional("operating_mode_entity"): cv.entity_id,
-        vol.Optional("target_temperature_entity"): cv.entity_id,
-        vol.Optional("jaz_entity"): cv.entity_id,
-        vol.Optional("heat_carrier_forward_entity"): cv.entity_id,
-        vol.Optional("heat_carrier_return_entity"): cv.entity_id,
-        vol.Optional("source_in_temperature_entity"): cv.entity_id,
-        vol.Optional("source_out_temperature_entity"): cv.entity_id,
-        vol.Optional("source_pump_speed_entity"): cv.entity_id,
-        vol.Optional("compressor_activity_entity"): cv.entity_id,
-        vol.Optional("compressor_speed_entity"): cv.entity_id,
-        vol.Optional("compressor_target_speed_entity"): cv.entity_id,
-        vol.Optional("dhw_target_temperature_entity"): cv.entity_id,
+        vol.Optional("operating_mode_entity"): _entity_id_or_empty,
+        vol.Optional("target_temperature_entity"): _entity_id_or_empty,
+        vol.Optional("jaz_entity"): _entity_id_or_empty,
+        vol.Optional("heat_carrier_forward_entity"): _entity_id_or_empty,
+        vol.Optional("heat_carrier_return_entity"): _entity_id_or_empty,
+        vol.Optional("source_in_temperature_entity"): _entity_id_or_empty,
+        vol.Optional("source_out_temperature_entity"): _entity_id_or_empty,
+        vol.Optional("source_pump_speed_entity"): _entity_id_or_empty,
+        vol.Optional("heat_carrier_pump_speed_entity"): _entity_id_or_empty,
+        vol.Optional("compressor_activity_entity"): _entity_id_or_empty,
+        vol.Optional("compressor_speed_entity"): _entity_id_or_empty,
+        vol.Optional("compressor_target_speed_entity"): _entity_id_or_empty,
+        vol.Optional("dhw_target_temperature_entity"): _entity_id_or_empty,
         vol.Optional("controllable"): cv.boolean,
         vol.Optional("control_permission"): cv.boolean,
-        vol.Optional("actuator_type"): vol.In(["entity", "service", "modbus"]),
+        vol.Optional("actuator_type"): vol.In(["entity", "service", "modbus", "mqtt"]),
         vol.Optional("control_entity"): cv.entity_id,
         vol.Optional("control_service"): cv.string,
         vol.Optional("control_min_power_w"): vol.Coerce(float),
         vol.Optional("control_max_power_w"): vol.Coerce(float),
         vol.Optional("control_hub"): cv.string,
+        vol.Optional("control_elwa_ip"): cv.string,
         vol.Optional("control_unit"): vol.Coerce(int),
         vol.Optional("control_address"): vol.Coerce(int),
-        vol.Optional("control_boiler_temperature_entity"): cv.entity_id,
-        vol.Optional("control_element_temperature_entity"): cv.entity_id,
-        vol.Optional("control_surplus_entity"): cv.entity_id,
-        vol.Optional("control_lockout_entity"): cv.entity_id,
+        vol.Optional("control_boiler_temperature_entity"): _entity_id_or_empty,
+        vol.Optional("control_element_temperature_entity"): _entity_id_or_empty,
+        vol.Optional("control_surplus_entity"): _entity_id_or_empty,
+        vol.Optional("control_lockout_entity"): _entity_id_or_empty,
         vol.Optional("control_stop_temperature_c"): vol.Coerce(float),
         vol.Optional("control_restart_temperature_c"): vol.Coerce(float),
         vol.Optional("device_profile"): cv.string,
@@ -296,12 +315,17 @@ def _device_update_schema():
         vol.Optional("control_grid_backup_stop_c"): vol.Coerce(float),
         vol.Optional("control_keepalive_interval_s"): vol.Coerce(float),
         vol.Optional("control_owner"): vol.In(["home_assistant", "zeus"]),
-        vol.Optional("control_previous_controller_entity"): cv.entity_id,
+        vol.Optional("control_previous_controller_entity"): _entity_id_or_empty,
         vol.Optional("control_handover_confirmed"): cv.boolean,
         vol.Optional("control_execution_arm_requested"): cv.boolean,
         vol.Optional("control_execution_arm_confirmed"): cv.boolean,
         vol.Optional("control_execution_master_enabled"): cv.boolean,
         vol.Optional("control_emergency_stop"): cv.boolean,
+        vol.Optional("control_goe_id"): cv.string,
+        vol.Optional("control_mqtt_topic"): cv.string,
+        vol.Optional("control_grid_power_entity"): _entity_id_or_empty,
+        vol.Optional("control_battery_power_entity"): _entity_id_or_empty,
+        vol.Optional("control_publish_interval_s"): vol.Coerce(float),
     })
 
 
@@ -496,18 +520,26 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             source_in_temperature_entity=call.data.get("source_in_temperature_entity"),
             source_out_temperature_entity=call.data.get("source_out_temperature_entity"),
             source_pump_speed_entity=call.data.get("source_pump_speed_entity"),
+            heat_carrier_pump_speed_entity=call.data.get("heat_carrier_pump_speed_entity"),
             compressor_activity_entity=call.data.get("compressor_activity_entity"),
             compressor_speed_entity=call.data.get("compressor_speed_entity"),
             compressor_target_speed_entity=call.data.get("compressor_target_speed_entity"),
             dhw_target_temperature_entity=call.data.get("dhw_target_temperature_entity"),
             controllable=call.data.get("controllable", False),
             control_permission=call.data.get("control_permission", False),
+            control_dual_permission_armed=(
+                bool(call.data.get("controllable", False))
+                and bool(call.data.get("control_permission", False))
+                and str(call.data.get("device_type") or "") == "ev_charger"
+                and str(call.data.get("device_profile") or "") == "go_e_charger_mqtt"
+            ),
             actuator_type=call.data.get("actuator_type"),
             control_entity=call.data.get("control_entity"),
             control_service=call.data.get("control_service"),
             control_min_power_w=call.data.get("control_min_power_w"),
             control_max_power_w=call.data.get("control_max_power_w"),
             control_hub=call.data.get("control_hub"),
+            control_elwa_ip=call.data.get("control_elwa_ip"),
             control_unit=call.data.get("control_unit"),
             control_address=call.data.get("control_address"),
             control_boiler_temperature_entity=call.data.get("control_boiler_temperature_entity"),
@@ -532,6 +564,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             control_execution_arm_confirmed=call.data.get("control_execution_arm_confirmed", False),
             control_execution_master_enabled=call.data.get("control_execution_master_enabled", False),
             control_emergency_stop=call.data.get("control_emergency_stop", False),
+            control_goe_id=call.data.get("control_goe_id"),
+            control_mqtt_topic=call.data.get("control_mqtt_topic"),
+            control_grid_power_entity=call.data.get("control_grid_power_entity"),
+            control_battery_power_entity=call.data.get("control_battery_power_entity"),
+            control_publish_interval_s=call.data.get("control_publish_interval_s"),
         )
         issues = await core.registry.async_add_device(device)
         core.device_import_manager.last_validation = {"status": "Imported" if not any(i["severity"] == "error" for i in issues) else "Error", "device": device, "issues": issues, "message": "Device import completed."}
@@ -550,6 +587,35 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         )
         merged = dict(existing)
         merged.update(dict(call.data))
+        # alpha.6: an explicitly cleared optional entity mapping is a real update.
+        # Cached/older frontends may omit fields, but the editor sends an empty
+        # string when the operator deliberately removes a mapping. Persist that
+        # as None instead of resurrecting the previous entity.
+        clearable_entity_fields = (
+            "power_entity", "energy_entity",
+            "state_entity", "availability_entity", "solar_power_entity",
+            "temperature_entity", "cop_entity", "thermal_power_entity", "thermal_energy_entity",
+            "supply_temperature_entity", "return_temperature_entity", "outdoor_temperature_entity",
+            "compressor_state_entity", "compressor_runtime_entity", "compressor_starts_entity",
+            "dhw_temperature_entity", "dhw_energy_entity", "heating_energy_entity", "cooling_energy_entity",
+            "heating_electrical_power_entity", "heating_thermal_power_entity",
+            "heating_electrical_energy_entity", "heating_thermal_energy_entity",
+            "dhw_electrical_power_entity", "dhw_thermal_power_entity",
+            "dhw_electrical_energy_entity", "dhw_thermal_energy_entity",
+            "cooling_electrical_power_entity", "cooling_electrical_energy_entity",
+            "cooling_thermal_power_entity", "cooling_thermal_energy_entity",
+            "operating_mode_entity", "target_temperature_entity", "jaz_entity",
+            "heat_carrier_forward_entity", "heat_carrier_return_entity",
+            "source_in_temperature_entity", "source_out_temperature_entity", "source_pump_speed_entity", "heat_carrier_pump_speed_entity",
+            "compressor_activity_entity", "compressor_speed_entity", "compressor_target_speed_entity",
+            "dhw_target_temperature_entity",
+            "control_boiler_temperature_entity", "control_element_temperature_entity",
+            "control_surplus_entity", "control_lockout_entity",
+            "control_previous_controller_entity",
+        )
+        for key in clearable_entity_fields:
+            if key in call.data and isinstance(call.data.get(key), str) and not call.data.get(key).strip():
+                merged[key] = None
         # Control numeric metadata is safety-critical. Never replace a valid
         # persisted Modbus/power/temperature value with a missing/non-finite one.
         import math
@@ -567,13 +633,29 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 invalid = True
             if invalid and existing.get(key) is not None:
                 merged[key] = existing.get(key)
+        # alpha.7 hard gate: go-e MQTT execution receives a separate server-side
+        # dual-permission latch.  It is armed only when BOTH checkboxes are true
+        # in the same persisted update.  Missing/false permission input always
+        # disarms the latch (fail closed), preventing a stale true value from
+        # keeping the MQTT publisher alive.
+        merged_type = str(merged.get("device_type", merged.get("type", existing.get("type", ""))) or "")
+        merged_profile = str(merged.get("device_profile", existing.get("device_profile", "")) or "")
+        if merged_type == "ev_charger" and merged_profile == "go_e_charger_mqtt":
+            merged["controllable"] = bool(call.data.get("controllable", False))
+            merged["control_permission"] = bool(call.data.get("control_permission", False))
+            merged["control_dual_permission_armed"] = bool(
+                merged["controllable"] and merged["control_permission"]
+            )
+        else:
+            merged["control_dual_permission_armed"] = False
+
         # Build through the canonical registry constructor so types and energy
         # classification remain normalized, but preserve every known mapping.
         device = core.registry.build_device(
             device_id=device_id,
             name=merged.get("name") or existing.get("name") or device_id,
-            power_entity=merged.get("power_entity") or existing.get("power_entity"),
-            energy_entity=merged.get("energy_entity") or existing.get("energy_entity"),
+            power_entity=merged.get("power_entity"),
+            energy_entity=merged.get("energy_entity"),
             energy_type=merged.get("energy_type", existing.get("energy_type", "auto")),
             enabled=merged.get("enabled", existing.get("enabled", True)),
             device_type=merged.get("device_type", merged.get("type", existing.get("type", "custom"))),
@@ -623,18 +705,21 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             source_in_temperature_entity=merged.get("source_in_temperature_entity", existing.get("source_in_temperature_entity")),
             source_out_temperature_entity=merged.get("source_out_temperature_entity", existing.get("source_out_temperature_entity")),
             source_pump_speed_entity=merged.get("source_pump_speed_entity", existing.get("source_pump_speed_entity")),
+            heat_carrier_pump_speed_entity=merged.get("heat_carrier_pump_speed_entity", existing.get("heat_carrier_pump_speed_entity")),
             compressor_activity_entity=merged.get("compressor_activity_entity", existing.get("compressor_activity_entity")),
             compressor_speed_entity=merged.get("compressor_speed_entity", existing.get("compressor_speed_entity")),
             compressor_target_speed_entity=merged.get("compressor_target_speed_entity", existing.get("compressor_target_speed_entity")),
             dhw_target_temperature_entity=merged.get("dhw_target_temperature_entity", existing.get("dhw_target_temperature_entity")),
             controllable=merged.get("controllable", existing.get("controllable", False)),
             control_permission=merged.get("control_permission", existing.get("control_permission", False)),
+            control_dual_permission_armed=merged.get("control_dual_permission_armed", False),
             actuator_type=merged.get("actuator_type", existing.get("actuator_type")),
             control_entity=merged.get("control_entity", existing.get("control_entity")),
             control_service=merged.get("control_service", existing.get("control_service")),
             control_min_power_w=merged.get("control_min_power_w", existing.get("control_min_power_w")),
             control_max_power_w=merged.get("control_max_power_w", existing.get("control_max_power_w")),
             control_hub=merged.get("control_hub", existing.get("control_hub")),
+            control_elwa_ip=merged.get("control_elwa_ip", existing.get("control_elwa_ip")),
             control_unit=merged.get("control_unit", existing.get("control_unit")),
             control_address=merged.get("control_address", existing.get("control_address")),
             control_boiler_temperature_entity=merged.get("control_boiler_temperature_entity", existing.get("control_boiler_temperature_entity")),
@@ -659,6 +744,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             control_execution_arm_confirmed=merged.get("control_execution_arm_confirmed", existing.get("control_execution_arm_confirmed", False)),
             control_execution_master_enabled=merged.get("control_execution_master_enabled", existing.get("control_execution_master_enabled", False)),
             control_emergency_stop=merged.get("control_emergency_stop", existing.get("control_emergency_stop", False)),
+            control_goe_id=merged.get("control_goe_id", existing.get("control_goe_id")),
+            control_mqtt_topic=merged.get("control_mqtt_topic", existing.get("control_mqtt_topic")),
+            control_grid_power_entity=merged.get("control_grid_power_entity", existing.get("control_grid_power_entity")),
+            control_battery_power_entity=merged.get("control_battery_power_entity", existing.get("control_battery_power_entity")),
+            control_publish_interval_s=merged.get("control_publish_interval_s", existing.get("control_publish_interval_s")),
         )
         issues = await core.registry.async_add_device(device)
         core.device_import_manager.last_validation = {
@@ -857,7 +947,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         if call.data["field"] in {"battery_power", "battery_charge_power", "battery_discharge_power"}:
             result["battery_mode"] = call.data.get("battery_mode", "bidirectional" if call.data["field"] == "battery_power" else "separate")
         if call.data["field"] == "battery_power":
-            result["battery_sign_convention"] = call.data.get("battery_sign_convention", "positive_discharge")
+            result["battery_sign_convention"] = call.data.get("battery_sign_convention", "unsigned_magnitude")
         result["suggestions"] = core.energy_mapping.suggestions(call.data["field"])
         core.energy_mapping.last_test = result
         core.energy_mapping.refresh()
@@ -895,15 +985,59 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
 
     async def save_tariff_settings(call: ServiceCall) -> None:
+        import json
         core = _core(hass)
-        import_tariff = float(call.data["import_tariff"])
+        tariff_mode = str(call.data.get("tariff_mode", "fixed") or "fixed").strip().lower()
+        if tariff_mode not in {"fixed", "time_of_use"}:
+            raise vol.Invalid("tariff_mode must be fixed or time_of_use")
+        import_tariff = float(call.data.get("import_tariff", 0.0))
         export_tariff = float(call.data["export_tariff"])
         standing_charge = float(call.data.get("standing_charge", 0.0))
         if min(import_tariff, export_tariff, standing_charge) < 0:
             raise vol.Invalid("Tariff values cannot be negative")
+        tou_periods = []
+        if tariff_mode == "time_of_use":
+            try:
+                raw_periods = json.loads(str(call.data.get("tou_periods", "[]") or "[]"))
+            except Exception as err:
+                raise vol.Invalid("Invalid time-of-use period JSON") from err
+            if not isinstance(raw_periods, list) or not raw_periods:
+                raise vol.Invalid("At least one time-of-use tariff period is required")
+            covered = [False] * 1440
+            for idx, raw in enumerate(raw_periods):
+                if not isinstance(raw, dict):
+                    raise vol.Invalid("Each tariff period must be an object")
+                name = str(raw.get("name") or f"Period {idx+1}").strip()[:40]
+                start = str(raw.get("start") or "").strip()
+                end = str(raw.get("end") or "").strip()
+                try:
+                    sh, sm = [int(x) for x in start.split(":", 1)]
+                    eh, em = [int(x) for x in end.split(":", 1)]
+                except Exception as err:
+                    raise vol.Invalid(f"Invalid time in tariff period {idx+1}") from err
+                if not (0 <= sh <= 23 and 0 <= sm <= 59 and 0 <= eh <= 23 and 0 <= em <= 59):
+                    raise vol.Invalid(f"Invalid time in tariff period {idx+1}")
+                start_min, end_min = sh * 60 + sm, eh * 60 + em
+                if start_min == end_min:
+                    raise vol.Invalid(f"Tariff period {idx+1} cannot have the same start and end time")
+                rate = float(raw.get("import_tariff", 0.0))
+                if rate < 0:
+                    raise vol.Invalid("Tariff values cannot be negative")
+                minutes = list(range(start_min, end_min)) if start_min < end_min else list(range(start_min, 1440)) + list(range(0, end_min))
+                if any(covered[m] for m in minutes):
+                    raise vol.Invalid("Time-of-use tariff periods cannot overlap")
+                for m in minutes:
+                    covered[m] = True
+                tou_periods.append({"id": str(raw.get("id") or f"period_{idx+1}"), "name": name, "start": f"{sh:02d}:{sm:02d}", "end": f"{eh:02d}:{em:02d}", "import_tariff": rate})
+            if not all(covered):
+                raise vol.Invalid("Time-of-use tariff periods must cover the full 24-hour day")
+            # Keep a compatibility import rate for older Zeus surfaces. The live
+            # Finance engine exposes the actual active/effective rate separately.
+            import_tariff = sum(float(x["import_tariff"]) * (((int(x["end"][:2])*60+int(x["end"][3:])) - (int(x["start"][:2])*60+int(x["start"][3:]))) % 1440) for x in tou_periods) / 1440.0
         core.registry.data.setdefault("sources", {})["tariffs"] = {
             "enabled": True, "currency": str(call.data.get("currency", "CHF")).upper(),
-            "import_tariff": import_tariff, "export_tariff": export_tariff,
+            "tariff_mode": tariff_mode, "import_tariff": import_tariff, "export_tariff": export_tariff,
+            "tou_periods": tou_periods,
             "standing_charge": standing_charge, "vat_included": bool(call.data.get("vat_included", True)),
             "saved_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }
@@ -914,7 +1048,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def clear_tariff_settings(call: ServiceCall) -> None:
         core = _core(hass)
-        core.registry.data.setdefault("sources", {})["tariffs"] = {"enabled": False, "currency": "CHF", "import_tariff": None, "export_tariff": None, "standing_charge": 0.0, "vat_included": True}
+        core.registry.data.setdefault("sources", {})["tariffs"] = {"enabled": False, "currency": "CHF", "tariff_mode": "fixed", "import_tariff": None, "export_tariff": None, "tou_periods": [], "standing_charge": 0.0, "vat_included": True}
         core.registry.data.setdefault("audit", []).append({"action": "clear_tariff_settings"})
         await core.registry.async_save()
         core.refresh_pipeline()
@@ -1030,7 +1164,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             battery_mode = call.data.get("battery_mode", "bidirectional" if call.data["field"] == "battery_power" else "separate")
             core.registry.data.setdefault("mapping_options", {})["battery_mode"] = battery_mode
         if call.data["field"] == "battery_power":
-            battery_convention = call.data.get("battery_sign_convention", "positive_discharge")
+            battery_convention = call.data.get("battery_sign_convention", "unsigned_magnitude")
             core.registry.data.setdefault("mapping_options", {})["battery_power_sign"] = battery_convention
         core.registry.data.setdefault("audit", []).append({"action": "save_entity_mapping", "field": call.data["field"], "entity_id": call.data["entity_id"], "sign_convention": call.data.get("sign_convention")})
         await core.registry.async_save()
@@ -1179,7 +1313,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(DOMAIN, SERVICE_CLEAR_BATTERY_PROFILE, clear_battery_profile)
     hass.services.async_register(DOMAIN, SERVICE_LIFECYCLE_STATUS, lifecycle_status)
-    mapping_schema = vol.Schema({vol.Required("field"): vol.In(list(_core(hass).energy_mapping.FIELD_RULES)), vol.Required("entity_id"): cv.entity_id, vol.Optional("sign_convention"): vol.In(["positive_import", "positive_export"]), vol.Optional("grid_mode"): vol.In(["bidirectional", "separate"]), vol.Optional("battery_mode"): vol.In(["bidirectional", "separate"]), vol.Optional("battery_sign_convention"): vol.In(["positive_discharge", "positive_charge"])})
+    mapping_schema = vol.Schema({vol.Required("field"): vol.In(list(_core(hass).energy_mapping.FIELD_RULES)), vol.Required("entity_id"): cv.entity_id, vol.Optional("sign_convention"): vol.In(["positive_import", "positive_export"]), vol.Optional("grid_mode"): vol.In(["bidirectional", "separate"]), vol.Optional("battery_mode"): vol.In(["bidirectional", "separate"]), vol.Optional("battery_sign_convention"): vol.In(["positive_discharge", "positive_charge", "unsigned_magnitude"])})
     hass.services.async_register(DOMAIN, SERVICE_TEST_ENTITY_MAPPING, test_entity_mapping, schema=mapping_schema)
     hass.services.async_register(DOMAIN, SERVICE_SAVE_ENTITY_MAPPING, save_entity_mapping, schema=mapping_schema)
     hass.services.async_register(DOMAIN, SERVICE_CLEAR_ENTITY_MAPPING, clear_entity_mapping, schema=vol.Schema({vol.Required("field"): vol.In(list(_core(hass).energy_mapping.FIELD_RULES))}))
@@ -1198,8 +1332,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         save_tariff_settings,
         schema=vol.Schema({
             vol.Required("currency"): cv.string,
-            vol.Required("import_tariff"): vol.Coerce(float),
+            vol.Optional("tariff_mode", default="fixed"): cv.string,
+            vol.Optional("import_tariff", default=0.0): vol.Coerce(float),
             vol.Required("export_tariff"): vol.Coerce(float),
+            vol.Optional("tou_periods", default="[]"): cv.string,
             vol.Optional("standing_charge", default=0.0): vol.Coerce(float),
             vol.Optional("vat_included", default=True): cv.boolean,
         }),
@@ -1317,8 +1453,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     if not hass.services.has_service(DOMAIN, SERVICE_SAVE_TARIFF_SETTINGS):
         hass.services.async_register(DOMAIN, SERVICE_SAVE_TARIFF_SETTINGS, save_tariff_settings, schema=vol.Schema({
             vol.Required("currency"): cv.string,
-            vol.Required("import_tariff"): vol.Coerce(float),
+            vol.Optional("tariff_mode", default="fixed"): cv.string,
+            vol.Optional("import_tariff", default=0.0): vol.Coerce(float),
             vol.Required("export_tariff"): vol.Coerce(float),
+            vol.Optional("tou_periods", default="[]"): cv.string,
             vol.Optional("standing_charge", default=0.0): vol.Coerce(float),
             vol.Optional("vat_included", default=True): cv.boolean,
         }))
@@ -1344,6 +1482,60 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         }))
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_DATA_EPOCH):
         hass.services.async_register(DOMAIN, SERVICE_CLEAR_DATA_EPOCH, clear_data_epoch)
+
+    async def save_switch_hub_device(call: ServiceCall) -> None:
+        core = _core(hass)
+        rows = list(core.registry.data.get("switch_hub") or [])
+        device_id = str(call.data["device_id"]).strip()
+        row = {
+            "id": device_id,
+            "name": str(call.data.get("name") or device_id).strip()[:120],
+            "switch_entity": str(call.data["switch_entity"]).strip(),
+            "power_entity": str(call.data.get("power_entity") or "").strip(),
+            "control_enabled": bool(call.data.get("control_enabled", False)),
+            "trigger_mode": str(call.data.get("trigger_mode") or "surplus"),
+            "solar_surplus_w": max(1, int(call.data.get("solar_surplus_w", 1000))),
+            "on_time": str(call.data.get("on_time") or "22:00"),
+            "off_time": str(call.data.get("off_time") or "06:00"),
+        }
+        replaced = False
+        for index, existing in enumerate(rows):
+            if str(existing.get("id") or "") == device_id:
+                rows[index] = row
+                replaced = True
+                break
+        if not replaced:
+            rows.append(row)
+        core.registry.data["switch_hub"] = rows[:30]
+        await core.registry.async_save()
+        await core.switch_hub.async_evaluate()
+        await _refresh_aion_entities(hass)
+
+    async def remove_switch_hub_device(call: ServiceCall) -> None:
+        core = _core(hass)
+        device_id = str(call.data["device_id"]).strip()
+        core.registry.data["switch_hub"] = [
+            row for row in (core.registry.data.get("switch_hub") or [])
+            if str(row.get("id") or "") != device_id
+        ]
+        await core.registry.async_save()
+        await core.switch_hub.async_evaluate()
+        await _refresh_aion_entities(hass)
+
+    hass.services.async_register(DOMAIN, SERVICE_SAVE_SWITCH_HUB_DEVICE, save_switch_hub_device, schema=vol.Schema({
+        vol.Required("device_id"): cv.string,
+        vol.Required("name"): cv.string,
+        vol.Required("switch_entity"): cv.entity_id,
+        vol.Optional("power_entity", default=""): vol.Any("", cv.entity_id),
+        vol.Optional("control_enabled", default=False): cv.boolean,
+        vol.Optional("trigger_mode", default="surplus"): vol.In(["surplus", "time"]),
+        vol.Optional("solar_surplus_w", default=1000): vol.All(vol.Coerce(int), vol.Range(min=1, max=50000)),
+        vol.Optional("on_time", default="22:00"): cv.string,
+        vol.Optional("off_time", default="06:00"): cv.string,
+    }))
+    hass.services.async_register(DOMAIN, SERVICE_REMOVE_SWITCH_HUB_DEVICE, remove_switch_hub_device, schema=vol.Schema({
+        vol.Required("device_id"): cv.string,
+    }))
 
     hass.services.async_register(DOMAIN, SERVICE_SAVE_NOTIFICATION_SETTINGS, save_notification_settings, schema=vol.Schema({
         vol.Optional("enabled"): cv.boolean, vol.Optional("persistent_enabled"): cv.boolean, vol.Optional("mobile_enabled"): cv.boolean,
@@ -1395,6 +1587,7 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     SERVICE_SAVE_HOME_PROFILE,
     SERVICE_CLEAR_BATTERY_CAPACITY, SERVICE_SET_DATA_EPOCH, SERVICE_CLEAR_DATA_EPOCH, SERVICE_SAVE_NOTIFICATION_SETTINGS, SERVICE_TEST_NOTIFICATION,
         SERVICE_SAVE_PLUGIN_SETTINGS, SERVICE_TEST_PLUGIN, SERVICE_CREATE_NAS_BACKUP, SERVICE_REFRESH_PLUGIN_DISCOVERY, SERVICE_RUN_QA_HEALTH_CHECK,
+        SERVICE_SAVE_SWITCH_HUB_DEVICE, SERVICE_REMOVE_SWITCH_HUB_DEVICE,
         SERVICE_LIFECYCLE_STATUS,
         SERVICE_PREVIEW_HA_ENERGY_IMPORT, SERVICE_APPLY_HA_ENERGY_IMPORT,
     ]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from homeassistant.util import dt as dt_util
@@ -80,13 +80,115 @@ class FinanceEngine:
         value, source = max(candidates, key=lambda item: item[0])
         return value, source
 
+
+    @staticmethod
+    def _minute_of_day(value: str) -> int | None:
+        try:
+            hh, mm = str(value).strip().split(":", 1)
+            h, m = int(hh), int(mm)
+            if not (0 <= h <= 23 and 0 <= m <= 59):
+                return None
+            return h * 60 + m
+        except (TypeError, ValueError):
+            return None
+
+    def _tou_periods(self, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for index, raw in enumerate(list(cfg.get("tou_periods") or [])):
+            if not isinstance(raw, dict):
+                continue
+            start = self._minute_of_day(raw.get("start"))
+            end = self._minute_of_day(raw.get("end"))
+            if start is None or end is None or start == end:
+                continue
+            out.append({
+                "id": str(raw.get("id") or f"period_{index+1}"),
+                "name": str(raw.get("name") or f"Period {index+1}")[:40],
+                "start": str(raw.get("start")),
+                "end": str(raw.get("end")),
+                "start_minute": start,
+                "end_minute": end,
+                "import_tariff": self._num(raw.get("import_tariff")),
+            })
+        return out
+
+    @staticmethod
+    def _period_matches(minute: int, start: int, end: int) -> bool:
+        return start <= minute < end if start < end else (minute >= start or minute < end)
+
+    def _tou_rate_for_datetime(self, when: datetime, periods: list[dict[str, Any]]) -> tuple[float, str]:
+        local = dt_util.as_local(when)
+        minute = local.hour * 60 + local.minute
+        for item in periods:
+            if self._period_matches(minute, item["start_minute"], item["end_minute"]):
+                return float(item["import_tariff"]), str(item["name"])
+        return 0.0, "Uncovered"
+
+    def _tou_hourly_values(self, periods: list[dict[str, Any]], export_rate: float) -> dict[str, Any]:
+        rows = list(getattr(self.analytics, "_ha_consumption_hourly", []) or [])
+        now = dt_util.now()
+        today = now.date()
+        week_start = today - timedelta(days=today.weekday())
+        month_start = today.replace(day=1)
+        year_start = today.replace(month=1, day=1)
+        scopes = {"today": today, "week": week_start, "month": month_start, "year": year_start}
+        values: dict[str, Any] = {}
+        for scope, start_date in scopes.items():
+            imported = exported = cost = revenue = 0.0
+            matched = 0
+            earliest = None
+            latest = None
+            breakdown: dict[str, dict[str, float]] = {}
+            for row in rows:
+                try:
+                    stamp = datetime.fromisoformat(str(row.get("start") or ""))
+                except ValueError:
+                    continue
+                local = dt_util.as_local(stamp)
+                if local.date() < start_date or local.date() > today:
+                    continue
+                imp = self._num(row.get("grid_import_energy_kwh"))
+                exp = self._num(row.get("grid_export_energy_kwh"))
+                rate, name = self._tou_rate_for_datetime(local, periods)
+                imported += imp
+                exported += exp
+                cost += imp * rate
+                revenue += exp * export_rate
+                matched += 1
+                earliest = local if earliest is None or local < earliest else earliest
+                latest = local if latest is None or local > latest else latest
+                bucket = breakdown.setdefault(name, {"energy_kwh": 0.0, "cost": 0.0})
+                bucket["energy_kwh"] += imp
+                bucket["cost"] += imp * rate
+            effective = cost / imported if imported > 0 else 0.0
+            coverage_complete = bool(matched) and earliest is not None and earliest.date() <= start_date
+            values[scope] = {
+                "grid_import_kwh": round(imported, 4),
+                "grid_export_kwh": round(exported, 4),
+                "grid_cost": round(cost, 4),
+                "export_revenue": round(revenue, 4),
+                "effective_import_tariff": round(effective, 6),
+                "hour_count": matched,
+                "coverage_complete": coverage_complete,
+                "coverage_start": earliest.isoformat() if earliest else None,
+                "coverage_end": latest.isoformat() if latest else None,
+                "breakdown": {k: {"energy_kwh": round(v["energy_kwh"], 4), "cost": round(v["cost"], 4)} for k, v in breakdown.items()},
+            }
+        return values
+
     def refresh(self) -> dict[str, Any]:
         cfg = self.registry.data.get("sources", {}).get("tariffs", {})
         currency = str(cfg.get("currency") or "CHF").upper()[:4]
         enabled = bool(cfg.get("enabled"))
-        import_rate = self._num(cfg.get("import_tariff"))
+        tariff_mode = str(cfg.get("tariff_mode") or "fixed").lower()
+        tou_periods = self._tou_periods(cfg) if tariff_mode == "time_of_use" else []
         export_rate = self._num(cfg.get("export_tariff"))
         standing = self._num(cfg.get("standing_charge"))
+        active_import_rate = self._num(cfg.get("import_tariff"))
+        active_tariff_name = "Fixed"
+        if tariff_mode == "time_of_use" and tou_periods:
+            active_import_rate, active_tariff_name = self._tou_rate_for_datetime(dt_util.now(), tou_periods)
+        import_rate = active_import_rate
         today = self.analytics.summary().get("periods", {}).get("today", {})
         imported = self._num(today.get("grid_import_energy_kwh"))
         exported = self._num(today.get("grid_export_energy_kwh"))
@@ -128,10 +230,14 @@ class FinanceEngine:
             # assign only the residual local home supply to solar.
             direct_solar = remaining_home_after_battery
 
-        grid_cost = imported * import_rate
-        export_revenue = exported * export_rate
-        direct_solar_value = direct_solar * import_rate
-        battery_support_value = battery_to_home * import_rate
+        tou_values = self._tou_hourly_values(tou_periods, export_rate) if tariff_mode == "time_of_use" and tou_periods else {}
+        today_tou = dict(tou_values.get("today") or {})
+        effective_import_rate = self._num(today_tou.get("effective_import_tariff")) if today_tou else import_rate
+        grid_cost = self._num(today_tou.get("grid_cost")) if today_tou else imported * import_rate
+        export_revenue = self._num(today_tou.get("export_revenue")) if today_tou else exported * export_rate
+        value_rate = effective_import_rate if tariff_mode == "time_of_use" and effective_import_rate > 0 else import_rate
+        direct_solar_value = direct_solar * value_rate
+        battery_support_value = battery_to_home * value_rate
         avoided_import_value = direct_solar_value + battery_support_value
         net_benefit = avoided_import_value + export_revenue - grid_cost - standing
         devices = []
@@ -140,15 +246,20 @@ class FinanceEngine:
             devices.append({
                 "id": device.get("id"), "name": device.get("name"),
                 "energy_today_kwh": round(energy, 4),
-                "estimated_cost": round(energy * import_rate, 4) if enabled else None,
+                "estimated_cost": round(energy * value_rate, 4) if enabled else None,
                 "energy_source": device.get("method", "unknown"),
             })
         confidence = self.data_quality.summary().get("confidence_score")
         self.last = {
             "status": "Ready" if enabled else "Not configured",
-            "configured": enabled, "currency": currency, "tariff_mode": "fixed",
+            "configured": enabled, "currency": currency, "tariff_mode": tariff_mode,
             "vat_included": bool(cfg.get("vat_included", True)),
             "import_tariff": import_rate if enabled else None,
+            "active_import_tariff": import_rate if enabled else None,
+            "active_tariff_name": active_tariff_name if enabled else None,
+            "effective_import_tariff_today": effective_import_rate if enabled else None,
+            "tou_periods": [{k: v for k, v in item.items() if k not in {"start_minute", "end_minute"}} for item in tou_periods],
+            "tou_period_values": tou_values,
             "export_tariff": export_rate if enabled else None,
             "standing_charge": standing if enabled else None,
             "grid_import_kwh": round(imported, 4), "grid_export_kwh": round(exported, 4),
@@ -168,7 +279,7 @@ class FinanceEngine:
             "device_costs": devices, "data_confidence": confidence,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "solar_period_complete": solar_period_complete,
-            "assumptions": "Fixed tariffs. Direct solar and measured battery discharge to the home are valued as avoided grid purchases. Canonical solar excludes measured export; battery charging is tracked separately. If the Solar Input changes mid-day and the solar period is incomplete, Today is temporarily reconstructed from measured home, grid and battery totals until midnight.",
+            "assumptions": ("Time-of-use import costs use Home Assistant Recorder hourly grid-import changes and the configured local-time schedule. Avoided-import values use the measured effective import rate for the selected evidence window. Export remains a fixed tariff in this release." if tariff_mode == "time_of_use" else "Fixed tariffs. Direct solar and measured battery discharge to the home are valued as avoided grid purchases. Canonical solar excludes measured export; battery charging is tracked separately. If the Solar Input changes mid-day and the solar period is incomplete, Today is temporarily reconstructed from measured home, grid and battery totals until midnight."),
         }
         return self.last
 

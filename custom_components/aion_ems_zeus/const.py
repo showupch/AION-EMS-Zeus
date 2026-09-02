@@ -2,7 +2,7 @@
 
 DOMAIN = "aion_ems_zeus"
 NAME = "AION EMS"
-VERSION = "14.8.2"
+VERSION = "14.8.10.5"
 
 PLATFORMS = ["sensor"]
 
@@ -107,6 +107,10 @@ SERVICE_REFRESH_PLUGIN_DISCOVERY = "refresh_plugin_discovery"
 
 # QA diagnostics
 SERVICE_RUN_QA_HEALTH_CHECK = "run_qa_health_check"
+
+# Generic Switch Hub
+SERVICE_SAVE_SWITCH_HUB_DEVICE = "save_switch_hub_device"
+SERVICE_REMOVE_SWITCH_HUB_DEVICE = "remove_switch_hub_device"
 
 SERVICE_REGISTER_BATTERY_PROFILE = "register_battery_profile"
 SERVICE_CLEAR_BATTERY_PROFILE = "clear_battery_profile"

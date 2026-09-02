@@ -82,7 +82,7 @@ class EnergyMappingEngine:
             classes, units=self.FIELD_RULES[field]; dc=attrs.get("device_class"); unit=attrs.get("unit_of_measurement")
             if classes and dc not in classes: issues.append({"severity":"error","code":"DEVICE_CLASS_MISMATCH","message":f"Expected device class {sorted(classes)}; got {dc or 'none'}."})
             if units and unit not in units: issues.append({"severity":"error","code":"UNIT_MISMATCH","message":f"Expected unit {sorted(units)}; got {unit or 'none'}."})
-        return {"status":"valid" if not issues else "invalid", "field":field, "entity_id":entity_id, "exists":state is not None, "available":available, "state":state.state if state else None, "unit":attrs.get("unit_of_measurement"), "device_class":attrs.get("device_class"), "issues":issues}
+        return {"status":"valid" if not issues else "invalid", "field":field, "entity_id":entity_id, "exists":state is not None, "available":available, "state":state.state if state else None, "unit":attrs.get("unit_of_measurement"), "device_class":attrs.get("device_class"), "last_changed": state.last_changed.isoformat() if state else None, "last_updated": state.last_updated.isoformat() if state else None, "issues":issues}
 
     def suggestions(self, field: str, limit: int=8) -> list[dict[str,Any]]:
         if field not in self.FIELD_RULES: return []

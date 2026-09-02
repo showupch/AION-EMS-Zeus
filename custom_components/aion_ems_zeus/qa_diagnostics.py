@@ -91,9 +91,16 @@ class QADiagnosticsCenter:
         source_usage={}
         for d in devices:
             name=d.get('name') or d.get('device_id') or 'Unnamed device'
+            elwa_direct = (
+                str(d.get('type') or '') == 'water_heater'
+                and str(d.get('device_profile') or '') == 'my_pv_elwa'
+                and bool(str(d.get('control_elwa_ip') or '').strip())
+            )
             for key in ('power_entity','energy_entity'):
                 eid=d.get(key)
-                if not eid: missing_fields.append(f"{name}: {key}")
+                if not eid:
+                    if not elwa_direct:
+                        missing_fields.append(f"{name}: {key}")
                 elif not self.hass.states.get(eid): unavailable.append(eid)
                 if eid: source_usage.setdefault(eid,[]).append(str(name))
         duplicate_sources={k:v for k,v in source_usage.items() if len(v)>1}

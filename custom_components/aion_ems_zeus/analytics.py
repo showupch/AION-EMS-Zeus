@@ -276,6 +276,26 @@ class HistoricalAnalyticsEngine:
                         target = hourly_by_start.setdefault(bucket_key, {"start": bucket_key})
                         target[key] = round(target.get(key, 0.0) + max(value, 0.0), 4)
 
+            # Include the current local day's hourly/change rows as well.  This
+            # keeps the private hourly evidence useful for time-of-use Finance
+            # without exposing large arrays as sensor attributes.
+            for key in timing_roles:
+                for entity_id in list(selected_groups.get(key) or ([selected[key]] if selected.get(key) else [])):
+                    for row in list((raw_today or {}).get(entity_id) or []):
+                        if not isinstance(row, dict):
+                            continue
+                        value = self._ha_stat_number(row.get("change"))
+                        stamp = self._ha_stat_datetime(row.get("start"))
+                        if value is None or stamp is None or value < -0.001:
+                            continue
+                        local_stamp = dt_util.as_local(stamp)
+                        if local_stamp.date() != now.date():
+                            continue
+                        bucket = local_stamp.replace(minute=0, second=0, microsecond=0)
+                        bucket_key = bucket.isoformat()
+                        target = hourly_by_start.setdefault(bucket_key, {"start": bucket_key})
+                        target[key] = round(target.get(key, 0.0) + max(value, 0.0), 4)
+
             self._ha_consumption_hourly = [
                 row for _, row in sorted(hourly_by_start.items())
                 if row.get("house_energy_kwh") is not None
@@ -2569,12 +2589,13 @@ class ForecastEngine:
             return default
 
     def _adaptive_solar_correction(self) -> dict[str, Any]:
-        """Expose qualified planning learning as advisory forecast evidence only.
+        """Return a bounded learned solar correction from completed evidence.
 
-        Plan Results owns the reusable-learning qualification. Forecast may report
-        that qualified correction, but Recommendation Only mode must never mutate
-        the generated forecast from it. This keeps Planning, Forecast and System
-        Intelligence on one truth contract.
+        Planning remains the owner of the historical comparison evidence.  A fully
+        reusable Planning lesson may use the existing +/-15% guardrail.  Before that
+        point, Zeus may apply only a deliberately smaller provisional correction when
+        there is substantial, directionally consistent history.  This adjusts forecast
+        math only; it does not grant or change any Smart Control execution permission.
         """
         result = {
             "status": "Collecting",
@@ -2590,12 +2611,21 @@ class ForecastEngine:
             "forward_matches": 0,
             "bias_direction": "Collecting",
             "average_bias_percent": None,
-            "reason": "Zeus is collecting completed forecast comparisons before qualifying reusable learning.",
+            "reason": "Zeus is collecting completed forecast comparisons before applying learned correction.",
             "guardrail_percent": 15.0,
+            "provisional_guardrail_percent": 7.5,
             "minimum_completed_comparisons": 5,
             "minimum_effective_evidence": 3.0,
             "minimum_direction_consistency_percent": 65.0,
+            "provisional_minimum_completed_comparisons": 14,
+            "provisional_minimum_effective_evidence": 1.5,
+            "provisional_minimum_direction_consistency_percent": 55.0,
+            "provisional_minimum_learning_confidence_percent": 50.0,
+            "provisional_minimum_absolute_bias_percent": 8.0,
+            "provisional_gate_status": [],
+            "provisional_failed_gates": [],
             "reusable_learning_ready": False,
+            "provisional_learning_ready": False,
             "recommendation_only": True,
             "automatic_correction_applied": False,
         }
@@ -2614,16 +2644,76 @@ class ForecastEngine:
         direction_num = self._number(direction, 0.0) if direction is not None else None
         confidence = max(0.0, min(100.0, self._number(learning.get("confidence_percent"), 0.0)))
         reusable = bool(learning.get("reusable_learning_ready"))
+        bias_raw = learning.get("average_bias_percent")
+        avg_bias = self._number(bias_raw, 0.0) if bias_raw is not None else None
         recommended = max(-15.0, min(15.0, self._number(learning.get("recommended_forecast_correction_percent"), 0.0))) if reusable else 0.0
+
+        provisional_gate_status = [
+            {
+                "id": "completed_comparisons",
+                "label": "Completed comparisons",
+                "value": count,
+                "threshold": 14,
+                "unit": "",
+                "passed": count >= 14,
+            },
+            {
+                "id": "effective_evidence",
+                "label": "Effective weighted evidence",
+                "value": round(effective, 2),
+                "threshold": 1.5,
+                "unit": "",
+                "passed": effective >= 1.5,
+            },
+            {
+                "id": "direction_consistency",
+                "label": "Direction consistency",
+                "value": round(direction_num, 1) if direction_num is not None else None,
+                "threshold": 55.0,
+                "unit": "%",
+                "passed": direction_num is not None and direction_num >= 55.0,
+            },
+            {
+                "id": "learning_confidence",
+                "label": "Learning confidence",
+                "value": round(confidence, 1),
+                "threshold": 50.0,
+                "unit": "%",
+                "passed": confidence >= 50.0,
+            },
+            {
+                "id": "absolute_bias",
+                "label": "Absolute weighted bias",
+                "value": round(abs(avg_bias), 1) if avg_bias is not None else None,
+                "threshold": 8.0,
+                "unit": "%",
+                "passed": avg_bias is not None and abs(avg_bias) >= 8.0,
+            },
+        ]
+        failed_gates = [gate["id"] for gate in provisional_gate_status if not gate["passed"]]
+        provisional = bool(not reusable and not failed_gates)
+
+        applied = 0.0
+        if reusable:
+            applied = recommended
+        elif provisional and avg_bias is not None:
+            # Use only one quarter of the observed historical bias and cap the
+            # provisional effect at +/-7.5%.  This prevents noisy legacy evidence
+            # from moving a future forecast aggressively before forward trust matures.
+            applied = (-1.0 if avg_bias > 0 else 1.0) * min(7.5, abs(avg_bias) * 0.25)
+
         result.update({
             "completed_comparisons": count,
             "effective_evidence": round(effective, 2),
             "direction_consistency_percent": round(direction_num, 1) if direction_num is not None else None,
             "learning_confidence_percent": round(confidence, 1),
-            "recommended_correction_percent": round(recommended, 1),
+            "recommended_correction_percent": round(recommended if reusable else applied, 1),
             "bias_direction": str(learning.get("bias_direction") or "Collecting"),
-            "average_bias_percent": learning.get("average_bias_percent"),
+            "average_bias_percent": round(avg_bias, 1) if avg_bias is not None else None,
             "reusable_learning_ready": reusable,
+            "provisional_learning_ready": provisional,
+            "provisional_gate_status": provisional_gate_status,
+            "provisional_failed_gates": failed_gates,
         })
 
         try:
@@ -2632,22 +2722,39 @@ class ForecastEngine:
             raw_trust = accuracy.get("trust_percent")
             trust = self._number(raw_trust, -1.0) if raw_trust is not None else None
             result["forecast_trust_percent"] = round(trust, 1) if trust is not None and trust >= 0 else None
-        except Exception:  # noqa: BLE001 - advisory learning can stand alone
+        except Exception:  # noqa: BLE001 - historical learning can stand alone
             pass
 
-        if reusable:
-            result["status"] = "Qualified advisory"
-            result["reason"] = (
-                f"Reusable planning evidence qualifies a {recommended:+.1f}% advisory solar correction, "
-                "but Recommendation Only mode leaves the forecast unchanged."
-                if abs(recommended) >= 0.5 else
-                "Reusable planning evidence is qualified and currently balanced; no advisory correction is needed."
-            )
+        if abs(applied) >= 0.5:
+            result["applied"] = True
+            result["applied_correction_percent"] = round(applied, 1)
+            result["correction_factor"] = round(max(0.5, min(1.5, 1.0 + applied / 100.0)), 4)
+            result["automatic_correction_applied"] = True
+            if reusable:
+                result["status"] = "Qualified correction"
+                result["reason"] = (
+                    f"Reusable planning evidence applies a bounded {applied:+.1f}% solar correction. "
+                    "Smart Control permissions and execution logic are unchanged."
+                )
+            else:
+                result["status"] = "Conservative correction"
+                result["reason"] = (
+                    f"Substantial historical evidence shows {result['bias_direction'].lower()} with "
+                    f"{direction_num:.0f}% direction consistency. Zeus applies only {applied:+.1f}% "
+                    "while forward-matched trust is still collecting."
+                )
+        elif reusable:
+            result["status"] = "Qualified · balanced"
+            result["reason"] = "Reusable planning evidence is qualified and currently balanced; no correction is needed."
         elif count:
             result["status"] = "Learning"
-            result["reason"] = (
-                "Observed plan results are retained as evidence, but reusable-learning thresholds are not yet met."
-            )
+            failed_labels = [gate["label"] for gate in provisional_gate_status if not gate["passed"]]
+            if failed_labels:
+                result["reason"] = (
+                    "Historical evidence is retained; waiting for: " + ", ".join(failed_labels) + "."
+                )
+            else:
+                result["reason"] = "Historical evidence is retained, but the conservative correction gates are not yet all satisfied."
         return result
 
     def refresh(self) -> dict[str, Any]:
@@ -2838,22 +2945,65 @@ class ForecastEngine:
             })
 
         valid = [h for h in hourly if h["sample_count"] > 0]
-        best = max(valid[:24], key=lambda h: h.get("surplus_power_w") or 0, default=None)
 
         def energy(rows, key):
             return round(sum((h.get(key) or 0) for h in rows) / 1000, 2)
 
-        today_rows, tomorrow_rows = hourly[:24], hourly[24:48]
-        raw_today_solar = energy(today_rows, "raw_solar_power_w")
-        raw_tomorrow_solar = energy(tomorrow_rows, "raw_solar_power_w")
-        today_solar = energy(today_rows, "solar_power_w")
-        tomorrow_solar = energy(tomorrow_rows, "solar_power_w")
-        today_load = energy(today_rows, "house_power_w")
-        tomorrow_load = energy(tomorrow_rows, "house_power_w")
-        today_import = energy(today_rows, "grid_import_power_w")
-        tomorrow_import = energy(tomorrow_rows, "grid_import_power_w")
-        today_export = energy(today_rows, "grid_export_power_w")
-        tomorrow_export = energy(tomorrow_rows, "grid_export_power_w")
+        def row_local_time(row):
+            try:
+                value = datetime.fromisoformat(str(row.get("time") or ""))
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                return dt_util.as_local(value)
+            except (TypeError, ValueError):
+                return None
+
+        def rows_overlapping(start, end):
+            selected = []
+            for row in hourly:
+                row_start = row_local_time(row)
+                if row_start is None:
+                    continue
+                row_end = row_start + timedelta(hours=1)
+                if row_end > start and row_start < end:
+                    selected.append(row)
+            return selected
+
+        def energy_between(start, end, key):
+            # Hourly forecast rows represent average power across their local
+            # one-hour interval. Weight the first/last partial hour so the public
+            # "next 24h" contract is genuinely rolling from the refresh time,
+            # rather than silently meaning Today/Tomorrow calendar totals.
+            total_wh = 0.0
+            for row in rows_overlapping(start, end):
+                row_start = row_local_time(row)
+                if row_start is None:
+                    continue
+                row_end = row_start + timedelta(hours=1)
+                overlap_start = max(start, row_start)
+                overlap_end = min(end, row_end)
+                overlap_hours = max(0.0, (overlap_end - overlap_start).total_seconds() / 3600.0)
+                total_wh += (row.get(key) or 0) * overlap_hours
+            return round(total_wh / 1000.0, 2)
+
+        rolling_24_end = now + timedelta(hours=24)
+        rolling_48_end = now + timedelta(hours=48)
+        today_rows = rows_overlapping(now, rolling_24_end)
+        tomorrow_rows = rows_overlapping(rolling_24_end, rolling_48_end)
+        raw_today_solar = energy_between(now, rolling_24_end, "raw_solar_power_w")
+        raw_tomorrow_solar = energy_between(rolling_24_end, rolling_48_end, "raw_solar_power_w")
+        today_solar = energy_between(now, rolling_24_end, "solar_power_w")
+        tomorrow_solar = energy_between(rolling_24_end, rolling_48_end, "solar_power_w")
+        today_load = energy_between(now, rolling_24_end, "house_power_w")
+        tomorrow_load = energy_between(rolling_24_end, rolling_48_end, "house_power_w")
+        today_import = energy_between(now, rolling_24_end, "grid_import_power_w")
+        tomorrow_import = energy_between(rolling_24_end, rolling_48_end, "grid_import_power_w")
+        today_export = energy_between(now, rolling_24_end, "grid_export_power_w")
+        tomorrow_export = energy_between(rolling_24_end, rolling_48_end, "grid_export_power_w")
+
+        rolling_valid = [h for h in rows_overlapping(now, rolling_24_end) if h.get("sample_count", 0) > 0]
+        future_window_rows = [h for h in rolling_valid if (row_local_time(h) is not None and row_local_time(h) >= now)]
+        best = max(future_window_rows, key=lambda h: h.get("surplus_power_w") or 0, default=None)
 
         daily_forecast = []
         for day_offset in range(7):
@@ -2885,44 +3035,39 @@ class ForecastEngine:
             measured_import_baseline = robust_daily_value(target_date, "grid_import_energy_kwh")
             measured_export_baseline = robust_daily_value(target_date, "grid_export_energy_kwh")
 
-            # With no future weather evidence, use canonical measured history.
-            # Today is special: anchor the full-day forecast to what has already
-            # happened, then add only the remaining-hours historical profile.
-            # Future days use a robust same-weekday median from completed canonical
-            # HA/Recorder days.
-            if not weather_applied:
-                if day_offset == 0 and canonical_today:
-                    future_rows = []
-                    for forecast_row in rows:
-                        try:
-                            row_time = datetime.fromisoformat(str(forecast_row.get("time") or ""))
-                            if row_time.tzinfo is None:
-                                row_time = row_time.replace(tzinfo=timezone.utc)
-                            row_time = dt_util.as_local(row_time)
-                        except (TypeError, ValueError):
-                            continue
-                        if row_time > now:
-                            future_rows.append(forecast_row)
+            # Today is always hybrid evidence: canonical measured energy for the
+            # elapsed part of the local day plus only the modelled remainder. This
+            # prevents a weather-enabled forecast from re-predicting hours that
+            # Home Assistant has already measured. Future calendar days retain the
+            # existing weather-first / robust canonical-history fallback contract.
+            if day_offset == 0 and canonical_today:
+                day_end = forecast_start + timedelta(days=1)
+                future_rows = rows_overlapping(now, day_end)
+                future_weather_applied = any(bool(r.get("weather_forecast_applied")) for r in future_rows)
 
-                    actual_solar = max(0.0, self._number(canonical_today.get("solar_energy_kwh"), 0.0))
-                    actual_load = max(0.0, self._number(canonical_today.get("house_energy_kwh"), 0.0))
-                    actual_import = max(0.0, self._number(canonical_today.get("grid_import_energy_kwh"), 0.0))
-                    actual_export = max(0.0, self._number(canonical_today.get("grid_export_energy_kwh"), 0.0))
+                actual_solar = max(0.0, self._number(canonical_today.get("solar_energy_kwh"), 0.0))
+                actual_load = max(0.0, self._number(canonical_today.get("house_energy_kwh"), 0.0))
+                actual_import = max(0.0, self._number(canonical_today.get("grid_import_energy_kwh"), 0.0))
+                actual_export = max(0.0, self._number(canonical_today.get("grid_export_energy_kwh"), 0.0))
 
-                    expected_solar = actual_solar + energy(future_rows, "solar_power_w")
-                    expected_load = actual_load + energy(future_rows, "house_power_w")
-                    # For the grid boundary, use directly observed historical grid
-                    # profiles for the remaining hours instead of re-simulating
-                    # battery/grid routing.
-                    expected_import = actual_import + energy(future_rows, "historical_grid_import_power_w")
-                    expected_export = actual_export + energy(future_rows, "historical_grid_export_power_w")
-                    evidence_method = "measured_today_plus_remaining_historical_profile"
+                expected_solar = actual_solar + energy_between(now, day_end, "solar_power_w")
+                expected_load = actual_load + energy_between(now, day_end, "house_power_w")
+                if future_weather_applied:
+                    expected_import = actual_import + energy_between(now, day_end, "grid_import_power_w")
+                    expected_export = actual_export + energy_between(now, day_end, "grid_export_power_w")
+                    evidence_method = "measured_today_plus_remaining_weather_hourly_model"
                 else:
-                    expected_solar = measured_solar_baseline if measured_solar_baseline is not None else model_solar
-                    expected_load = measured_load_baseline if measured_load_baseline is not None else model_load
-                    expected_import = measured_import_baseline if measured_import_baseline is not None else model_import
-                    expected_export = measured_export_baseline if measured_export_baseline is not None else model_export
-                    evidence_method = "canonical_completed_day_weekday_median"
+                    # Preserve the proven canonical grid fallback when weather
+                    # evidence is absent; do not invent battery/grid routing.
+                    expected_import = actual_import + energy_between(now, day_end, "historical_grid_import_power_w")
+                    expected_export = actual_export + energy_between(now, day_end, "historical_grid_export_power_w")
+                    evidence_method = "measured_today_plus_remaining_historical_profile"
+            elif not weather_applied:
+                expected_solar = measured_solar_baseline if measured_solar_baseline is not None else model_solar
+                expected_load = measured_load_baseline if measured_load_baseline is not None else model_load
+                expected_import = measured_import_baseline if measured_import_baseline is not None else model_import
+                expected_export = measured_export_baseline if measured_export_baseline is not None else model_export
+                evidence_method = "canonical_completed_day_weekday_median"
             else:
                 expected_solar = model_solar
                 expected_load = model_load
@@ -2968,28 +3113,159 @@ class ForecastEngine:
                 },
             })
 
-        # Public 24h/following-24h values follow the same daily evidence contract
-        # as the 7-day cards.
-        if daily_forecast:
-            today_solar = daily_forecast[0]["expected_solar_kwh"]
-            today_load = daily_forecast[0]["expected_consumption_kwh"]
-            today_import = daily_forecast[0]["expected_grid_import_kwh"]
-            today_export = daily_forecast[0]["expected_grid_export_kwh"]
-        if len(daily_forecast) > 1:
-            tomorrow_solar = daily_forecast[1]["expected_solar_kwh"]
-            tomorrow_load = daily_forecast[1]["expected_consumption_kwh"]
-            tomorrow_import = daily_forecast[1]["expected_grid_import_kwh"]
-            tomorrow_export = daily_forecast[1]["expected_grid_export_kwh"]
+        # Public 24h/following-24h values are intentionally rolling horizons
+        # from the current refresh time. The 7-day cards remain local calendar
+        # days and therefore have a separate evidence contract.
 
-        history_samples = sum(min(h["sample_count"], 21) for h in valid[:24])
-        history_confidence = min(75, int(history_samples / max(24 * 21, 1) * 75)) if valid else 0
-        forecast_weather_hours = sum(1 for row in hourly[:48] if row.get("weather_forecast_applied"))
+        history_samples = sum(min(h["sample_count"], 21) for h in rolling_valid[:24])
+        history_confidence = min(75, int(history_samples / max(24 * 21, 1) * 75)) if rolling_valid else 0
+        forecast_weather_hours = sum(1 for row in rows_overlapping(now, rolling_48_end) if row.get("weather_forecast_applied"))
         weather_bonus = 20 if forecast_weather_hours >= 12 else (10 if forecast_weather_hours >= 4 else 0)
         live_bonus = 5 if flow_summary.get("status") == "Ready" else 0
         confidence = min(100, history_confidence + weather_bonus + live_bonus)
         confidence_label = "High" if confidence >= 80 else "Medium" if confidence >= 55 else "Low"
-        base_method = "weather_adjusted_calendar_profile" if forecast_weather_hours >= 4 else "calendar_aligned_historical_profile"
+        base_method = "weather_adjusted_rolling_profile" if forecast_weather_hours >= 4 else "rolling_historical_profile"
         method = f"adaptive_{base_method}" if adaptive.get("applied") else base_method
+
+        # v14.8.10.3 Forecast Intelligence: distinguish model coverage from
+        # measured forward trust. Coverage says how much evidence the model has;
+        # trust says how well matured forecasts have matched later measurements.
+        accuracy_summary = {}
+        if self.core is not None and hasattr(self.core, "prediction_accuracy"):
+            try:
+                accuracy_summary = self.core.prediction_accuracy.summary() or {}
+            except Exception:  # noqa: BLE001 - forecast remains available
+                accuracy_summary = {}
+        forward_samples = int(max(0, self._number(accuracy_summary.get("sample_count"), 0)))
+        trust_raw = accuracy_summary.get("trust_percent")
+        measured_trust = None if trust_raw is None else max(0.0, min(100.0, self._number(trust_raw, 0.0)))
+        trust_weight = min(0.45, forward_samples / 20.0 * 0.45)
+        if measured_trust is None:
+            forecast_quality_score = float(confidence)
+        else:
+            forecast_quality_score = confidence * (1.0 - trust_weight) + measured_trust * trust_weight
+        forecast_quality_score = round(max(0.0, min(100.0, forecast_quality_score)), 1)
+        forecast_quality_label = "High" if forecast_quality_score >= 80 else "Medium" if forecast_quality_score >= 55 else "Low"
+
+        next24_rows = rows_overlapping(now, rolling_24_end)
+        next48_rows = rows_overlapping(now, rolling_48_end)
+        weather_coverage_24 = round(100.0 * sum(1 for r in next24_rows if r.get("weather_forecast_applied")) / max(1, len(next24_rows)), 1)
+        weather_coverage_48 = round(100.0 * sum(1 for r in next48_rows if r.get("weather_forecast_applied")) / max(1, len(next48_rows)), 1)
+        history_coverage_24 = round(100.0 * sum(1 for r in next24_rows if (r.get("sample_count") or 0) > 0) / max(1, len(next24_rows)), 1)
+
+        # Range width is an evidence-aware planning band, not a probability
+        # guarantee. Weak weather/history/trust evidence deliberately widens it.
+        uncertainty_percent = 42.0 - forecast_quality_score * 0.28
+        if measured_trust is None or forward_samples < 4:
+            uncertainty_percent += 5.0
+        if weather_coverage_24 < 50:
+            uncertainty_percent += 4.0
+        uncertainty_percent = round(max(12.0, min(45.0, uncertainty_percent)), 1)
+
+        def range_for(value):
+            value = max(0.0, float(value or 0.0))
+            spread = uncertainty_percent / 100.0
+            return {
+                "low_kwh": round(max(0.0, value * (1.0 - spread)), 2),
+                "expected_kwh": round(value, 2),
+                "high_kwh": round(value * (1.0 + spread), 2),
+                "uncertainty_percent": uncertainty_percent,
+            }
+
+        solar_range_next_24h = range_for(today_solar)
+        solar_range_following_24h = range_for(tomorrow_solar)
+
+        # Compact 2-hour curve for the Forecast UI. The full hourly payload stays
+        # backend-only for Scheduler/Planning so Recorder attributes stay bounded.
+        forecast_curve_24h = []
+        curve_rows = rows_overlapping(now, rolling_24_end)
+        for idx in range(0, len(curve_rows), 2):
+            chunk = curve_rows[idx:idx + 2]
+            if not chunk:
+                continue
+            start_time = row_local_time(chunk[0])
+            if start_time is None:
+                continue
+            def avg_key(key):
+                vals = [float(r.get(key) or 0.0) for r in chunk]
+                return round(sum(vals) / max(1, len(vals)), 1)
+            forecast_curve_24h.append({
+                "time": start_time.isoformat(),
+                "solar_power_w": avg_key("solar_power_w"),
+                "house_power_w": avg_key("house_power_w"),
+                "surplus_power_w": avg_key("surplus_power_w"),
+                "grid_import_power_w": avg_key("grid_import_power_w"),
+                "weather_coverage_percent": round(100.0 * sum(1 for r in chunk if r.get("weather_forecast_applied")) / len(chunk), 1),
+            })
+
+        # Rank non-overlapping two-hour surplus opportunities. These remain
+        # recommendations only and never grant control authority.
+        candidate_windows = []
+        for idx in range(max(0, len(next24_rows) - 1)):
+            pair = next24_rows[idx:idx + 2]
+            if len(pair) < 2:
+                continue
+            start_time = row_local_time(pair[0])
+            if start_time is None:
+                continue
+            avg_surplus = sum(float(r.get("surplus_power_w") or 0.0) for r in pair) / 2.0
+            energy_kwh = sum(float(r.get("surplus_power_w") or 0.0) for r in pair) / 1000.0
+            candidate_windows.append({
+                "start": start_time.isoformat(),
+                "end": (start_time + timedelta(hours=2)).isoformat(),
+                "label": f"{start_time:%H:%M}–{(start_time + timedelta(hours=2)):%H:%M}",
+                "expected_surplus_power_w": round(avg_surplus, 1),
+                "expected_surplus_energy_kwh": round(energy_kwh, 2),
+            })
+        candidate_windows.sort(key=lambda x: x["expected_surplus_power_w"], reverse=True)
+        surplus_windows = []
+        occupied = []
+        for window in candidate_windows:
+            start_time = datetime.fromisoformat(window["start"])
+            if any(abs((start_time - used).total_seconds()) < 2 * 3600 for used in occupied):
+                continue
+            surplus_windows.append(window)
+            occupied.append(start_time)
+            if len(surplus_windows) >= 3:
+                break
+
+        risk_flags = []
+        if weather_coverage_24 < 25:
+            risk_flags.append({"id": "weather", "severity": "warning", "text": "Limited timestamped weather coverage in the next 24 hours."})
+        elif weather_coverage_24 < 75:
+            risk_flags.append({"id": "weather", "severity": "info", "text": "Weather coverage is partial; historical profiles fill uncovered hours."})
+        if history_coverage_24 < 75:
+            risk_flags.append({"id": "history", "severity": "warning", "text": "Some forecast hours still have limited local historical samples."})
+        if measured_trust is None or forward_samples < 4:
+            risk_flags.append({"id": "trust", "severity": "info", "text": "Forward-matched trust is still collecting matured forecast observations."})
+
+        forecast_quality = {
+            "score": forecast_quality_score,
+            "label": forecast_quality_label,
+            "model_confidence_percent": round(float(confidence), 1),
+            "measured_forward_trust_percent": round(measured_trust, 1) if measured_trust is not None else None,
+            "forward_match_count": forward_samples,
+            "weather_coverage_next_24h_percent": weather_coverage_24,
+            "weather_coverage_next_48h_percent": weather_coverage_48,
+            "history_coverage_next_24h_percent": history_coverage_24,
+            "uncertainty_band_percent": uncertainty_percent,
+            "range_contract": "Evidence-aware planning range; not a statistical probability guarantee.",
+        }
+
+        # Enrich calendar-day cards with per-day evidence and a bounded solar
+        # range while retaining every v14.8.10.2 key unchanged.
+        for day in daily_forecast:
+            diagnostics = day.get("weather_match_diagnostics") if isinstance(day.get("weather_match_diagnostics"), dict) else {}
+            matched = int(diagnostics.get("matched_rows") or 0)
+            day_weather_coverage = round(min(100.0, matched / 24.0 * 100.0), 1)
+            day_quality = max(20.0, min(100.0, forecast_quality_score - max(0.0, 60.0 - day_weather_coverage) * 0.18))
+            day_spread = max(12.0, min(48.0, uncertainty_percent + max(0.0, 60.0 - day_weather_coverage) * 0.10))
+            expected_day_solar = max(0.0, float(day.get("expected_solar_kwh") or 0.0))
+            day["quality_percent"] = round(day_quality, 1)
+            day["quality_label"] = "High" if day_quality >= 80 else "Medium" if day_quality >= 55 else "Low"
+            day["weather_coverage_percent"] = day_weather_coverage
+            day["solar_range_low_kwh"] = round(max(0.0, expected_day_solar * (1.0 - day_spread / 100.0)), 2)
+            day["solar_range_high_kwh"] = round(expected_day_solar * (1.0 + day_spread / 100.0), 2)
 
         best_window = None
         if best:
@@ -3000,21 +3276,30 @@ class ForecastEngine:
                 "label": f"{start:%H:%M}–{(start + timedelta(hours=2)):%H:%M}",
                 "expected_surplus_power_w": best.get("surplus_power_w"),
             }
+        if surplus_windows:
+            best_window = dict(surplus_windows[0])
         recommendations = []
-        if best_window and (best.get("surplus_power_w") or 0) >= 500:
+        if best_window and (best_window.get("expected_surplus_power_w") or 0) >= 500:
             recommendations.append({"action": "Use flexible loads", "window": best_window["label"], "reason": "The strongest predicted solar surplus is available in this window.", "confidence": confidence})
         if tomorrow_import > 2:
             recommendations.append({"action": "Preserve battery reserve", "window": "Before evening peak", "reason": f"Tomorrow's model predicts about {tomorrow_import:.1f} kWh of grid import.", "confidence": confidence})
         if not recommendations:
             recommendations.append({"action": "No schedule change", "window": "Current plan", "reason": "No strong forecast-driven opportunity is detected yet.", "confidence": confidence})
 
-        timeline = [{k: row.get(k) for k in ("time", "raw_solar_power_w", "solar_power_w", "adaptive_correction_percent", "house_power_w", "grid_import_power_w", "grid_export_power_w", "projected_battery_soc_percent", "condition")} for row in hourly[:24]]
+        rolling_timeline_rows = rows_overlapping(now, rolling_24_end)
+        timeline = [{k: row.get(k) for k in ("time", "raw_solar_power_w", "solar_power_w", "adaptive_correction_percent", "house_power_w", "grid_import_power_w", "grid_export_power_w", "projected_battery_soc_percent", "condition")} for row in rolling_timeline_rows]
         self.last = {
             "status": "Ready" if valid else "Waiting",
             "method": method,
             "confidence": confidence,
             "confidence_label": confidence_label,
             "confidence_factors": {"history": history_confidence, "weather": weather_bonus, "live_context": live_bonus},
+            "forecast_quality": forecast_quality,
+            "solar_range_next_24h": solar_range_next_24h,
+            "solar_range_following_24h": solar_range_following_24h,
+            "forecast_curve_24h": forecast_curve_24h,
+            "surplus_windows": surplus_windows,
+            "risk_flags": risk_flags,
             "calendar_aligned": True,
             "weather_forecast_hours_48h": forecast_weather_hours,
             "weather_fallback": "historical_profile" if forecast_weather_hours < 4 else None,
@@ -3035,6 +3320,8 @@ class ForecastEngine:
             "expected_grid_export_following_24h_kwh": tomorrow_export,
             "projected_battery_soc_24h_percent": today_rows[-1].get("projected_battery_soc_percent") if today_rows else None,
             "projected_battery_soc_48h_percent": tomorrow_rows[-1].get("projected_battery_soc_percent") if tomorrow_rows else None,
+            "rolling_horizon": True,
+            "rolling_horizon_started_at": now.isoformat(),
             "daily_forecast": daily_forecast,
             "forecast_horizon_hours": 168,
             # Backend planning evidence handoff. These are the exact hourly rows
@@ -3047,7 +3334,7 @@ class ForecastEngine:
             "best_surplus_window": best_window,
             "recommendations": recommendations[:3],
             "summary": (f"Next 24 hours: {today_solar:.1f} kWh solar, {today_load:.1f} kWh consumption, {today_import:.1f} kWh import and {today_export:.1f} kWh export." if valid else "More historical samples are needed for a forecast."),
-            "limitations": "Calendar-aligned local statistical forecast. Future weather adjustment is applied only when timestamped Home Assistant forecast rows are available; otherwise Zeus preserves the learned historical solar profile and lowers confidence. Planning learning may expose a bounded ±15% advisory solar correction only after its reusable-evidence thresholds are met; Recommendation Only mode does not apply that correction automatically and raw forecast values remain authoritative. Battery projection uses conservative generic efficiency and capacity assumptions until battery metadata is available.",
+            "limitations": "Rolling 24-hour headline forecast with calendar-aligned 7-day local statistical outlook. Future weather adjustment is applied only when timestamped Home Assistant forecast rows are available; otherwise Zeus preserves the learned historical solar profile and lowers confidence. Planning learning may expose a bounded ±15% advisory solar correction only after its reusable-evidence thresholds are met; Recommendation Only mode does not apply that correction automatically and raw forecast values remain authoritative. Battery projection uses conservative generic efficiency and capacity assumptions until battery metadata is available.",
             "safety": "Forecast and recommendations only. No device control.",
             "recorder_safe": True,
         }
@@ -4013,20 +4300,25 @@ class DeviceAnalyticsEngine:
         reset/measurement meters use the daily maximum (or final state).
         """
         devices = [d for d in self.registry.data.get("devices", []) if is_consuming_load(d) and d.get("energy_entity")]
-        # Recorder energy is also needed for mapped Heat Pump DHW sub-meters.
-        # These are thermal DHW meters, not the Heat Pump's main electrical
-        # consumption meter, so keep them as separate statistics sources.
+        # v14.8.6-alpha.15: Recorder energy is also required for every explicitly
+        # mapped Heat Pump circuit energy meter. These sensors are commonly
+        # total_increasing lifetime counters; their raw HA state must never be
+        # presented as Today/Week/Month/Year consumption or generation.
         recorder_sources: list[dict[str, Any]] = list(devices)
+        hp_period_energy_keys = (
+            "heating_electrical_energy_entity", "heating_thermal_energy_entity",
+            "dhw_electrical_energy_entity", "dhw_thermal_energy_entity",
+            "cooling_electrical_energy_entity", "cooling_thermal_energy_entity",
+            # Legacy circuit mappings remain supported as Recorder sources.
+            "heating_energy_entity", "dhw_energy_entity", "cooling_energy_entity",
+        )
         for device in self.registry.data.get("devices", []):
             if str(device.get("type") or "") != "heat_pump":
                 continue
-            dhw_entity = str(device.get("dhw_thermal_energy_entity") or device.get("dhw_energy_entity") or "").strip()
-            if not dhw_entity:
-                continue
-            recorder_sources.append({
-                "energy_entity": dhw_entity,
-                "energy_type": "auto",
-            })
+            for key in hp_period_energy_keys:
+                entity_id = str(device.get(key) or "").strip()
+                if entity_id:
+                    recorder_sources.append({"energy_entity": entity_id, "energy_type": "auto"})
         entity_ids = list(dict.fromkeys(str(d.get("energy_entity")) for d in recorder_sources if d.get("energy_entity")))
         if not entity_ids:
             self._recorder_days = {}
@@ -4045,13 +4337,14 @@ class DeviceAnalyticsEngine:
                     "start_time": start_local,
                     "end_time": end_local,
                     "period": "day",
-                    "types": ["change", "max", "state"],
+                    "types": ["change", "sum", "max", "state"],
                     "units": {"energy": "kWh"},
                 },
                 blocking=True, return_response=True,
             )
             raw_stats = (response or {}).get("statistics", response or {})
             result: dict[str, dict[str, float]] = {}
+            recorder_fallbacks: dict[str, str] = {}
             for device in recorder_sources:
                 entity_id = str(device.get("energy_entity"))
                 state = self.hass.states.get(entity_id)
@@ -4062,24 +4355,53 @@ class DeviceAnalyticsEngine:
                 daily_meter = configured_type == "daily" or state_class == "measurement" or any(
                     token in identifier for token in ("today", "daily", "day_energy", "energy_day", "daily_energy")
                 )
-                for row in list((raw_stats or {}).get(entity_id) or []):
-                    if not isinstance(row, dict):
-                        continue
-                    value = self._num_stat(row.get("max") if daily_meter else row.get("change"))
-                    if value is None and daily_meter:
-                        value = self._num_stat(row.get("state"))
-                    if value is None or value < -0.001:
-                        continue
+
+                rows = [r for r in list((raw_stats or {}).get(entity_id) or []) if isinstance(r, dict)]
+                rows.sort(key=lambda r: self._statistics_start_datetime(r.get("start")) or datetime.min.replace(tzinfo=timezone.utc))
+
+                # Home Assistant normally supplies `change` for total_increasing
+                # energy statistics. Some integrations/older statistics streams
+                # expose cumulative `sum` but no daily `change`. In that case Zeus
+                # derives local-day growth from consecutive Recorder sums. This is
+                # Recorder-backed evidence, not lifetime-state subtraction, and it
+                # remains reset-safe by accepting only positive growth.
+                previous_sum: float | None = None
+                used_sum_growth = False
+                for row in rows:
                     stamp = self._statistics_start_datetime(row.get("start"))
                     if stamp is None:
                         continue
+
+                    if daily_meter:
+                        value = self._num_stat(row.get("max"))
+                        if value is None:
+                            value = self._num_stat(row.get("state"))
+                    else:
+                        value = self._num_stat(row.get("change"))
+                        current_sum = self._num_stat(row.get("sum"))
+                        if value is None and current_sum is not None and previous_sum is not None:
+                            growth = current_sum - previous_sum
+                            # A negative jump is a Recorder/statistic reset boundary,
+                            # not negative consumption. Do not invent energy across it.
+                            value = growth if growth >= -0.001 else None
+                            used_sum_growth = value is not None
+                        if current_sum is not None:
+                            previous_sum = current_sum
+
+                    if value is None or value < -0.001:
+                        continue
                     day = dt_util.as_local(stamp).date().isoformat()
                     result.setdefault(entity_id, {})[day] = round(max(value, 0.0), 4)
+
+                if used_sum_growth:
+                    recorder_fallbacks[entity_id] = "recorder_sum_growth"
             self._recorder_days = result
             self._recorder_status = {
                 "status": "Ready", "entity_count": len(entity_ids),
                 "row_count": sum(len(v) for v in result.values()),
                 "source": "Home Assistant Recorder statistics · local-day aligned",
+                "period_delta_method": "Recorder change; cumulative sum-growth fallback when change is unavailable",
+                "sum_growth_fallback_entities": dict(recorder_fallbacks),
             }
         except Exception as err:
             self._recorder_days = {}
@@ -4253,7 +4575,9 @@ class DeviceAnalyticsEngine:
                 return "Cooling", f"Profile map translates raw operating mode {raw!r} to Cooling."
             if target in {"heating", "heat"}:
                 return "Heating", f"Profile map translates raw operating mode {raw!r} to Heating."
-            if target in {"idle", "standby", "off", "inactive"}:
+            if target in {"off"}:
+                return "Off", f"Profile map translates raw operating mode {raw!r} to Off."
+            if target in {"idle", "standby", "inactive"}:
                 return "Idle", f"Profile map translates raw operating mode {raw!r} to Idle/Standby."
             if target in {"automatic", "auto", "scheduled", "mixed", "multi mode", "multi-mode"}:
                 return "Automatic", f"Profile map identifies raw operating mode {raw!r} as a multi-mode schedule; it does not prove the current thermal activity."
@@ -4261,6 +4585,8 @@ class DeviceAnalyticsEngine:
             return "DHW", "Mapped operating-mode text identifies DHW."
         if any(token in state for token in ("cool", "cooling", "kühlen", "kuehlen")):
             return "Cooling", "Mapped operating-mode text identifies Cooling."
+        if state in {"aus", "off"}:
+            return "Off", "Mapped operating-mode text identifies Off."
         if any(token in state for token in ("heat", "heating", "heizen", "heiz")):
             return "Heating", "Mapped operating-mode text identifies Heating."
         if raw and re.fullmatch(r"[-+]?\d+(?:\.\d+)?", raw):
@@ -4963,7 +5289,29 @@ class DeviceAnalyticsEngine:
                 month_energy = max(float(period["month_energy"]) + correction, 0.0)
                 year_energy = max(float(period["year_energy"]) + correction, 0.0)
                 tracked_energy = max(float(period["tracked_energy"]) + correction, 0.0)
-            lifetime_total = self._lifetime_total_energy(device)
+
+            # v14.8.10.2 Martin Heat Pump accounting: split electrical meters
+            # are authoritative whenever enabled. Cooling is included only when
+            # configured/enabled; thermal channels remain separate evidence.
+            hp_split_period_used = False
+            if str(device.get("type") or "") == "heat_pump" and bool(device.get("separate_heating_dhw_measurements", False)):
+                heating_e = str(device.get("heating_electrical_energy_entity") or "").strip()
+                dhw_e = str(device.get("dhw_electrical_energy_entity") or "").strip()
+                cooling_e = (str(device.get("cooling_electrical_energy_entity") or "").strip()
+                             if bool(device.get("cooling_measurements_enabled", False)) else "")
+                hp_entities = [heating_e, dhw_e] + ([cooling_e] if cooling_e else [])
+                if heating_e and dhw_e:
+                    hp_periods = [self._recorder_periods({"energy_entity": eid}, today) for eid in hp_entities]
+                    if all(rowp is not None for rowp in hp_periods):
+                        energy = round(sum(rowp["today"] for rowp in hp_periods), 3)
+                        week_energy = sum(rowp["week"] for rowp in hp_periods)
+                        month_energy = sum(rowp["month"] for rowp in hp_periods)
+                        year_energy = sum(rowp["year"] for rowp in hp_periods)
+                        tracked_energy = sum(rowp["tracked"] for rowp in hp_periods)
+                        energy_method = "ha_recorder_hp_split_electrical_statistics"
+                        hp_split_period_used = True
+
+            lifetime_total = None if hp_split_period_used else self._lifetime_total_energy(device)
             total_display = lifetime_total if lifetime_total is not None else tracked_energy
             total_method = "meter_lifetime_total" if lifetime_total is not None else "zeus_tracked_total"
             total_energy += energy
@@ -4988,19 +5336,35 @@ class DeviceAnalyticsEngine:
                     except (TypeError, ValueError):
                         pass
             power_entity = str(device.get("power_entity") or "").strip() or None
-            current_power_w = 0.0
-            if power_entity:
-                power_state = self.hass.states.get(power_entity)
-                if power_state and str(power_state.state).strip().lower() not in {"unknown", "unavailable", "none", ""}:
-                    try:
-                        current_power_w = max(0.0, float(power_state.state))
-                        power_unit = str(power_state.attributes.get("unit_of_measurement") or "W").strip().lower()
-                        if power_unit in {"kw", "kilowatt", "kilowatts"}:
-                            current_power_w *= 1000.0
-                        elif power_unit in {"mw", "megawatt", "megawatts"}:
-                            current_power_w *= 1000000.0
-                    except (TypeError, ValueError):
-                        current_power_w = 0.0
+
+            def live_electrical_power_w(entity_id: str | None) -> float | None:
+                if not entity_id:
+                    return None
+                power_state = self.hass.states.get(entity_id)
+                if power_state is None or str(power_state.state).strip().lower() in {"unknown", "unavailable", "none", ""}:
+                    return None
+                try:
+                    value = max(0.0, float(power_state.state))
+                except (TypeError, ValueError):
+                    return None
+                power_unit = str(power_state.attributes.get("unit_of_measurement") or "W").strip().lower()
+                if power_unit in {"kw", "kilowatt", "kilowatts"}: value *= 1000.0
+                elif power_unit in {"mw", "megawatt", "megawatts"}: value *= 1000000.0
+                elif power_unit not in {"w", "watt", "watts"}: return None
+                return value
+
+            primary_power_w = live_electrical_power_w(power_entity)
+            current_power_w = float(primary_power_w or 0.0)
+            if str(device.get("type") or "") == "heat_pump" and bool(device.get("separate_heating_dhw_measurements", False)):
+                heating_power_e = str(device.get("heating_electrical_power_entity") or "").strip()
+                dhw_power_e = str(device.get("dhw_electrical_power_entity") or "").strip()
+                cooling_power_e = (str(device.get("cooling_electrical_power_entity") or "").strip()
+                                   if bool(device.get("cooling_measurements_enabled", False)) else "")
+                hp_power_entities = [heating_power_e, dhw_power_e] + ([cooling_power_e] if cooling_power_e else [])
+                if heating_power_e and dhw_power_e:
+                    hp_power_values = [live_electrical_power_w(eid) for eid in hp_power_entities]
+                    if all(value is not None for value in hp_power_values):
+                        current_power_w = sum(float(value) for value in hp_power_values)
             stored_peak_w = max(0.0, float(row.get("peak_power_w", 0) or 0))
             effective_peak_w = max(stored_peak_w, current_power_w)
 
@@ -5027,11 +5391,17 @@ class DeviceAnalyticsEngine:
                     "compressor_runtime_entity", "compressor_starts_entity",
                     "dhw_temperature_entity", "dhw_energy_entity",
                     "heating_energy_entity", "cooling_energy_entity",
+                    "heating_electrical_power_entity", "heating_thermal_power_entity",
+                    "heating_electrical_energy_entity", "heating_thermal_energy_entity",
+                    "dhw_electrical_power_entity", "dhw_thermal_power_entity",
+                    "dhw_electrical_energy_entity", "dhw_thermal_energy_entity",
+                    "cooling_electrical_power_entity", "cooling_electrical_energy_entity",
+                    "cooling_thermal_power_entity", "cooling_thermal_energy_entity",
                     "operating_mode_entity", "target_temperature_entity",
                     "jaz_entity",
                     "heat_carrier_forward_entity", "heat_carrier_return_entity",
                     "source_in_temperature_entity", "source_out_temperature_entity",
-                    "source_pump_speed_entity", "compressor_activity_entity",
+                    "source_pump_speed_entity", "heat_carrier_pump_speed_entity", "compressor_activity_entity",
                     "compressor_speed_entity", "compressor_target_speed_entity",
                     "dhw_target_temperature_entity",
                 ):
@@ -5103,9 +5473,18 @@ class DeviceAnalyticsEngine:
 
                 derived_live_cop = None
                 derived_live_cop_reason = "Mapped thermal power and electrical power are required."
-                if thermal_power_w is not None and electrical_power_w > 50.0 and thermal_power_w >= 0.0:
-                    derived_live_cop = round(thermal_power_w / electrical_power_w, 3)
-                    derived_live_cop_reason = "Thermal power ÷ measured electrical power; both are live mapped measurements."
+                # v14.8.10-alpha.7: a mapped heat pump that is not consuming
+                # meaningful electrical power has no active efficiency ratio.
+                # Treat that proven inactive state as COP 0.00 rather than
+                # "Unavailable". Unavailable remains reserved for missing or
+                # invalid measurement evidence.
+                if thermal_power_w is not None and power_entity and thermal_power_w >= 0.0:
+                    if electrical_power_w > 50.0:
+                        derived_live_cop = round(thermal_power_w / electrical_power_w, 3)
+                        derived_live_cop_reason = "Thermal power ÷ measured electrical power; both are live mapped measurements."
+                    else:
+                        derived_live_cop = 0.0
+                        derived_live_cop_reason = "Mapped electrical and thermal power are available, but the Heat Pump is inactive / below the live COP power floor."
 
                 compressor_state = (heat_pump_inputs.get("compressor_state_entity") or {}).get("state")
                 compressor_activity = (heat_pump_inputs.get("compressor_activity_entity") or {}).get("state")
@@ -5516,14 +5895,80 @@ class DeviceAnalyticsEngine:
                     "dhw_temperature_unit": hp_unit("dhw_temperature_entity"),
                     "dhw_target_temperature": hp_number("dhw_target_temperature_entity"),
                     "dhw_target_temperature_unit": hp_unit("dhw_target_temperature_entity"),
+                    # v14.8.2-alpha.9: expose circuit-group enablement so the frontend can
+                    # hide disabled groups instead of rendering misleading Unavailable cards.
+                    "separate_heating_dhw_measurements": bool(device.get("separate_heating_dhw_measurements", False)),
+                    "cooling_measurements_enabled": bool(device.get("cooling_measurements_enabled", False)),
+                    # v14.8.2-alpha.8: keep circuit electrical consumption and thermal generation
+                    # as separate evidence channels. These values are never added to the whole-unit
+                    # Heat Pump totals, preventing double counting when the primary Power/Energy
+                    # mapping already represents the complete appliance.
+                    "heating_electrical_power_state": hp_number("heating_electrical_power_entity"),
+                    "heating_electrical_power_unit": hp_unit("heating_electrical_power_entity"),
+                    "heating_thermal_power_state": hp_number("heating_thermal_power_entity"),
+                    "heating_thermal_power_unit": hp_unit("heating_thermal_power_entity"),
+                    "heating_electrical_energy_state": hp_number("heating_electrical_energy_entity"),
+                    "heating_electrical_energy_unit": hp_unit("heating_electrical_energy_entity"),
+                    "heating_thermal_energy_state": hp_number("heating_thermal_energy_entity"),
+                    "heating_thermal_energy_unit": hp_unit("heating_thermal_energy_entity"),
+                    "dhw_electrical_power_state": hp_number("dhw_electrical_power_entity"),
+                    "dhw_electrical_power_unit": hp_unit("dhw_electrical_power_entity"),
+                    "dhw_thermal_power_state": hp_number("dhw_thermal_power_entity"),
+                    "dhw_thermal_power_unit": hp_unit("dhw_thermal_power_entity"),
+                    "dhw_electrical_energy_state": hp_number("dhw_electrical_energy_entity"),
+                    "dhw_electrical_energy_unit": hp_unit("dhw_electrical_energy_entity"),
+                    "dhw_thermal_energy_state": hp_number("dhw_thermal_energy_entity"),
+                    "dhw_thermal_energy_unit": hp_unit("dhw_thermal_energy_entity"),
+                    "cooling_electrical_power_state": hp_number("cooling_electrical_power_entity"),
+                    "cooling_electrical_power_unit": hp_unit("cooling_electrical_power_entity"),
+                    "cooling_electrical_energy_state": hp_number("cooling_electrical_energy_entity"),
+                    "cooling_electrical_energy_unit": hp_unit("cooling_electrical_energy_entity"),
+                    "cooling_thermal_power_state": hp_number("cooling_thermal_power_entity"),
+                    "cooling_thermal_power_unit": hp_unit("cooling_thermal_power_entity"),
+                    "cooling_thermal_energy_state": hp_number("cooling_thermal_energy_entity"),
+                    "cooling_thermal_energy_unit": hp_unit("cooling_thermal_energy_entity"),
+                    # v14.8.2-alpha.13: explicit mapping presence is separate from live
+                    # availability. The frontend uses these flags to hide genuinely
+                    # unconfigured circuit cards without hiding a configured sensor that
+                    # is temporarily unavailable.
+                    "heating_electrical_power_configured": bool(str(device.get("heating_electrical_power_entity") or "").strip()),
+                    "heating_thermal_power_configured": bool(str(device.get("heating_thermal_power_entity") or "").strip()),
+                    "heating_electrical_energy_configured": bool(str(device.get("heating_electrical_energy_entity") or "").strip()),
+                    "heating_thermal_energy_configured": bool(str(device.get("heating_thermal_energy_entity") or "").strip()),
+                    "dhw_electrical_power_configured": bool(str(device.get("dhw_electrical_power_entity") or "").strip()),
+                    "dhw_thermal_power_configured": bool(str(device.get("dhw_thermal_power_entity") or "").strip()),
+                    "dhw_electrical_energy_configured": bool(str(device.get("dhw_electrical_energy_entity") or "").strip()),
+                    "dhw_thermal_energy_configured": bool(str(device.get("dhw_thermal_energy_entity") or "").strip()),
+                    # Legacy/unclassified meters remain visible only as migration evidence.
                     "heating_energy_state": hp_number("heating_energy_entity"),
                     "heating_energy_unit": hp_unit("heating_energy_entity"),
-                    "dhw_energy_state": hp_number("dhw_thermal_energy_entity") if device.get("dhw_thermal_energy_entity") else hp_number("dhw_energy_entity"),
-                    "dhw_energy_unit": hp_unit("dhw_thermal_energy_entity") if device.get("dhw_thermal_energy_entity") else hp_unit("dhw_energy_entity"),
-                    "cooling_energy_state": hp_number("cooling_thermal_energy_entity") if device.get("cooling_thermal_energy_entity") else hp_number("cooling_energy_entity"),
-                    "cooling_energy_unit": hp_unit("cooling_thermal_energy_entity") if device.get("cooling_thermal_energy_entity") else hp_unit("cooling_energy_entity"),
+                    "dhw_energy_state": hp_number("dhw_energy_entity"),
+                    "dhw_energy_unit": hp_unit("dhw_energy_entity"),
+                    "cooling_energy_state": hp_number("cooling_energy_entity"),
+                    "cooling_energy_unit": hp_unit("cooling_energy_entity"),
                     "policy": "Measured relationships only. Zeus does not infer manufacturer limits, expected COP, or thermal output when the required measurement is missing.",
                 }
+
+            # v14.8.2-alpha.13: derive current-day deltas for the separate HP
+            # circuit energy meters. Raw total_increasing states are lifetime counters
+            # and must never be shown as Command Center day values. Recorder periods
+            # provide the same day semantics used elsewhere in Zeus.
+            if heat_pump_intelligence is not None:
+                for _prefix, _entity_key in (
+                    ("heating_electrical", "heating_electrical_energy_entity"),
+                    ("heating_thermal", "heating_thermal_energy_entity"),
+                    ("dhw_electrical", "dhw_electrical_energy_entity"),
+                    ("dhw_thermal", "dhw_thermal_energy_entity"),
+                ):
+                    _entity = str(device.get(_entity_key) or "").strip()
+                    _period = self._recorder_periods({"energy_entity": _entity}, today) if _entity else None
+                    for _period_name in ("today", "week", "month", "year"):
+                        heat_pump_intelligence[f"{_prefix}_energy_{_period_name}_kwh"] = (
+                            round(float(_period.get(_period_name, 0.0)), 3) if _period is not None else None
+                        )
+                    heat_pump_intelligence[f"{_prefix}_energy_method"] = (
+                        "ha_recorder_statistics_delta" if _period is not None else None
+                    )
 
             hp_dhw_period = None
             hp_dhw_energy_entity = ""

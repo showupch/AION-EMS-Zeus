@@ -509,3 +509,74 @@ apply_home_assistant_energy_import:
       required: false
       default: false
       selector: {boolean: null}
+
+
+save_switch_hub_device:
+  name: Save Switch Hub device
+  description: Add or update a supervised Home Assistant switch for Solar Surplus or Time control.
+  fields:
+    device_id:
+      name: Device ID
+      required: true
+      selector: {text: null}
+    name:
+      name: Name
+      required: true
+      selector: {text: null}
+    switch_entity:
+      name: Switch entity
+      required: true
+      selector:
+        entity:
+          domain: switch
+    power_entity:
+      name: Optional power sensor
+      required: false
+      selector:
+        entity:
+          domain: sensor
+    control_enabled:
+      name: Zeus Control
+      required: false
+      default: false
+      selector: {boolean: null}
+    trigger_mode:
+      name: Trigger
+      required: false
+      default: surplus
+      selector:
+        select:
+          options:
+            - surplus
+            - time
+    solar_surplus_w:
+      name: Required Solar surplus
+      description: Grid-export surplus reserved for this stage before Zeus turns it ON.
+      required: false
+      default: 1000
+      selector:
+        number:
+          min: 1
+          max: 50000
+          step: 1
+          unit_of_measurement: W
+          mode: box
+    on_time:
+      name: ON time
+      required: false
+      default: "22:00"
+      selector: {time: null}
+    off_time:
+      name: OFF time
+      required: false
+      default: "06:00"
+      selector: {time: null}
+
+remove_switch_hub_device:
+  name: Remove Switch Hub device
+  description: Remove a device from Switch Hub. The physical switch is not changed.
+  fields:
+    device_id:
+      name: Device ID
+      required: true
+      selector: {text: null}

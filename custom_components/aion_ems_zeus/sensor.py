@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
+from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN, NAME, VERSION
 
@@ -443,12 +444,46 @@ def _scheduler_preview_attributes(core) -> dict[str, Any]:
         },
         "safety": data.get("safety"),
         "recorder_safe": True,
-        "sensor_payload": "compact_v2",
+        "sensor_payload": "compact_v3_circuit_channels",
     }
+
+
+def _elwa_direct_evidence(core) -> dict[str, Any]:
+    """Return the first configured Zeus Direct Modbus ELWA live evidence."""
+    summary = core.smart_control.summary() or {}
+    for simulation in list(summary.get("simulations") or []):
+        if not isinstance(simulation, dict):
+            continue
+        execution = simulation.get("execution") if isinstance(simulation.get("execution"), dict) else {}
+        direct = execution.get("direct_modbus") if isinstance(execution.get("direct_modbus"), dict) else {}
+        if direct.get("configured"):
+            return direct
+    return {}
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
     core = hass.data[DOMAIN][entry.entry_id]
+
+    # Reserve the two Zeus-owned ELWA entity IDs before EntityPlatform adds
+    # the SensorEntity objects.  With unique IDs Home Assistant's entity
+    # registry is authoritative; pre-creating these entries guarantees the
+    # public IDs requested by the Direct Modbus mapping instead of allowing
+    # HA to derive an integration-prefixed object ID.
+    entity_registry = er.async_get(hass)
+    entity_registry.async_get_or_create(
+        domain="sensor",
+        platform=DOMAIN,
+        unique_id=f"{DOMAIN}_zeus_elwa_power",
+        suggested_object_id="zeus_elwa_power",
+        original_name="ELWA Power",
+    )
+    entity_registry.async_get_or_create(
+        domain="sensor",
+        platform=DOMAIN,
+        unique_id=f"{DOMAIN}_zeus_elwa_temperature",
+        suggested_object_id="zeus_elwa_temperature",
+        original_name="ELWA Temperature",
+    )
 
     _update_check = {"checked_at": None, "status": "checking", "latest_version": None, "latest_channel": None, "release_url": None, "error": None}
 
@@ -538,7 +573,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     def _push_update() -> None:
         now = datetime.now(timezone.utc)
         previous = _last_push["at"]
-        if previous is not None and (now - previous).total_seconds() < 10:
+        # v14.8.4-rc.7: publish each coalesced live-flow snapshot promptly.
+        # The UpdateEngine already rate-limits full recomputation, so a second
+        # 10 s frontend throttle can make House Power appear stale.
+        if previous is not None and (now - previous).total_seconds() < 2:
             return
         _last_push["at"] = now
         coordinator.async_set_updated_data({"version": core.version, "published_at": now.isoformat()})
@@ -972,6 +1010,54 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "dhw_temperature_unit": hp.get("dhw_temperature_unit"),
                 "dhw_target_temperature": hp.get("dhw_target_temperature"),
                 "dhw_target_temperature_unit": hp.get("dhw_target_temperature_unit"),
+                "heating_electrical_power_state": hp.get("heating_electrical_power_state"),
+                "heating_electrical_power_unit": hp.get("heating_electrical_power_unit"),
+                "heating_thermal_power_state": hp.get("heating_thermal_power_state"),
+                "heating_thermal_power_unit": hp.get("heating_thermal_power_unit"),
+                "heating_electrical_energy_state": hp.get("heating_electrical_energy_state"),
+                "heating_electrical_energy_unit": hp.get("heating_electrical_energy_unit"),
+                "heating_thermal_energy_state": hp.get("heating_thermal_energy_state"),
+                "heating_thermal_energy_unit": hp.get("heating_thermal_energy_unit"),
+                "dhw_electrical_power_state": hp.get("dhw_electrical_power_state"),
+                "dhw_electrical_power_unit": hp.get("dhw_electrical_power_unit"),
+                "dhw_thermal_power_state": hp.get("dhw_thermal_power_state"),
+                "dhw_thermal_power_unit": hp.get("dhw_thermal_power_unit"),
+                "dhw_electrical_energy_state": hp.get("dhw_electrical_energy_state"),
+                "dhw_electrical_energy_unit": hp.get("dhw_electrical_energy_unit"),
+                "dhw_thermal_energy_state": hp.get("dhw_thermal_energy_state"),
+                "dhw_thermal_energy_unit": hp.get("dhw_thermal_energy_unit"),
+                # v14.8.2-alpha.15: expose circuit configuration + Recorder day deltas
+                # to the Heat Pump Intelligence sensor consumed by Command Center.
+                # Analytics already computes these fields; previous builds dropped them
+                # while compacting the sensor attributes, which made the kiosk hide DHW.
+                "separate_heating_dhw_measurements": hp.get("separate_heating_dhw_measurements"),
+                "heating_electrical_power_configured": hp.get("heating_electrical_power_configured"),
+                "heating_thermal_power_configured": hp.get("heating_thermal_power_configured"),
+                "heating_electrical_energy_configured": hp.get("heating_electrical_energy_configured"),
+                "heating_thermal_energy_configured": hp.get("heating_thermal_energy_configured"),
+                "dhw_electrical_power_configured": hp.get("dhw_electrical_power_configured"),
+                "dhw_thermal_power_configured": hp.get("dhw_thermal_power_configured"),
+                "dhw_electrical_energy_configured": hp.get("dhw_electrical_energy_configured"),
+                "dhw_thermal_energy_configured": hp.get("dhw_thermal_energy_configured"),
+                # v14.8.6-alpha.15: expose Recorder period deltas for circuit
+                # energy. Raw total_increasing states remain diagnostic only.
+                **{
+                    f"{prefix}_energy_{period}_kwh": hp.get(f"{prefix}_energy_{period}_kwh")
+                    for prefix in ("heating_electrical", "heating_thermal", "dhw_electrical", "dhw_thermal")
+                    for period in ("today", "week", "month", "year")
+                },
+                **{
+                    f"{prefix}_energy_method": hp.get(f"{prefix}_energy_method")
+                    for prefix in ("heating_electrical", "heating_thermal", "dhw_electrical", "dhw_thermal")
+                },
+                "cooling_electrical_power_state": hp.get("cooling_electrical_power_state"),
+                "cooling_electrical_power_unit": hp.get("cooling_electrical_power_unit"),
+                "cooling_electrical_energy_state": hp.get("cooling_electrical_energy_state"),
+                "cooling_electrical_energy_unit": hp.get("cooling_electrical_energy_unit"),
+                "cooling_thermal_power_state": hp.get("cooling_thermal_power_state"),
+                "cooling_thermal_power_unit": hp.get("cooling_thermal_power_unit"),
+                "cooling_thermal_energy_state": hp.get("cooling_thermal_energy_state"),
+                "cooling_thermal_energy_unit": hp.get("cooling_thermal_energy_unit"),
                 "heating_energy_state": hp.get("heating_energy_state"),
                 "heating_energy_unit": hp.get("heating_energy_unit"),
                 "dhw_energy_state": hp.get("dhw_energy_state"),
@@ -1008,6 +1094,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             "rate_limited_refreshes": update.get("rate_limited_refreshes", 0),
             "last_refresh_reason": update.get("last_refresh_reason"),
             "last_refresh_duration_ms": update.get("last_refresh_duration_ms"),
+            "update_latency_ms": update.get("update_latency_ms"),
             "last_processed_entity": update.get("last_processed_entity"),
             "live_refreshes": perf.get("live_refreshes", 0),
             "decision_refreshes": perf.get("decision_refreshes", 0),
@@ -1080,7 +1167,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     sensors = [
         SimpleSensor(coordinator, core, "Platform Status", "platform_status", "mdi:home-lightning-bolt", lambda c: "Ready", lambda c: {"version": VERSION, "status": "Zeus AI Advisor ready", "architecture": "zeus-12-1-decision-intelligence", "engines": c.engine_names(), "update_status": _update_check.get("status"), "latest_version": _update_check.get("latest_version"), "latest_channel": _update_check.get("latest_channel"), "update_available": _update_check.get("status") == "update_available", "release_url": _update_check.get("release_url"), "update_checked_at": _update_check.get("checked_at").isoformat() if _update_check.get("checked_at") else None, "update_error": _update_check.get("error")}),
         SimpleSensor(coordinator, core, "Performance Diagnostics", "performance_diagnostics", "mdi:speedometer", lambda c: c.update_engine.summary().get("status", "Running"), _performance_attributes),
-        SimpleSensor(coordinator, core, "Registry Summary", "registry_summary", "mdi:database-cog-outline", lambda c: c.registry.summary().get("status"), lambda c: c.registry.summary()),
+        RegistrySummarySensor(coordinator, core, "Registry Summary", "registry_summary", "mdi:database-cog-outline", lambda c: c.registry.summary().get("status"), lambda c: c.registry.summary()),
+        SimpleSensor(
+            coordinator,
+            core,
+            "Switch Hub",
+            "switch_hub",
+            "mdi:toggle-switch-variant",
+            lambda c: c.switch_hub.summary().get("status", "Ready"),
+            lambda c: c.switch_hub.summary(),
+        ),
         SimpleSensor(
             coordinator,
             core,
@@ -1102,9 +1198,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "permissioned_candidates": c.smart_control.summary().get("permissioned_candidates", 0),
                 "simulations": list(c.smart_control.summary().get("simulations") or []),
                 "simulation_count": c.smart_control.summary().get("simulation_count", 0),
-                "simulation_history": list(c.smart_control.summary().get("simulation_history") or [])[:40],
+                # Keep Recorder-facing attributes comfortably below Home
+                # Assistant's 16 KiB state-attribute limit. The Smart Control
+                # engine retains its larger runtime history internally; this
+                # entity exposes only the most recent transitions plus the full
+                # count for UI/diagnostic context.
+                "simulation_history": list(c.smart_control.summary().get("simulation_history") or [])[:8],
                 "simulation_history_count": c.smart_control.summary().get("simulation_history_count", 0),
                 "latest_simulation_transition": c.smart_control.summary().get("latest_simulation_transition"),
+                "simulations": list(c.smart_control.summary().get("simulations") or []),
+                "goe_mqtt": c.smart_control.summary().get("goe_mqtt") or {},
                 "devices": [
                     {
                         "device_id": d.get("device_id"),
@@ -1118,7 +1221,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         "actuator_type": d.get("actuator_type"),
                         "power_limits_w": d.get("power_limits_w"),
                         "execution_allowed": d.get("execution_allowed", False),
-                        "blocked_reasons": list(d.get("blocked_reasons") or [])[:4],
+                        "blocked_reasons": [
+                            reason for reason in list(d.get("blocked_reasons") or [])
+                            if not (
+                                str(reason) == "Global safety mode is Recommendation Only."
+                                and (
+                                    str(d.get("device_profile") or "") == "go_e_charger_mqtt"
+                                    or str(d.get("type") or "") == "water_heater"
+                                )
+                            )
+                        ][:4],
                     }
                     for d in c.smart_control.summary().get("devices", [])
                 ],
@@ -1155,7 +1267,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         ),
         SimpleSensor(coordinator, core, "Entity Discovery", "entity_discovery", "mdi:magnify-scan", lambda c: c.discovery.summary().get("status"), lambda c: c.discovery.summary()),
         SimpleSensor(coordinator, core, "Energy Mapping", "energy_mapping", "mdi:transmission-tower-import", lambda c: c.energy_mapping.public_summary().get("status"), lambda c: c.energy_mapping.public_summary()),
-        SimpleSensor(coordinator, core, "Energy Flow", "energy_flow", "mdi:home-lightning-bolt-outline", lambda c: c.energy_flow.summary().get("status"), lambda c: c.energy_flow.summary()),
+        EnergyFlowSensor(coordinator, core, "Energy Flow", "energy_flow", "mdi:home-lightning-bolt-outline", lambda c: c.energy_flow.summary().get("status"), lambda c: c.energy_flow.summary()),
         SimpleSensor(coordinator, core, "Integration Hub", "integration_hub", "mdi:hubspot", lambda c: c.integration_hub.summary().get("status"), _integration_hub_attributes),
         PluginDiscoverySensor(coordinator, core, "Email Plugin Discovery", "plugin_email", "mdi:email-outline", lambda c: next((x.get("health") for x in c.integration_hub.summary().get("plugins", []) if x.get("id") == "email"), "Waiting"), lambda c: _plugin_attributes(c, "email")),
         PluginDiscoverySensor(coordinator, core, "Pushover Plugin Discovery", "plugin_pushover", "mdi:message-badge-outline", lambda c: next((x.get("health") for x in c.integration_hub.summary().get("plugins", []) if x.get("id") == "pushover"), "Waiting"), lambda c: _plugin_attributes(c, "pushover")),
@@ -1200,7 +1312,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Update Engine", "update_engine", "mdi:update", lambda c: c.update_engine.summary().get("status"), lambda c: c.update_engine.summary()),
         DataQualitySensor(coordinator, core, "Data Quality", "data_quality", "mdi:check-decagram-outline", lambda c: c.data_quality.summary().get("status"), lambda c: c.data_quality.summary()),
         SimpleSensor(coordinator, core, "Historical Analytics", "historical_analytics", "mdi:chart-timeline-variant", lambda c: c.history.summary().get("status"), lambda c: c.history.recorder_summary()),
-        SimpleSensor(coordinator, core, "Historical Chart Data", "historical_chart_data", "mdi:chart-areaspline", lambda c: c.history.summary().get("status"), lambda c: c.history.recorder_chart_data()),
+        HistoricalChartDataSensor(coordinator, core, "Historical Chart Data", "historical_chart_data", "mdi:chart-areaspline", lambda c: c.history.summary().get("status"), lambda c: c.history.recorder_chart_data()),
         SimpleSensor(coordinator, core, "Historical Explorer Recent", "historical_explorer_recent", "mdi:chart-timeline-variant-shimmer", lambda c: c.history.summary().get("status"), lambda c: c.history.recorder_explorer_recent_data()),
         SimpleSensor(coordinator, core, "Historical Explorer Year", "historical_explorer_year", "mdi:calendar-range", lambda c: c.history.summary().get("status"), lambda c: c.history.recorder_explorer_year_data()),
         SimpleSensor(coordinator, core, "Battery Performance Evidence", "battery_performance_evidence", "mdi:battery-sync-outline", lambda c: c.history.summary().get("status"), lambda c: c.history.recorder_battery_performance_evidence()),
@@ -1223,11 +1335,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Device Analytics", "device_analytics", "mdi:devices-clock", lambda c: c.device_analytics.summary().get("status"), _device_analytics_attributes),
         SimpleSensor(coordinator, core, "Heat Pump Intelligence", "heat_pump_intelligence", "mdi:heat-pump-outline", lambda c: "Ready" if any(str(d.get("type") or "") == "heat_pump" for d in (c.device_analytics.summary().get("devices") or [])) else "No registered Heat Pump", _heat_pump_intelligence_attributes),
         SimpleSensor(coordinator, core, "Device Energy Attribution", "device_energy_attribution", "mdi:source-branch-check", lambda c: c.device_energy_attribution.summary().get("status"), lambda c: c.device_energy_attribution.recorder_summary()),
-        SimpleSensor(coordinator, core, "Daily Briefing", "daily_briefing", "mdi:text-box-check-outline", lambda c: c.daily_briefing.summary().get("status"), lambda c: c.daily_briefing.summary()),
+        DailyBriefingSensor(coordinator, core, "Daily Briefing", "daily_briefing", "mdi:text-box-check-outline", lambda c: c.daily_briefing.summary().get("status"), lambda c: c.daily_briefing.summary()),
         SimpleSensor(coordinator, core, "Finance Summary", "finance_summary", "mdi:cash-multiple", lambda c: c.finance.summary().get("status"), lambda c: c.finance.summary()),
         SimpleSensor(coordinator, core, "Weather Context", "weather_context", "mdi:weather-cloudy-clock", lambda c: c.weather.summary().get("status"), _weather_context_attributes),
         WeatherStatisticsSensor(coordinator, core, "Weather Statistics", "weather_statistics", "mdi:weather-cloudy-clock", lambda c: c.weather_history.summary().get("status"), lambda c: c.weather_history.summary()),
-        SimpleSensor(coordinator, core, "Forecast", "forecast", "mdi:weather-partly-cloudy", lambda c: c.forecast.summary().get("status"), lambda c: {k: c.forecast.summary().get(k) for k in ("method", "confidence", "confidence_label", "confidence_factors", "weather", "raw_expected_solar_next_24h_kwh", "raw_expected_solar_following_24h_kwh", "expected_solar_next_24h_kwh", "expected_solar_following_24h_kwh", "adaptive_correction", "expected_consumption_next_24h_kwh", "expected_consumption_following_24h_kwh", "expected_grid_import_next_24h_kwh", "expected_grid_export_next_24h_kwh", "projected_battery_soc_24h_percent", "projected_battery_soc_48h_percent", "daily_forecast", "forecast_horizon_hours", "best_surplus_window", "recommendations", "summary", "limitations", "safety", "recorder_safe")}),
+        ForecastSensor(coordinator, core, "Forecast", "forecast", "mdi:weather-partly-cloudy", lambda c: c.forecast.summary().get("status"), lambda c: {k: c.forecast.summary().get(k) for k in ("method", "confidence", "confidence_label", "confidence_factors", "forecast_quality", "solar_range_next_24h", "solar_range_following_24h", "forecast_curve_24h", "surplus_windows", "risk_flags", "weather", "raw_expected_solar_next_24h_kwh", "raw_expected_solar_following_24h_kwh", "expected_solar_next_24h_kwh", "expected_solar_following_24h_kwh", "adaptive_correction", "expected_consumption_next_24h_kwh", "expected_consumption_following_24h_kwh", "expected_grid_import_next_24h_kwh", "expected_grid_export_next_24h_kwh", "projected_battery_soc_24h_percent", "projected_battery_soc_48h_percent", "daily_forecast", "forecast_horizon_hours", "rolling_horizon", "rolling_horizon_started_at", "best_surplus_window", "recommendations", "summary", "limitations", "safety", "recorder_safe")}),
         SimpleSensor(coordinator, core, "Optimizer Preview", "optimizer_preview", "mdi:lightbulb-on-outline", lambda c: c.optimizer.summary().get("status"), lambda c: c.optimizer.summary()),
         SimpleSensor(coordinator, core, "Scheduler Preview", "scheduler_preview", "mdi:calendar-clock", lambda c: c.scheduler.summary().get("status"), _scheduler_preview_attributes),
         SimpleSensor(coordinator, core, "Learning Engine 2.0", "learning_preview", "mdi:brain", lambda c: c.learning.summary().get("status"), lambda c: c.learning.summary()),
@@ -1269,6 +1381,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         EnergyFlowValueSensor(coordinator, core, "Heat Pump Power", "heat_pump_power", "heat_pump_power", "mdi:heat-pump", "W", SensorDeviceClass.POWER),
         EnergyFlowValueSensor(coordinator, core, "Water Heater Power", "water_heater_power", "water_heater_power", "mdi:water-boiler", "W", SensorDeviceClass.POWER),
         EnergyFlowValueSensor(coordinator, core, "Known Major Loads Power", "known_major_loads_power", "known_major_loads_power", "mdi:devices", "W", SensorDeviceClass.POWER),
+        ElwaDirectValueSensor(coordinator, core, "ELWA Power", "zeus_elwa_power", "power_w", "sensor.zeus_elwa_power", "mdi:water-boiler", "W", SensorDeviceClass.POWER),
+        ElwaDirectValueSensor(coordinator, core, "ELWA Temperature", "zeus_elwa_temperature", "temperature_c", "sensor.zeus_elwa_temperature", "mdi:thermometer-water", "°C", SensorDeviceClass.TEMPERATURE),
     ])
     async_add_entities(sensors)
 
@@ -1293,6 +1407,78 @@ class SimpleSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs = self.attrs_fn(self.core) or {}
         return attrs
+
+
+class ForecastSensor(SimpleSensor):
+    """Expose the full live Forecast payload without duplicating it in Recorder.
+
+    Forecast curves, seven-day outlook rows, weather evidence and ranked surplus
+    windows are required by the Zeus Forecast frontend at runtime and can exceed
+    Home Assistant Recorder's 16 KiB state-attribute ceiling.  The complete
+    payload therefore remains available in Home Assistant's live state machine,
+    while Recorder stores only the sensor state.  Forecast calibration keeps its
+    own persisted evidence and does not depend on Recorder storing this duplicate
+    presentation payload.
+    """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+
+class EnergyFlowSensor(SimpleSensor):
+    """Keep the full live atomic flow snapshot out of Recorder.
+
+    Energy Flow contains registered-device detail plus per-source freshness and
+    timestamp metadata used by the Zeus frontend and diagnostics.  The complete
+    payload remains available in Home Assistant's live state machine, while
+    Recorder stores only the sensor state so the nested snapshot cannot exceed
+    Home Assistant's 16 KiB state-attribute ceiling.
+    """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+
+class RegistrySummarySensor(SimpleSensor):
+    """Keep the full live registry payload while excluding it from Recorder.
+
+    Registry Summary contains the canonical device registry, entity mappings,
+    room/group metadata and home settings used by the Zeus frontend. As users
+    register more devices the nested attributes can exceed Home Assistant's
+    16 KiB Recorder limit. The full payload remains available in the live state
+    machine, while Recorder stores only the sensor state and avoids duplicating
+    registry configuration in the database.
+    """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+
+class HistoricalChartDataSensor(SimpleSensor):
+    """Keep full live chart history while excluding it from Recorder.
+
+    Historical chart arrays are themselves derived from Home Assistant Recorder
+    and can grow beyond Recorder's 16 KiB state-attribute ceiling. The Zeus UI
+    still receives the complete live payload from the state machine, while
+    Recorder stores only the sensor state and no duplicated chart attributes.
+    """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+
+class DailyBriefingSensor(SimpleSensor):
+    """Keep the full live briefing while avoiding Recorder attribute overflow.
+
+    The nested daily snapshot, top-device evidence, optimizer recommendation and
+    forecast window are canonical in other Zeus sensors and can grow well beyond
+    Home Assistant Recorder's 16 KiB state-attribute ceiling. They remain
+    available in Home Assistant's live state machine for the Zeus frontend, but
+    Recorder skips those duplicated nested payloads.
+    """
+
+    _unrecorded_attributes = frozenset({
+        "today",
+        "top_device",
+        "recommendation",
+        "best_surplus_window",
+    })
 
 
 class PredictiveBatterySensor(SimpleSensor):
@@ -1429,6 +1615,8 @@ class EnergyFlowValueSensor(CoordinatorEntity, SensorEntity):
         source_entity = flow.get("entities", {}).get(self.flow_key)
         source_state = self.core.hass.states.get(source_entity) if source_entity else None
         update = self.core.update_engine.summary()
+        flows = flow.get("flows", {})
+        snapshot = flows.get("source_snapshot", {}) if isinstance(flows, dict) else {}
         return {
             "source": "aion_ems_energy_flow",
             "quality_score": flow.get("quality_score"),
@@ -1439,8 +1627,57 @@ class EnergyFlowValueSensor(CoordinatorEntity, SensorEntity):
             "zeus_last_updated": update.get("last_refreshed"),
             "update_latency_ms": update.get("update_latency_ms"),
             "update_mode": update.get("mode"),
+            "flow_snapshot_completed": flows.get("snapshot_completed") if isinstance(flows, dict) else None,
+            "source_skew_ms": flows.get("source_skew_ms") if isinstance(flows, dict) else None,
+            "source_snapshot": snapshot,
             "safety": "Read-only derived sensor. No device control.",
         }
+
+
+class ElwaDirectValueSensor(CoordinatorEntity, SensorEntity):
+    """Zeus-owned HA entity backed by direct my-PV ELWA Modbus evidence."""
+
+    def __init__(self, coordinator, core, name, key, value_key, entity_id, icon, unit, device_class) -> None:
+        super().__init__(coordinator)
+        self.core = core
+        self.value_key = value_key
+        self._attr_has_entity_name = True
+        self._attr_name = name
+        self._attr_unique_id = f"{DOMAIN}_{key}"
+        self._attr_icon = icon
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = device_class
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self.entity_id = entity_id
+
+    @property
+    def native_value(self):
+        direct = _elwa_direct_evidence(self.core)
+        value = direct.get(self.value_key)
+        return round(float(value), 1) if value is not None else None
+
+    @property
+    def available(self) -> bool:
+        direct = _elwa_direct_evidence(self.core)
+        return bool(direct.get("configured") and direct.get("connected") and direct.get(self.value_key) is not None)
+
+    @property
+    def extra_state_attributes(self):
+        direct = _elwa_direct_evidence(self.core)
+        attrs = {
+            "source": "zeus_direct_modbus",
+            "configured": bool(direct.get("configured")),
+            "connected": bool(direct.get("connected")) if direct.get("configured") else False,
+            "status": direct.get("status"),
+            "last_read_at": direct.get("last_read_at"),
+            "last_error": direct.get("last_error"),
+        }
+        if self.value_key == "power_w":
+            attrs.update({"register": 1000, "register_type": "holding", "raw_scale": 1.0})
+        else:
+            # my-PV register 1001 is encoded in 1/10 °C.
+            attrs.update({"register": 1001, "register_type": "holding", "raw_scale": 0.1, "scaling": "1/10 °C"})
+        return attrs
 
 
 class TopologyValueSensor(CoordinatorEntity, SensorEntity):

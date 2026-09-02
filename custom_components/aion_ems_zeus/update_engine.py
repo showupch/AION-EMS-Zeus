@@ -16,8 +16,11 @@ from homeassistant.helpers.event import (
 class UpdateEngine:
     """Refresh Zeus when mapped Home Assistant source entities change."""
 
-    DEBOUNCE_SECONDS = 5.0
-    MIN_REFRESH_SECONDS = 5.0
+    # v14.8.4-rc.7: keep derived flow sensors close to the source snapshot.
+    # A short burst-coalescing window lets solar/grid/battery updates settle,
+    # then one refresh reads all current HA states together.
+    DEBOUNCE_SECONDS = 2.0
+    MIN_REFRESH_SECONDS = 2.0
     SAFETY_REFRESH_SECONDS = 900
 
     def __init__(

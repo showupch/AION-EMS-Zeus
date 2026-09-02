@@ -105,16 +105,32 @@ class ObservationKnowledgeEngine:
             name = str(device.get("name") or device_id).strip()
             power_entity = str(device.get("power_entity") or "").strip()
             power_w = 0.0
+            power_valid = False
             if power_entity:
                 state = self.hass.states.get(power_entity)
                 if state is not None:
-                    try:
-                        raw = float(state.state)
-                        unit = str(state.attributes.get("unit_of_measurement") or "W").strip().lower()
-                        power_w = raw * 1000.0 if unit == "kw" else raw
-                    except (TypeError, ValueError):
-                        power_w = 0.0
-            active = power_w > 50.0
+                    raw_state = str(state.state or "").strip().lower()
+                    if raw_state not in {"", "unknown", "unavailable", "none", "nan"}:
+                        try:
+                            raw = float(state.state)
+                            unit = str(state.attributes.get("unit_of_measurement") or "W").strip().lower()
+                            power_w = raw * 1000.0 if unit == "kw" else raw
+                            power_valid = True
+                        except (TypeError, ValueError):
+                            power_valid = False
+
+            # v14.8.2-alpha.17: registered-load activity uses hysteresis and
+            # preserves the previous state across unavailable samples. This avoids
+            # Timeline chatter when a device hovers around the old 50 W threshold
+            # or briefly reports unknown/unavailable during polling.
+            previous_item = (self.data.get("previous_devices") or {}).get(device_id) or {}
+            previously_active = bool(previous_item.get("active"))
+            if not power_valid:
+                active = previously_active
+            elif previously_active:
+                active = power_w >= 25.0
+            else:
+                active = power_w > 75.0
             activity = ""
             if dtype == "heat_pump":
                 compressor_entity = str(device.get("compressor_state_entity") or device.get("compressor_activity_entity") or "").strip()
@@ -126,40 +142,114 @@ class ObservationKnowledgeEngine:
         return result
 
     def _observe_registered_devices(self) -> None:
-        """Persist meaningful registered-device start/stop transitions."""
+        """Persist confirmed registered-device start/stop transitions.
+
+        v14.8.4-rc.7 makes Timeline activity session-aware.  Short appliance
+        dips and EV charger 0 W negotiation windows no longer terminate a
+        session immediately.  Confirmation is time-based so the result does not
+        depend on how often unrelated source entities happen to refresh Zeus.
+
+        Confirm windows:
+        * EV charger: start 5 s, stop 180 s
+        * Generic registered load: start 10 s, stop 60 s
+        * Water heater / heat pump: start 5 s, stop 30 s
+
+        A candidate that returns to the stable state before its window expires
+        is cancelled without producing Timeline noise.
+        """
         current = self._registered_device_activity()
         previous = dict(self.data.get("previous_devices") or {})
+        pending = self.data.setdefault("device_transition_pending", {})
+        stable_next: dict[str, dict[str, Any]] = dict(previous)
+        now_dt = datetime.now(timezone.utc)
+
+        def _window_seconds(dtype: str, candidate_active: bool) -> int:
+            dtype = str(dtype or "device")
+            if dtype == "ev_charger":
+                return 5 if candidate_active else 180
+            if dtype in {"heat_pump", "water_heater"}:
+                return 5 if candidate_active else 30
+            return 10 if candidate_active else 60
+
+        def _parse_iso(value: Any) -> datetime | None:
+            try:
+                parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+
         if previous:
             for device_id, item in current.items():
                 before = previous.get(device_id)
                 if not isinstance(before, dict):
+                    stable_next[device_id] = item
+                    pending.pop(device_id, None)
                     continue
-                was_active, is_active = bool(before.get("active")), bool(item.get("active"))
-                if was_active == is_active:
+
+                was_active, candidate_active = bool(before.get("active")), bool(item.get("active"))
+                if was_active == candidate_active:
+                    pending.pop(device_id, None)
+                    stable_next[device_id] = item
                     continue
-                name, dtype = str(item.get("name") or device_id), str(item.get("type") or "device")
+
+                dtype = str(item.get("type") or "device")
+                target = "on" if candidate_active else "off"
+                entry = pending.get(device_id) if isinstance(pending.get(device_id), dict) else {}
+                first_seen = _parse_iso(entry.get("first_seen")) if entry.get("target") == target else None
+                if first_seen is None:
+                    first_seen = now_dt
+                    pending[device_id] = {
+                        "target": target,
+                        "first_seen": first_seen.isoformat(timespec="seconds"),
+                        "last_power_w": round(float(item.get("power_w") or 0.0), 1),
+                    }
+
+                required_seconds = _window_seconds(dtype, candidate_active)
+                elapsed_seconds = max(0.0, (now_dt - first_seen).total_seconds())
+                if elapsed_seconds < required_seconds:
+                    held = dict(item)
+                    held["active"] = was_active
+                    stable_next[device_id] = held
+                    continue
+
+                pending.pop(device_id, None)
+                stable_next[device_id] = item
+                name = str(item.get("name") or device_id)
                 power_w = float(item.get("power_w") or 0.0)
                 if dtype == "heat_pump":
                     activity = str(item.get("activity") or "").strip()
-                    if is_active:
+                    if candidate_active:
                         mode = activity.replace("_", " ").title() if activity and activity not in {"on", "true", "1"} else "Running"
                         title = f"{name} {mode.lower()} started" if mode != "Running" else f"{name} started"
                     else:
                         title = f"{name} stopped"
                     kind = "heat_pump"
                 elif dtype == "water_heater":
-                    title, kind = f"{name} {'started' if is_active else 'stopped'}", "water_heater"
+                    title, kind = f"{name} {'started' if candidate_active else 'stopped'}", "water_heater"
                 elif dtype == "ev_charger":
-                    title, kind = f"{name} charging {'started' if is_active else 'stopped'}", "ev"
+                    title, kind = f"{name} charging {'started' if candidate_active else 'stopped'}", "ev"
                 else:
-                    title, kind = f"{name} {'started' if is_active else 'stopped'}", "device"
-                detail = f"Measured power {power_w:.0f} W." if is_active else "Measured power returned below the active threshold."
-                self._add_observation(kind, title, detail, {"device_id": device_id, "power_w": round(power_w, 1)}, 100)
+                    title, kind = f"{name} {'started' if candidate_active else 'stopped'}", "device"
+                detail = (
+                    f"Measured power {power_w:.0f} W after {required_seconds} s confirmation."
+                    if candidate_active
+                    else f"Measured power remained below the inactive threshold for {required_seconds} s before confirming stop."
+                )
+                self._add_observation(
+                    kind, title, detail,
+                    {
+                        "device_id": device_id,
+                        "power_w": round(power_w, 1),
+                        "confirmed_seconds": required_seconds,
+                        "session_aware": dtype == "ev_charger",
+                    },
+                    100,
+                )
         elif current:
-            # First baseline after install/restart: preserve truth without claiming
-            # that Zeus witnessed the actual start transition. Active registered
-            # devices are recorded as "active" so the Timeline is immediately useful.
             for device_id, item in current.items():
+                stable_next[device_id] = item
                 if not bool(item.get("active")):
                     continue
                 name = str(item.get("name") or device_id)
@@ -176,7 +266,13 @@ class ObservationKnowledgeEngine:
                 else:
                     title, kind = f"{name} active", "device"
                 self._add_observation(kind, title, f"Active at Timeline baseline · measured power {power_w:.0f} W.", {"device_id": device_id, "power_w": round(power_w, 1), "baseline": True}, 100)
-        self.data["previous_devices"] = current
+
+        live_ids = set(current)
+        stable_next = {k: v for k, v in stable_next.items() if k in live_ids}
+        for device_id in list(pending):
+            if device_id not in live_ids:
+                pending.pop(device_id, None)
+        self.data["previous_devices"] = stable_next
 
     def _add_observation(self, kind: str, title: str, detail: str, evidence: dict[str, Any], confidence: int = 100) -> None:
         now = self._iso_now()

@@ -63,6 +63,7 @@ from .system_story_engine import SystemStoryEngine
 from .energy_snapshot import EnergySnapshotService
 from .device_energy_attribution import DeviceEnergyAttributionEngine
 from .smart_control import SmartControlSafetyEngine
+from .switch_hub import SwitchHubEngine
 from .knowledge_v2 import (
     KnowledgeEngineV2,
     LearningIntelligenceV2,
@@ -217,6 +218,7 @@ class AionCore:
         # Smart Control V1 is intentionally read-only. It exposes control
         # eligibility and safety gates but has no actuator execution path.
         self.smart_control = SmartControlSafetyEngine(self.event_bus, self.registry)
+        self.switch_hub = SwitchHubEngine(self.hass, self.event_bus, self.registry, self.energy_flow)
 
         # Event-driven synchronization is started last, after all dependencies exist.
         self.update_engine = UpdateEngine(
@@ -229,6 +231,7 @@ class AionCore:
         self._unsub_planning_capture = None
         self._unsub_smart_control_keepalive = None
         self._unsub_smart_control_listener = None
+        self._unsub_switch_hub_tick = None
         self._startup_mapping_restore_unsubs: list = []
         self._startup_recovery_unsubs: list = []
         self._last_decision_refresh: datetime | None = None
@@ -279,6 +282,10 @@ class AionCore:
         async def _smart_control_tick(_now=None):
             await self.smart_control.async_evaluate_execution()
         self._unsub_smart_control_keepalive = async_track_time_interval(self.hass, _smart_control_tick, timedelta(seconds=5))
+        async def _switch_hub_tick(_now=None):
+            await self.switch_hub.async_evaluate()
+        await self.switch_hub.async_evaluate()
+        self._unsub_switch_hub_tick = async_track_time_interval(self.hass, _switch_hub_tick, timedelta(seconds=10))
         self._schedule_startup_mapping_restore()
         self._schedule_startup_engine_recovery()
         self.start_auto_capture()
@@ -308,6 +315,9 @@ class AionCore:
         if self._unsub_smart_control_listener:
             self._unsub_smart_control_listener()
             self._unsub_smart_control_listener = None
+        if self._unsub_switch_hub_tick:
+            self._unsub_switch_hub_tick()
+            self._unsub_switch_hub_tick = None
         self._cancel_startup_mapping_restore()
         self._cancel_startup_engine_recovery()
         await self.update_engine.async_stop()
@@ -452,6 +462,8 @@ class AionCore:
                 "control_surplus_entity",
                 "control_lockout_entity",
                 "control_previous_controller_entity",
+                "control_grid_power_entity",
+                "control_battery_power_entity",
             ):
                 entity_id = device.get(key)
                 if entity_id:
