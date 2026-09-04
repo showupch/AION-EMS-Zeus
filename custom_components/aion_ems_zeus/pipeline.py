@@ -121,7 +121,19 @@ class IntegrationHub:
         groups = {}
 
         # First pass: identify real inverter devices directly from Device Registry.
-        for device in device_reg.devices:
+        # Home Assistant compatibility: do not iterate device_reg.devices directly
+        # (mapping iteration may yield string keys) and do not use .values(), which
+        # is deprecated. Resolve the DeviceEntry objects via the supported lookup API
+        # from the device IDs referenced by Entity Registry entries.
+        device_ids = {
+            getattr(entry, "device_id", None)
+            for entry in entries
+            if getattr(entry, "device_id", None)
+        }
+        for device_id in device_ids:
+            device = device_reg.async_get(device_id)
+            if device is None:
+                continue
             identifiers = flatten(getattr(device, "identifiers", None))
             connections = flatten(getattr(device, "connections", None))
             device_entries = [entry for entry in entries if getattr(entry, "device_id", None) == device.id]
