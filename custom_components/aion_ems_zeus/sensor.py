@@ -1465,7 +1465,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Scenario Simulator", "scenario_simulator", "mdi:compare-horizontal", lambda c: c.scenario_simulator.summary().get("status"), lambda c: c.scenario_simulator.summary()),
         SimpleSensor(coordinator, core, "Prediction Accuracy", "prediction_accuracy", "mdi:target-account", lambda c: c.prediction_accuracy.summary().get("status"), lambda c: c.prediction_accuracy.summary()),
         SimpleSensor(coordinator, core, "Home Profile", "home_profile", "mdi:home-analytics", lambda c: c.home_profile.summary().get("status"), lambda c: c.home_profile.summary()),
-        SimpleSensor(coordinator, core, "Anomaly Intelligence", "anomaly_intelligence", "mdi:chart-bell-curve-cumulative", lambda c: c.anomaly_intelligence.summary().get("status"), lambda c: c.anomaly_intelligence.summary()),
+        AnomalyIntelligenceSensor(coordinator, core, "Anomaly Intelligence", "anomaly_intelligence", "mdi:chart-bell-curve-cumulative"),
         SimpleSensor(coordinator, core, "Intelligence Fusion", "intelligence_fusion", "mdi:brain", lambda c: c.intelligence_fusion.summary().get("status"), lambda c: c.intelligence_fusion.summary()),
         SimpleSensor(coordinator, core, "Runtime Resilience", "runtime_resilience", "mdi:shield-sync-outline", lambda c: c.runtime_resilience.summary().get("status"), lambda c: c.runtime_resilience.summary()),
         SimpleSensor(coordinator, core, "Data Consistency", "data_consistency", "mdi:compare-horizontal", lambda c: c.data_consistency.summary().get("status"), lambda c: c.data_consistency.summary()),
@@ -1532,7 +1532,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         IntelligenceEngineSensor(coordinator, core, "Intelligence Engine", "intelligence_engine", "mdi:brain", lambda c: c.intelligence.summary().get("status"), lambda c: c.intelligence.summary()),
         SimpleSensor(coordinator, core, "Notification Engine", "notification_engine", "mdi:bell-outline", lambda c: c.notifications.summary().get("status"), lambda c: c.notifications.summary()),
         SimpleSensor(coordinator, core, "Dashboard API", "dashboard_api", "mdi:api", lambda c: c.dashboard_api.summary().get("status"), lambda c: c.dashboard_api.recorder_summary()),
-        SimpleSensor(coordinator, core, "Settings API", "settings_api", "mdi:cog-transfer-outline", lambda c: c.settings_api.summary().get("status"), lambda c: {"schema_version": c.settings_api.summary().get("schema_version"), "device_count": len(c.settings_api.summary().get("devices", [])), "battery_capacity_kwh": (c.settings_api.summary().get("home_settings") or {}).get("battery_capacity_kwh"), "home_settings": {"owner_name": str((c.settings_api.summary().get("home_settings") or {}).get("owner_name") or "")[:80], "home_name": str((c.settings_api.summary().get("home_settings") or {}).get("home_name") or "Home")[:80], "use_owner_name": (c.settings_api.summary().get("home_settings") or {}).get("use_owner_name", True), "story_style": str((c.settings_api.summary().get("home_settings") or {}).get("story_style") or "friendly"), "briefing_length": str((c.settings_api.summary().get("home_settings") or {}).get("briefing_length") or "normal"), "data_epoch": (c.settings_api.summary().get("home_settings") or {}).get("data_epoch")}, "data_epoch": c.settings_api.summary().get("data_epoch"), "recorder_history_preserved": c.settings_api.summary().get("recorder_history_preserved", True), "persistence": c.settings_api.summary().get("persistence"), "safety": c.settings_api.summary().get("safety")}),
+        SimpleSensor(coordinator, core, "Settings API", "settings_api", "mdi:cog-transfer-outline", lambda c: c.settings_api.summary().get("status"), lambda c: {"schema_version": c.settings_api.summary().get("schema_version"), "device_count": len(c.settings_api.summary().get("devices", [])), "battery_capacity_kwh": (c.settings_api.summary().get("home_settings") or {}).get("battery_capacity_kwh"), "battery_profile": {k: v for k, v in ((c.settings_api.summary().get("home_settings") or {}).get("battery_profile") or {}).items() if k in {"registered", "capacity_kwh", "minimum_soc_percent", "emergency_reserve_percent", "maximum_soc_percent", "max_charge_power_w", "max_discharge_power_w", "round_trip_efficiency", "source"}}, "home_settings": {"owner_name": str((c.settings_api.summary().get("home_settings") or {}).get("owner_name") or "")[:80], "home_name": str((c.settings_api.summary().get("home_settings") or {}).get("home_name") or "Home")[:80], "use_owner_name": (c.settings_api.summary().get("home_settings") or {}).get("use_owner_name", True), "story_style": str((c.settings_api.summary().get("home_settings") or {}).get("story_style") or "friendly"), "briefing_length": str((c.settings_api.summary().get("home_settings") or {}).get("briefing_length") or "normal"), "data_epoch": (c.settings_api.summary().get("home_settings") or {}).get("data_epoch")}, "data_epoch": c.settings_api.summary().get("data_epoch"), "recorder_history_preserved": c.settings_api.summary().get("recorder_history_preserved", True), "persistence": c.settings_api.summary().get("persistence"), "safety": c.settings_api.summary().get("safety")}),
     ]
 
     sensors.extend([
@@ -1550,7 +1550,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         EnergyFlowValueSensor(coordinator, core, "Battery Charge Power", "battery_charge_power", "battery_charge_power", "mdi:battery-arrow-up", "W", SensorDeviceClass.POWER),
         EnergyFlowValueSensor(coordinator, core, "Battery Discharge Power", "battery_discharge_power", "battery_discharge_power", "mdi:battery-arrow-down", "W", SensorDeviceClass.POWER),
         EnergyFlowValueSensor(coordinator, core, "Battery SOC", "battery_soc", "battery_soc_percent", "mdi:battery", "%", SensorDeviceClass.BATTERY),
-        EnergyFlowValueSensor(coordinator, core, "EV Power", "ev_power", "ev_power", "mdi:ev-station", "W", SensorDeviceClass.POWER),
+        EVPowerSensor(coordinator, core, "EV Power", "ev_power", "ev_power", "mdi:ev-station", "W", SensorDeviceClass.POWER),
         EnergyFlowValueSensor(coordinator, core, "Heat Pump Power", "heat_pump_power", "heat_pump_power", "mdi:heat-pump", "W", SensorDeviceClass.POWER),
         EnergyFlowValueSensor(coordinator, core, "Water Heater Power", "water_heater_power", "water_heater_power", "mdi:water-boiler", "W", SensorDeviceClass.POWER),
         EnergyFlowValueSensor(coordinator, core, "Known Major Loads Power", "known_major_loads_power", "known_major_loads_power", "mdi:devices", "W", SensorDeviceClass.POWER),
@@ -1580,6 +1580,63 @@ class SimpleSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs = self.attrs_fn(self.core) or {}
         return _apply_recorder_guard(self, attrs)
+
+
+class AnomalyIntelligenceSensor(SimpleSensor):
+    """Publish a compact cached anomaly snapshot for Home Assistant.
+
+    The full anomaly engine remains unchanged.  The HA entity only exposes the
+    fields consumed by the Zeus frontend/advisor and reuses one summary snapshot
+    for state + attributes.  Recorder stores state only, avoiding repeated JSON
+    sizing/serialization of observation lists on every coordinator refresh.
+    """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+    def __init__(self, coordinator, core, name, key, icon) -> None:
+        super().__init__(coordinator, core, name, key, icon, lambda _c: "Learning", lambda _c: {})
+        self._snapshot_cache: dict[str, Any] = {}
+        self._snapshot_cache_at = 0.0
+
+    def _snapshot(self) -> dict[str, Any]:
+        now = monotonic()
+        if now - self._snapshot_cache_at > 0.5:
+            raw = self.core.anomaly_intelligence.summary() or {}
+            observations = []
+            for row in (raw.get("observations") or [])[:8]:
+                if not isinstance(row, dict):
+                    continue
+                observations.append({
+                    "metric": row.get("metric"),
+                    "title": row.get("title"),
+                    "detail": row.get("detail"),
+                    "deviation_percent": row.get("deviation_percent"),
+                    "severity": row.get("severity"),
+                    "date": row.get("date"),
+                })
+            self._snapshot_cache = {
+                "status": raw.get("status") or "Learning",
+                "version": raw.get("version"),
+                "headline": raw.get("headline"),
+                "learning_days": raw.get("learning_days"),
+                "observation_count": raw.get("observation_count", len(observations)),
+                "observations": observations,
+                "highest_severity": raw.get("highest_severity"),
+                "summary": raw.get("summary"),
+                "updated_at": raw.get("updated_at"),
+                "recorder_safe": True,
+                "safety": "Observation and recommendation context only. No device control.",
+            }
+            self._snapshot_cache_at = now
+        return self._snapshot_cache
+
+    @property
+    def native_value(self) -> str:
+        return str(self._snapshot().get("status") or "Learning")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._snapshot()
 
 
 class SmartControlSafetySensor(SimpleSensor):
@@ -1866,6 +1923,54 @@ class EnergyFlowValueSensor(CoordinatorEntity, SensorEntity):
             "flow_snapshot_completed": flows.get("snapshot_completed") if isinstance(flows, dict) else None,
             "source_skew_ms": flows.get("source_skew_ms") if isinstance(flows, dict) else None,
             "source_snapshot": snapshot,
+            "safety": "Read-only derived sensor. No device control.",
+        }
+        return _apply_recorder_guard(self, attrs)
+
+
+class EVPowerSensor(EnergyFlowValueSensor):
+    """Lightweight EV aggregate sensor backed by the canonical flow snapshot.
+
+    EV Power is a frequently updated scalar.  It does not need a duplicate copy
+    of the complete source snapshot/availability map on every HA state publish;
+    those diagnostics remain available on sensor.aion_ems_zeus_energy_flow.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._flow_cache: dict[str, Any] = {}
+        self._flow_cache_at = 0.0
+
+    def _flow(self) -> dict[str, Any]:
+        now = monotonic()
+        if now - self._flow_cache_at > 0.25:
+            raw = self.core.energy_flow.summary() or {}
+            self._flow_cache = raw if isinstance(raw, dict) else {}
+            self._flow_cache_at = now
+        return self._flow_cache
+
+    @property
+    def native_value(self):
+        flow = self._flow()
+        item = (flow.get("flows") or {}).get(self.flow_key)
+        if isinstance(item, dict):
+            return item.get("w")
+        return None
+
+    @property
+    def extra_state_attributes(self):
+        flow = self._flow()
+        flows = flow.get("flows") or {}
+        source_entity = (flow.get("entities") or {}).get(self.flow_key)
+        source_state = self.core.hass.states.get(source_entity) if source_entity else None
+        attrs = {
+            "source": "aion_ems_energy_flow",
+            "source_entity": source_entity,
+            "source_last_changed": source_state.last_changed.isoformat() if source_state else None,
+            "source_last_updated": source_state.last_updated.isoformat() if source_state else None,
+            "quality_score": flow.get("quality_score"),
+            "flow_snapshot_completed": flows.get("snapshot_completed"),
+            "source_skew_ms": flows.get("source_skew_ms"),
             "safety": "Read-only derived sensor. No device control.",
         }
         return _apply_recorder_guard(self, attrs)

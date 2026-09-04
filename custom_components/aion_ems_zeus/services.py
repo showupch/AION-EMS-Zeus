@@ -994,8 +994,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             raise vol.Invalid("tariff_mode must be fixed or time_of_use")
         import_tariff = float(call.data.get("import_tariff", 0.0))
         export_tariff = float(call.data["export_tariff"])
+        export_depreciation = call.data.get("export_depreciation")
+        export_depreciation = None if export_depreciation in (None, "") else float(export_depreciation)
         standing_charge = float(call.data.get("standing_charge", 0.0))
-        if min(import_tariff, export_tariff, standing_charge) < 0:
+        if min(import_tariff, export_tariff, standing_charge) < 0 or (export_depreciation is not None and export_depreciation < 0):
             raise vol.Invalid("Tariff values cannot be negative")
         tou_periods = []
         if tariff_mode == "time_of_use":
@@ -1039,6 +1041,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         core.registry.data.setdefault("sources", {})["tariffs"] = {
             "enabled": True, "currency": str(call.data.get("currency", "CHF")).upper(),
             "tariff_mode": tariff_mode, "import_tariff": import_tariff, "export_tariff": export_tariff,
+            "export_depreciation": export_depreciation,
             "tou_periods": tou_periods,
             "standing_charge": standing_charge, "vat_included": bool(call.data.get("vat_included", True)),
             "saved_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
@@ -1050,7 +1053,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def clear_tariff_settings(call: ServiceCall) -> None:
         core = _core(hass)
-        core.registry.data.setdefault("sources", {})["tariffs"] = {"enabled": False, "currency": "CHF", "tariff_mode": "fixed", "import_tariff": None, "export_tariff": None, "tou_periods": [], "standing_charge": 0.0, "vat_included": True}
+        core.registry.data.setdefault("sources", {})["tariffs"] = {"enabled": False, "currency": "CHF", "tariff_mode": "fixed", "import_tariff": None, "export_tariff": None, "export_depreciation": None, "tou_periods": [], "standing_charge": 0.0, "vat_included": True}
         core.registry.data.setdefault("audit", []).append({"action": "clear_tariff_settings"})
         await core.registry.async_save()
         core.refresh_pipeline()
@@ -1300,7 +1303,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             "maximum_soc_percent": float(call.data["maximum_soc_percent"]),
             "max_charge_power_w": float(call.data["max_charge_power_w"]),
             "max_discharge_power_w": float(call.data["max_discharge_power_w"]),
-            "round_trip_efficiency": float(call.data["round_trip_efficiency"]),
+            **({"round_trip_efficiency": float(call.data["round_trip_efficiency"])} if call.data.get("round_trip_efficiency") is not None else {}),
             "source": "explicit_user_registered_battery_profile",
             "recommendation_only": True,
         }
@@ -1310,7 +1313,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             raise ValueError("SOC limits must satisfy emergency <= minimum < maximum within 0..100")
         if profile["max_charge_power_w"] <= 0 or profile["max_discharge_power_w"] <= 0:
             raise ValueError("charge/discharge limits must be greater than 0")
-        if not 0.5 <= profile["round_trip_efficiency"] <= 1.0:
+        if "round_trip_efficiency" in profile and not 0.5 <= profile["round_trip_efficiency"] <= 1.0:
             raise ValueError("round_trip_efficiency must be between 0.5 and 1.0")
         core.registry.data.setdefault("home_settings", {})["battery_profile"] = profile
         core.registry.data.setdefault("audit", []).append({
@@ -1393,7 +1396,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             vol.Required("maximum_soc_percent"): vol.Coerce(float),
             vol.Required("max_charge_power_w"): vol.Coerce(float),
             vol.Required("max_discharge_power_w"): vol.Coerce(float),
-            vol.Required("round_trip_efficiency"): vol.Coerce(float),
+            vol.Optional("round_trip_efficiency"): vol.Coerce(float),
         }),
     )
     hass.services.async_register(DOMAIN, SERVICE_CLEAR_BATTERY_PROFILE, clear_battery_profile)
@@ -1420,6 +1423,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             vol.Optional("tariff_mode", default="fixed"): cv.string,
             vol.Optional("import_tariff", default=0.0): vol.Coerce(float),
             vol.Required("export_tariff"): vol.Coerce(float),
+            vol.Optional("export_depreciation"): vol.Coerce(float),
             vol.Optional("tou_periods", default="[]"): cv.string,
             vol.Optional("standing_charge", default=0.0): vol.Coerce(float),
             vol.Optional("vat_included", default=True): cv.boolean,
@@ -1553,6 +1557,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             vol.Optional("tariff_mode", default="fixed"): cv.string,
             vol.Optional("import_tariff", default=0.0): vol.Coerce(float),
             vol.Required("export_tariff"): vol.Coerce(float),
+            vol.Optional("export_depreciation"): vol.Coerce(float),
             vol.Optional("tou_periods", default="[]"): cv.string,
             vol.Optional("standing_charge", default=0.0): vol.Coerce(float),
             vol.Optional("vat_included", default=True): cv.boolean,

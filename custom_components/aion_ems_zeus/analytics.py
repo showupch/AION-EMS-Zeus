@@ -1032,6 +1032,55 @@ class HistoricalAnalyticsEngine:
                 "interpretation": f"Average daily battery throughput moved from {previous_throughput:.2f} kWh to {recent_throughput:.2f} kWh. {participation_text}",
             })
 
+        # Phase 1 learned round-trip-efficiency evidence. This is deliberately
+        # advisory only: Zeus does not feed this value into planning/finance yet.
+        # Daily charge/discharge totals are not cycle-paired and can be biased by
+        # net SOC drift, so implausible ratios are rejected rather than corrected.
+        rte_rows = measured_battery_rows(self._explorer_rows(days=45))[-30:]
+        rte_charge = sum(max(0.0, float(row.get("battery_charge_energy_kwh") or 0)) for row in rte_rows if row.get("battery_charge_energy_kwh") is not None)
+        rte_discharge = sum(max(0.0, float(row.get("battery_discharge_energy_kwh") or 0)) for row in rte_rows if row.get("battery_discharge_energy_kwh") is not None)
+        home_settings = dict((getattr(self.registry, "data", {}) or {}).get("home_settings", {}) or {})
+        profile = home_settings.get("battery_profile") if isinstance(home_settings.get("battery_profile"), dict) else {}
+        capacity = profile.get("capacity_kwh") or profile.get("usable_capacity_kwh") or home_settings.get("battery_capacity_kwh")
+        try:
+            capacity_kwh = float(capacity) if capacity is not None else 0.0
+        except (TypeError, ValueError):
+            capacity_kwh = 0.0
+        ratio = (rte_discharge / rte_charge) if rte_charge > 0.01 else None
+        equivalent_cycles = ((rte_charge + rte_discharge) / (2.0 * capacity_kwh)) if capacity_kwh > 0 else None
+        plausible = ratio is not None and 0.50 <= ratio <= 1.00
+        enough_days = len(rte_rows) >= 7
+        enough_cycles = equivalent_cycles is not None and equivalent_cycles >= 2.0
+        if not plausible:
+            rte_status = "learning" if ratio is None else "soc_drift_or_unmatched_period"
+            learned_rte = None
+        elif enough_days and enough_cycles:
+            rte_status = "supported" if len(rte_rows) >= 21 and equivalent_cycles >= 5.0 else "provisional"
+            learned_rte = ratio
+        else:
+            rte_status = "learning"
+            learned_rte = ratio
+        day_score = min(50.0, len(rte_rows) / 21.0 * 50.0)
+        cycle_score = min(30.0, (equivalent_cycles or 0.0) / 5.0 * 30.0)
+        plausibility_score = 20.0 if plausible else 0.0
+        confidence = round(day_score + cycle_score + plausibility_score)
+        learned_rte_evidence = {
+            "status": rte_status,
+            "round_trip_efficiency": round(learned_rte, 4) if learned_rte is not None else None,
+            "round_trip_efficiency_percent": round(learned_rte * 100.0, 1) if learned_rte is not None else None,
+            "derived_charge_efficiency": round(learned_rte ** 0.5, 4) if learned_rte is not None else None,
+            "derived_discharge_efficiency": round(learned_rte ** 0.5, 4) if learned_rte is not None else None,
+            "evidence_days": len(rte_rows),
+            "charged_kwh": round(rte_charge, 3),
+            "discharged_kwh": round(rte_discharge, 3),
+            "equivalent_cycles": round(equivalent_cycles, 2) if equivalent_cycles is not None else None,
+            "confidence_percent": max(0, min(98, confidence)),
+            "confidence_label": "High" if confidence >= 80 else ("Medium" if confidence >= 55 else "Learning"),
+            "planning_active": False,
+            "method": "completed-day discharge energy / charge energy; sqrt(RTE) is shown as the symmetric directional planning approximation",
+            "boundary": "Advisory evidence only. Daily totals are not cycle-paired; net SOC drift can bias the ratio. Zeus will not apply learned RTE to forecasts or finance until the evidence model is promoted in a later phase.",
+        }
+
         return {
             "status": (self.last or {}).get("status"),
             "periods": {
@@ -1041,6 +1090,7 @@ class HistoricalAnalyticsEngine:
                 "year": aggregate(current_year, "Current year · completed measured days"),
             },
             "comparison": comparison,
+            "learned_rte": learned_rte_evidence,
             "current_partial_day_excluded": True,
             "missing_evidence_is_not_zero": True,
             "source": "canonical_daily_history",
@@ -2837,8 +2887,16 @@ class ForecastEngine:
         if isinstance(soc, dict):
             soc = soc.get("value") or soc.get("percent")
         soc = self._number(soc, -1)
-        battery_capacity_kwh = 10.0
-        reserve_percent = 15.0
+        home_settings = self.core.registry.data.get("home_settings", {}) if self.core is not None and getattr(self.core, "registry", None) is not None else {}
+        battery_profile = home_settings.get("battery_profile") if isinstance(home_settings.get("battery_profile"), dict) else {}
+        battery_capacity_kwh = self._number(battery_profile.get("capacity_kwh") or battery_profile.get("usable_capacity_kwh") or home_settings.get("battery_capacity_kwh"), 10.0)
+        battery_capacity_kwh = max(1.0, battery_capacity_kwh)
+        reserve_percent = max(0.0, min(90.0, self._number(battery_profile.get("minimum_soc_percent"), 15.0)))
+        max_charge_power_w = max(100.0, self._number(battery_profile.get("max_charge_power_w"), 5000.0))
+        max_discharge_power_w = max(100.0, self._number(battery_profile.get("max_discharge_power_w"), 5000.0))
+        round_trip_efficiency = max(0.5, min(1.0, self._number(battery_profile.get("round_trip_efficiency"), 0.92)))
+        charge_efficiency = round_trip_efficiency ** 0.5
+        discharge_efficiency = round_trip_efficiency ** 0.5
 
         adaptive = self._adaptive_solar_correction()
         correction_factor = self._number(adaptive.get("correction_factor"), 1.0) or 1.0
@@ -2913,16 +2971,16 @@ class ForecastEngine:
             discharge_w = max(-net_w, 0)
             if projected_soc is not None:
                 if charge_w > 0:
-                    projected_soc += (charge_w / 1000.0) * 0.94 / battery_capacity_kwh * 100
+                    projected_soc += (min(charge_w, max_charge_power_w) / 1000.0) * charge_efficiency / battery_capacity_kwh * 100
                 elif discharge_w > 0 and projected_soc > reserve_percent:
                     usable = min(discharge_w, max(0, (projected_soc-reserve_percent)/100*battery_capacity_kwh*1000))
-                    projected_soc -= (usable / 1000.0) / 0.92 / battery_capacity_kwh * 100
+                    projected_soc -= (min(usable, max_discharge_power_w) / 1000.0) / max(discharge_efficiency, 0.01) / battery_capacity_kwh * 100
                 projected_soc = max(reserve_percent, min(100.0, projected_soc))
             battery_available_w = 0
             if projected_soc is not None and projected_soc > reserve_percent + 0.5:
-                battery_available_w = min(discharge_w, 5000.0)
+                battery_available_w = min(discharge_w, max_discharge_power_w)
             grid_import = max(discharge_w - battery_available_w, 0)
-            grid_export = max(charge_w - (0 if projected_soc is None or projected_soc >= 99.5 else min(charge_w, 5000.0)), 0)
+            grid_export = max(charge_w - (0 if projected_soc is None or projected_soc >= 99.5 else min(charge_w, max_charge_power_w)), 0)
             hourly.append({
                 "time": dt.replace(minute=0, second=0, microsecond=0).isoformat(),
                 "hour": dt.hour,

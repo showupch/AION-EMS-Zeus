@@ -253,6 +253,10 @@ save_tariff_settings:
     export_tariff:
       required: true
       example: 0.08
+    export_depreciation:
+      required: false
+      description: Positive CHF/kWh difference applied to dynamic import prices when deriving the export value. Leave empty to use the configured export tariff.
+      example: 0.08
     standing_charge:
       required: false
       example: 0.0
@@ -473,7 +477,7 @@ register_battery_profile:
           unit_of_measurement: W
     round_trip_efficiency:
       name: Round-trip efficiency
-      required: true
+      required: false
       description: Decimal fraction, for example 0.92 for 92%.
       selector:
         number:

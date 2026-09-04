@@ -198,7 +198,13 @@ class PlanningEngine:
             plan = self._plans.get(date_key)
             measured = measured_by_date[date_key]
             measured_solar = self._num(measured.get("solar_energy_kwh"))
+            measured_home = self._num(measured.get("house_energy_kwh"))
+            measured_import = self._num(measured.get("grid_import_energy_kwh"))
+            measured_export = self._num(measured.get("grid_export_energy_kwh"))
             expected_solar = self._num(plan.get("expected_solar_kwh")) if plan else 0.0
+            expected_home = self._num(plan.get("expected_consumption_kwh")) if plan else 0.0
+            expected_import = self._num(plan.get("expected_grid_import_kwh")) if plan else 0.0
+            expected_export = self._num(plan.get("expected_grid_export_kwh")) if plan else 0.0
             delta = measured_solar - expected_solar if plan and expected_solar > 0 else None
             accuracy = None
             signed_error_percent = None
@@ -242,6 +248,12 @@ class PlanningEngine:
                 "date": date_key,
                 "plan": plan,
                 "measured_solar_kwh": round(measured_solar, 3),
+                "measured_home_kwh": round(measured_home, 3),
+                "measured_grid_import_kwh": round(measured_import, 3),
+                "measured_grid_export_kwh": round(measured_export, 3),
+                "home_difference_kwh": round(measured_home - expected_home, 3) if plan else None,
+                "grid_import_difference_kwh": round(measured_import - expected_import, 3) if plan else None,
+                "grid_export_difference_kwh": round(measured_export - expected_export, 3) if plan else None,
                 "solar_difference_kwh": round(delta, 3) if delta is not None else None,
                 "solar_accuracy_percent": round(accuracy, 1) if accuracy is not None else None,
                 "signed_error_percent": round(signed_error_percent, 2) if signed_error_percent is not None else None,

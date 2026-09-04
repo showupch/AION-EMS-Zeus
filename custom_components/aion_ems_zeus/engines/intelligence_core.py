@@ -249,11 +249,19 @@ class PredictiveBatteryOptimizer:
         registered_profile = home_settings.get("battery_profile") if isinstance(home_settings.get("battery_profile"), dict) else {}
         profile_registered = bool(registered_profile.get("registered") is True)
 
-        # Explicit registry battery device remains first priority. The new
-        # canonical battery profile is an alternative explicit registration
-        # path, not an inferred/default promotion.
-        source = battery if battery else (registered_profile if profile_registered else {})
-        capacity = max(1.0, self._num(source.get("capacity_kwh") or source.get("usable_capacity_kwh"), self.DEFAULT_CAPACITY_KWH))
+        # Canonical planning metadata is composed from all known battery evidence.
+        # A registered battery device may provide identifiers / legacy metadata, but
+        # an explicit user Battery Profile must override those values. This keeps
+        # Sources -> Battery Profile as the single source of truth for capacity, SOC
+        # limits, charge/discharge limits and efficiency while preserving device
+        # metadata as a fallback for fields the user has not configured.
+        source = dict(battery or {})
+        if profile_registered:
+            source.update(registered_profile)
+        home_capacity = home_settings.get("battery_capacity_kwh")
+        explicit_capacity = source.get("capacity_kwh") or source.get("usable_capacity_kwh")
+        capacity_input = explicit_capacity if explicit_capacity not in (None, "") else home_capacity
+        capacity = max(1.0, self._num(capacity_input, self.DEFAULT_CAPACITY_KWH))
         minimum = max(0.0, min(90.0, self._num(source.get("minimum_soc_percent") or source.get("min_soc_percent") or source.get("reserve_percent"), 20.0)))
         emergency = max(0.0, min(minimum, self._num(source.get("emergency_reserve_percent"), 10.0)))
         maximum = max(minimum + 1.0, min(100.0, self._num(source.get("maximum_soc_percent") or source.get("max_soc_percent"), 95.0)))
@@ -265,8 +273,6 @@ class PredictiveBatteryOptimizer:
         soc_entity = source.get("soc_entity") or mappings.get("battery_soc")
         soc_state = self.registry.hass.states.get(soc_entity) if soc_entity and self.registry is not None and hasattr(self.registry, "hass") else None
         soc_available = bool(soc_state and str(soc_state.state).lower() not in {"unknown", "unavailable", "none", ""})
-        home_capacity = home_settings.get("battery_capacity_kwh")
-
         configured_fields = {
             "capacity_kwh": source.get("capacity_kwh"),
             "usable_capacity_kwh": source.get("usable_capacity_kwh"),
@@ -288,11 +294,12 @@ class PredictiveBatteryOptimizer:
         evidence_sources = {
             "registered_battery_device": bool(battery),
             "registered_battery_profile": profile_registered,
-            "registration_source": "registry_device" if battery else ("explicit_battery_profile" if profile_registered else None),
+            "registration_source": "explicit_battery_profile" if profile_registered else ("registry_device" if battery else None),
             "battery_device_type": battery.get("type") if battery else (registered_profile.get("device_type") if profile_registered else None),
             "battery_soc_entity": soc_entity,
             "battery_soc_available": soc_available,
             "home_settings_battery_capacity_kwh": home_capacity,
+            "capacity_source": ("registered battery profile" if explicit_capacity not in (None, "") and profile_registered else ("registered battery device" if explicit_capacity not in (None, "") and battery else ("home settings" if home_capacity not in (None, "") else "default model"))),
             "registered_fields": [k for k, v in configured_fields.items() if v not in (None, "")],
         }
 
@@ -304,7 +311,7 @@ class PredictiveBatteryOptimizer:
         elif not soc_available:
             blockers.append("mapped battery SOC entity is unavailable")
         required_groups = {
-            "capacity": bool(source.get("capacity_kwh") or source.get("usable_capacity_kwh")),
+            "capacity": bool(source.get("capacity_kwh") or source.get("usable_capacity_kwh") or home_capacity),
             "minimum_soc": source.get("minimum_soc_percent") is not None or source.get("min_soc_percent") is not None or source.get("reserve_percent") is not None,
             "maximum_soc": source.get("maximum_soc_percent") is not None or source.get("max_soc_percent") is not None,
             "max_charge_power": bool(source.get("max_charge_power_w") or source.get("charge_limit_w")),
@@ -330,7 +337,7 @@ class PredictiveBatteryOptimizer:
             "round_trip_efficiency": efficiency,
             "evidence_sources": evidence_sources,
             "configuration_blockers": blockers,
-            "configuration_policy": "configured=true requires explicit battery registration (device or canonical battery profile), available SOC evidence, capacity, SOC limits, charge/discharge limits and efficiency. Defaults never become canonical evidence.",
+            "configuration_policy": "Configured battery planning requires available SOC evidence plus user-supplied capacity, SOC limits, charge/discharge limits and efficiency. Legacy Home Settings capacity is accepted as real capacity evidence, but generic power/efficiency defaults never become registered evidence.",
         }
 
     def _scheduled_load_by_hour(self) -> dict[str, float]:
