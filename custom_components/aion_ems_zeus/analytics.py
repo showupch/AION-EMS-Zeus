@@ -138,7 +138,12 @@ class HistoricalAnalyticsEngine:
             return
         try:
             now = dt_util.now()
-            start_local = dt_util.start_of_local_day(now - timedelta(days=401))
+            analysis_start_local = dt_util.start_of_local_day(now - timedelta(days=401))
+            # Fetch one extra completed day as a warm-up baseline. Recorder can
+            # report the first `change` bucket of a newly-created cumulative
+            # statistic as its raw cumulative sum when no previous bucket exists.
+            # We must never interpret that baseline as one day of energy.
+            start_local = dt_util.start_of_local_day(now - timedelta(days=402))
             # Completed days can use Recorder's long-term day buckets.  The
             # current local day must not: a day bucket can straddle a timezone
             # boundary or lag the Energy Dashboard's in-progress window.  Query
@@ -203,9 +208,12 @@ class HistoricalAnalyticsEngine:
             raw_today = (today_response or {}).get("statistics", today_response or {})
             raw_timing = (timing_response or {}).get("statistics", timing_response or {})
             result: dict[str, dict[str, float]] = {key: {} for key in roles}
+            skipped_unbased_first_rows: dict[str, list[str]] = {key: [] for key in roles}
+            analysis_start_date = analysis_start_local.date()
             for key in roles:
                 entity_group = list(selected_groups.get(key) or ([selected[key]] if selected.get(key) else []))
                 for entity_id in entity_group:
+                    parsed_rows: list[tuple[datetime, float]] = []
                     for row in list((raw_history or {}).get(entity_id) or []):
                         if not isinstance(row, dict):
                             continue
@@ -214,17 +222,34 @@ class HistoricalAnalyticsEngine:
                         if value is None or stamp is None or value < -0.001:
                             continue
                         local_stamp = dt_util.as_local(stamp)
-                        # Recorder day/change buckets can be stamped at the UTC
-                        # instant corresponding to local midnight. With a positive
-                        # timezone offset, the boundary row returned by the
-                        # completed-history query can therefore map to *today* in
-                        # local time even though end_time == today_start. Today is
-                        # built separately from hourly/change rows below, exactly
-                        # like HA Energy. Exclude any completed-history row whose
-                        # local calendar date is today to prevent counting the same
-                        # battery movement once as a day bucket and again as hourly
-                        # changes.
                         if local_stamp.date() >= now.date():
+                            continue
+                        parsed_rows.append((local_stamp, value))
+                    parsed_rows.sort(key=lambda item: item[0])
+
+                    # A cumulative statistic needs one earlier bucket to establish
+                    # a daily delta. If the first Recorder row for this statistic
+                    # begins inside Zeus's analysis window, there is no previous
+                    # baseline available. Home Assistant may then expose that first
+                    # `change` as the raw lifetime cumulative sum. Exclude exactly
+                    # that unbased first bucket instead of allowing an impossible
+                    # record day (for example 1,686 kWh of PV in one day). If the
+                    # statistic predates the analysis window, the extra warm-up day
+                    # fetched above provides the baseline and no real analysis day
+                    # is lost. This is applied per statistic, so source migrations
+                    # are protected independently.
+                    first_unbased_stamp = None
+                    if parsed_rows and parsed_rows[0][0].date() >= analysis_start_date:
+                        first_unbased_stamp = parsed_rows[0][0]
+                        skipped_unbased_first_rows[key].append(
+                            f"{entity_id}@{first_unbased_stamp.date().isoformat()}"
+                        )
+
+                    for local_stamp, value in parsed_rows:
+                        if first_unbased_stamp is not None and local_stamp == first_unbased_stamp:
+                            continue
+                        if local_stamp.date() < analysis_start_date:
+                            # Warm-up baseline only; never expose it as a chart day.
                             continue
                         day = local_stamp.date().isoformat()
                         result[key][day] = round(result[key].get(day, 0.0) + max(value, 0.0), 4)
@@ -327,6 +352,14 @@ class HistoricalAnalyticsEngine:
                 "ha_energy_battery_charge_entities": list(selected_groups.get("battery_charge_energy_kwh") or []),
                 "ha_energy_battery_discharge_entities": list(selected_groups.get("battery_discharge_energy_kwh") or []),
                 "days": {key: len(values) for key, values in result.items()},
+                "baseline_guard": {
+                    "status": "Protected",
+                    "rule": "First cumulative-statistic day is excluded when no prior Recorder baseline exists.",
+                    "skipped_first_rows": {
+                        key: list(values) for key, values in skipped_unbased_first_rows.items() if values
+                    },
+                    "skipped_count": sum(len(values) for values in skipped_unbased_first_rows.values()),
+                },
                 "refreshed_at": now.isoformat(),
             }
             self._ha_battery_days = {
@@ -4386,7 +4419,12 @@ class DeviceAnalyticsEngine:
             return
         try:
             now = dt_util.now()
-            start_local = dt_util.start_of_local_day(now - timedelta(days=401))
+            analysis_start_local = dt_util.start_of_local_day(now - timedelta(days=401))
+            # Fetch one extra completed day as a warm-up baseline. Recorder can
+            # report the first `change` bucket of a newly-created cumulative
+            # statistic as its raw cumulative sum when no previous bucket exists.
+            # We must never interpret that baseline as one day of energy.
+            start_local = dt_util.start_of_local_day(now - timedelta(days=402))
             end_local = dt_util.start_of_local_day(now + timedelta(days=1))
             response = await self.hass.services.async_call(
                 "recorder", "get_statistics",
