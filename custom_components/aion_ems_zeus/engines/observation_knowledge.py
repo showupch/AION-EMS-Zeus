@@ -100,24 +100,74 @@ class ObservationKnowledgeEngine:
             if not device_id:
                 continue
             dtype = str(device.get("type") or "device").strip().lower()
-            if dtype in {"solar_inverter", "inverter", "battery", "energy_meter", "smart_meter"}:
+            # Inverters are valid Timeline devices: users need to see each
+            # physical inverter start/stop independently. Only non-load source
+            # objects that have no meaningful run session stay excluded here.
+            if dtype in {"battery", "energy_meter", "smart_meter"}:
                 continue
             name = str(device.get("name") or device_id).strip()
+            identity = " ".join(
+                str(device.get(key) or "")
+                for key in ("type", "category", "role", "name", "manufacturer", "model")
+            ).lower()
+            inverter_like = bool(
+                dtype in {"solar_inverter", "pv_inverter", "inverter", "hybrid_inverter", "battery_inverter"}
+                or device.get("hybrid_inverter") is True
+                or "fronius" in identity
+                or "inverter" in identity
+            )
             power_entity = str(device.get("power_entity") or "").strip()
             power_w = 0.0
             power_valid = False
-            if power_entity:
-                state = self.hass.states.get(power_entity)
-                if state is not None:
-                    raw_state = str(state.state or "").strip().lower()
-                    if raw_state not in {"", "unknown", "unavailable", "none", "nan"}:
-                        try:
-                            raw = float(state.state)
-                            unit = str(state.attributes.get("unit_of_measurement") or "W").strip().lower()
-                            power_w = raw * 1000.0 if unit == "kw" else raw
-                            power_valid = True
-                        except (TypeError, ValueError):
-                            power_valid = False
+
+            def _read_power(entity_id: str) -> tuple[float, bool]:
+                if not entity_id:
+                    return 0.0, False
+                state = self.hass.states.get(entity_id)
+                if state is None:
+                    return 0.0, False
+                raw_state = str(state.state or "").strip().lower()
+                if raw_state in {"", "unknown", "unavailable", "none", "nan"}:
+                    return 0.0, False
+                try:
+                    raw = float(state.state)
+                    unit = str(state.attributes.get("unit_of_measurement") or "W").strip().lower()
+                    return (raw * 1000.0 if unit == "kw" else raw), True
+                except (TypeError, ValueError):
+                    return 0.0, False
+
+            power_w, power_valid = _read_power(power_entity)
+            # v14.8.10.16: inverter Timeline activity must evaluate every mapped
+            # live production source, not only fall back to solar_power_entity
+            # when power_entity is unavailable. Hybrid integrations can keep a
+            # valid-but-zero/lagging generic power entity while the dedicated
+            # PV/AC source is already producing. Treating that zero as authority
+            # caused false "stopped" events while the inverter was visibly on.
+            #
+            # Inverter output sensors also differ in sign convention, so Timeline
+            # activity uses magnitude. This is activity detection only; canonical
+            # energy-flow direction/sign calculations are intentionally untouched.
+            if inverter_like:
+                inverter_evidence: list[float] = []
+                if power_valid:
+                    inverter_evidence.append(abs(power_w))
+                solar_power_entity = str(device.get("solar_power_entity") or "").strip()
+                if solar_power_entity and solar_power_entity != power_entity:
+                    solar_power, solar_power_valid = _read_power(solar_power_entity)
+                    if solar_power_valid:
+                        inverter_evidence.append(abs(solar_power))
+                if inverter_evidence:
+                    power_w = max(inverter_evidence)
+                    power_valid = True
+                else:
+                    power_w, power_valid = 0.0, False
+
+            # v14.8.10.15: Heat Pump running state follows the whole-unit live
+            # electrical power mapping. More than 25 W means the Heat Pump has
+            # started; 25 W or less means stopped. Classified Heating/DHW power
+            # sensors are deliberately NOT used to decide the overall running
+            # state because those sensors may publish later in the cycle. They
+            # remain independent mode/attribution measurements for the UI.
 
             # v14.8.2-alpha.17: registered-load activity uses hysteresis and
             # preserves the previous state across unavailable samples. This avoids
@@ -127,6 +177,11 @@ class ObservationKnowledgeEngine:
             previously_active = bool(previous_item.get("active"))
             if not power_valid:
                 active = previously_active
+            elif dtype == "heat_pump":
+                # User-confirmed Heat Pump semantics: >25 W = started. Heating
+                # and DHW classified power can arrive later and must not delay
+                # the device Running state or Timeline START event.
+                active = power_w > 25.0
             elif previously_active:
                 active = power_w >= 25.0
             else:
@@ -137,8 +192,12 @@ class ObservationKnowledgeEngine:
                 compressor_state = self.hass.states.get(compressor_entity) if compressor_entity else None
                 activity = str(getattr(compressor_state, "state", "") or "").strip().lower()
                 if activity:
-                    active = activity not in {"off", "idle", "standby", "inactive", "0", "false", "unknown", "unavailable"}
-            result[device_id] = {"name": name, "type": dtype, "active": bool(active), "power_w": max(power_w, 0.0), "activity": activity}
+                    compressor_active = activity not in {"off", "idle", "standby", "inactive", "0", "false", "unknown", "unavailable"}
+                    # Positive compressor evidence can confirm activity, but an
+                    # idle/stale state must not override clear measured electrical
+                    # consumption from the Heat Pump circuit.
+                    active = bool(active or compressor_active)
+            result[device_id] = {"name": name, "type": dtype, "active": bool(active), "power_w": max(power_w, 0.0), "activity": activity, "inverter_like": inverter_like}
         return result
 
     def _observe_registered_devices(self) -> None:
@@ -152,7 +211,9 @@ class ObservationKnowledgeEngine:
         Confirm windows:
         * EV charger: start 5 s, stop 180 s
         * Generic registered load: start 10 s, stop 60 s
-        * Water heater / heat pump: start 5 s, stop 30 s
+        * Water heater: start 5 s, stop 30 s
+        * Heat pump: start immediate, stop immediate after the >25 W running threshold
+        * Registered inverter: start/stop immediate after 75/25 W hysteresis
 
         A candidate that returns to the stable state before its window expires
         is cancelled without producing Timeline noise.
@@ -163,11 +224,25 @@ class ObservationKnowledgeEngine:
         stable_next: dict[str, dict[str, Any]] = dict(previous)
         now_dt = datetime.now(timezone.utc)
 
-        def _window_seconds(dtype: str, candidate_active: bool) -> int:
+        def _window_seconds(dtype: str, candidate_active: bool, inverter_like: bool = False) -> int:
             dtype = str(dtype or "device")
+            if inverter_like:
+                # v14.8.10.13: inverter power entities may emit only the edge
+                # update (0 -> production or production -> 0). A timed pending
+                # window can therefore never receive a second callback. Power
+                # already has 75/25 W hysteresis, so confirm the edge now.
+                return 0
             if dtype == "ev_charger":
                 return 5 if candidate_active else 180
-            if dtype in {"heat_pump", "water_heater"}:
+            if dtype == "heat_pump":
+                # v14.8.10.9: Heat Pump electrical activity uses the confirmed >25 W running threshold
+                # hysteresis, and split power/compressor evidence is watched live.
+                # Do not leave either edge in a time-based pending state: after the
+                # source transition there may be no second HA event to re-enter this
+                # method, which previously left STOP pending until the 15-minute
+                # safety refresh. Confirm both START and STOP on the live refresh.
+                return 0
+            if dtype == "water_heater":
                 return 5 if candidate_active else 30
             return 10 if candidate_active else 60
 
@@ -206,7 +281,7 @@ class ObservationKnowledgeEngine:
                         "last_power_w": round(float(item.get("power_w") or 0.0), 1),
                     }
 
-                required_seconds = _window_seconds(dtype, candidate_active)
+                required_seconds = _window_seconds(dtype, candidate_active, bool(item.get("inverter_like")))
                 elapsed_seconds = max(0.0, (now_dt - first_seen).total_seconds())
                 if elapsed_seconds < required_seconds:
                     held = dict(item)

@@ -5464,6 +5464,31 @@ class DeviceAnalyticsEngine:
                 thermal_power = hp_number("thermal_power_entity")
                 thermal_power_unit = hp_unit("thermal_power_entity")
                 electrical_power_w = max(0.0, float(current_power_w or 0.0))
+                # v14.8.10.15: when classified Heating/DHW/Cooling electrical
+                # power inputs are configured and currently measurable, they are
+                # stronger operating-state evidence than residual whole-unit
+                # auxiliary power. This keeps Intelligence, Command Center and
+                # Timeline aligned: 100 W of pumps/controls with 0 W Heating +
+                # 0 W DHW is Standby, not a compressor START. Whole-unit power
+                # remains the compatibility fallback when no classified live
+                # electrical circuit is available.
+                classified_live_power_w = []
+                for _key in (
+                    "heating_electrical_power_entity",
+                    "dhw_electrical_power_entity",
+                    "cooling_electrical_power_entity",
+                ):
+                    _value = hp_number(_key)
+                    _unit = str(hp_unit(_key) or "").strip()
+                    if _value is None:
+                        continue
+                    if _unit == "kW":
+                        _value *= 1000.0
+                    elif _unit == "MW":
+                        _value *= 1000000.0
+                    classified_live_power_w.append(max(0.0, float(_value)))
+                if classified_live_power_w:
+                    electrical_power_w = sum(classified_live_power_w)
                 thermal_power_w = None
                 if thermal_power is not None:
                     if str(thermal_power_unit or "") == "kW":

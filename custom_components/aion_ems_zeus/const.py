@@ -2,7 +2,7 @@
 
 DOMAIN = "aion_ems_zeus"
 NAME = "AION EMS"
-VERSION = "14.8.10.5"
+VERSION = "15.0.20"
 
 PLATFORMS = ["sensor"]
 
@@ -90,6 +90,8 @@ SERVICE_CLEAR_WEATHER_SOURCE = "clear_weather_source"
 
 SERVICE_SAVE_TARIFF_SETTINGS = "save_tariff_settings"
 SERVICE_CLEAR_TARIFF_SETTINGS = "clear_tariff_settings"
+SERVICE_SET_ENERGY_PRICES = "set_energy_prices"
+SERVICE_CLEAR_DYNAMIC_TARIFF = "clear_dynamic_tariff"
 SERVICE_SAVE_BATTERY_CAPACITY = "save_battery_capacity"
 SERVICE_SAVE_HOME_PROFILE = "save_home_profile"
 SERVICE_CLEAR_BATTERY_CAPACITY = "clear_battery_capacity"

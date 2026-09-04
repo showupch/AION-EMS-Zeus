@@ -113,6 +113,51 @@ class FinanceEngine:
         return out
 
     @staticmethod
+    def _dynamic_slots(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+        out = []
+        for raw in list(cfg.get("dynamic_prices") or []):
+            if not isinstance(raw, dict):
+                continue
+            try:
+                start = datetime.fromisoformat(str(raw.get("start") or ""))
+                end = datetime.fromisoformat(str(raw.get("end") or ""))
+                rate = float(raw.get("price_per_kwh"))
+            except (TypeError, ValueError):
+                continue
+            if start.tzinfo is None or end.tzinfo is None or end <= start:
+                continue
+            out.append({"start": start, "end": end, "price_per_kwh": rate, "price": raw.get("price")})
+        return sorted(out, key=lambda x: x["start"])
+
+    @staticmethod
+    def _dynamic_rate_for_datetime(when: datetime, slots: list[dict[str, Any]]) -> tuple[float | None, str]:
+        probe = when if when.tzinfo is not None else when.replace(tzinfo=timezone.utc)
+        for item in slots:
+            if item["start"] <= probe < item["end"]:
+                return float(item["price_per_kwh"]), f"{dt_util.as_local(item['start']).strftime('%H:%M')}–{dt_util.as_local(item['end']).strftime('%H:%M')}"
+        return None, "No price slot"
+
+    def _dynamic_hourly_values(self, slots: list[dict[str, Any]], export_rate: float) -> dict[str, Any]:
+        rows = list(getattr(self.analytics, "_ha_consumption_hourly", []) or [])
+        now = dt_util.now(); today = now.date(); week_start = today - timedelta(days=today.weekday()); month_start = today.replace(day=1); year_start = today.replace(month=1, day=1)
+        scopes = {"today": today, "week": week_start, "month": month_start, "year": year_start}; values = {}
+        for scope, start_date in scopes.items():
+            imported = exported = cost = revenue = 0.0; matched = 0; earliest = latest = None
+            for row in rows:
+                try: stamp = datetime.fromisoformat(str(row.get("start") or ""))
+                except ValueError: continue
+                local = dt_util.as_local(stamp)
+                if local.date() < start_date or local.date() > today: continue
+                rate, _ = self._dynamic_rate_for_datetime(stamp, slots)
+                if rate is None: continue
+                imp = self._num(row.get("grid_import_energy_kwh")); exp = self._num(row.get("grid_export_energy_kwh"))
+                imported += imp; exported += exp; cost += imp * rate; revenue += exp * export_rate; matched += 1
+                earliest = local if earliest is None or local < earliest else earliest; latest = local if latest is None or local > latest else latest
+            effective = cost / imported if imported > 0 else 0.0
+            values[scope] = {"grid_import_kwh": round(imported,4), "grid_export_kwh": round(exported,4), "grid_cost": round(cost,4), "export_revenue": round(revenue,4), "effective_import_tariff": round(effective,6), "hour_count": matched, "coverage_complete": bool(matched), "coverage_start": earliest.isoformat() if earliest else None, "coverage_end": latest.isoformat() if latest else None}
+        return values
+
+    @staticmethod
     def _period_matches(minute: int, start: int, end: int) -> bool:
         return start <= minute < end if start < end else (minute >= start or minute < end)
 
@@ -182,12 +227,16 @@ class FinanceEngine:
         enabled = bool(cfg.get("enabled"))
         tariff_mode = str(cfg.get("tariff_mode") or "fixed").lower()
         tou_periods = self._tou_periods(cfg) if tariff_mode == "time_of_use" else []
+        dynamic_slots = self._dynamic_slots(cfg) if tariff_mode == "dynamic" else []
         export_rate = self._num(cfg.get("export_tariff"))
         standing = self._num(cfg.get("standing_charge"))
         active_import_rate = self._num(cfg.get("import_tariff"))
         active_tariff_name = "Fixed"
         if tariff_mode == "time_of_use" and tou_periods:
             active_import_rate, active_tariff_name = self._tou_rate_for_datetime(dt_util.now(), tou_periods)
+        elif tariff_mode == "dynamic" and dynamic_slots:
+            dynamic_rate, active_tariff_name = self._dynamic_rate_for_datetime(dt_util.now(), dynamic_slots)
+            active_import_rate = dynamic_rate if dynamic_rate is not None else 0.0
         import_rate = active_import_rate
         today = self.analytics.summary().get("periods", {}).get("today", {})
         imported = self._num(today.get("grid_import_energy_kwh"))
@@ -231,11 +280,13 @@ class FinanceEngine:
             direct_solar = remaining_home_after_battery
 
         tou_values = self._tou_hourly_values(tou_periods, export_rate) if tariff_mode == "time_of_use" and tou_periods else {}
-        today_tou = dict(tou_values.get("today") or {})
-        effective_import_rate = self._num(today_tou.get("effective_import_tariff")) if today_tou else import_rate
-        grid_cost = self._num(today_tou.get("grid_cost")) if today_tou else imported * import_rate
-        export_revenue = self._num(today_tou.get("export_revenue")) if today_tou else exported * export_rate
-        value_rate = effective_import_rate if tariff_mode == "time_of_use" and effective_import_rate > 0 else import_rate
+        dynamic_values = self._dynamic_hourly_values(dynamic_slots, export_rate) if tariff_mode == "dynamic" and dynamic_slots else {}
+        period_values = dynamic_values if tariff_mode == "dynamic" else tou_values
+        today_priced = dict(period_values.get("today") or {})
+        effective_import_rate = float(today_priced.get("effective_import_tariff")) if today_priced and today_priced.get("effective_import_tariff") is not None else import_rate
+        grid_cost = float(today_priced.get("grid_cost")) if today_priced and today_priced.get("grid_cost") is not None else imported * import_rate
+        export_revenue = float(today_priced.get("export_revenue")) if today_priced and today_priced.get("export_revenue") is not None else exported * export_rate
+        value_rate = effective_import_rate if tariff_mode in {"time_of_use", "dynamic"} else import_rate
         direct_solar_value = direct_solar * value_rate
         battery_support_value = battery_to_home * value_rate
         avoided_import_value = direct_solar_value + battery_support_value
@@ -260,6 +311,13 @@ class FinanceEngine:
             "effective_import_tariff_today": effective_import_rate if enabled else None,
             "tou_periods": [{k: v for k, v in item.items() if k not in {"start_minute", "end_minute"}} for item in tou_periods],
             "tou_period_values": tou_values,
+            "dynamic_period_values": dynamic_values,
+            "dynamic_prices": [{"start": x["start"].isoformat(), "end": x["end"].isoformat(), "price_per_kwh": x["price_per_kwh"], "price": x.get("price")} for x in dynamic_slots],
+            "dynamic_source": cfg.get("dynamic_source"),
+            "dynamic_input_unit": cfg.get("dynamic_input_unit"),
+            "dynamic_received_at": cfg.get("dynamic_received_at"),
+            "dynamic_coverage_start": cfg.get("dynamic_coverage_start"),
+            "dynamic_coverage_end": cfg.get("dynamic_coverage_end"),
             "export_tariff": export_rate if enabled else None,
             "standing_charge": standing if enabled else None,
             "grid_import_kwh": round(imported, 4), "grid_export_kwh": round(exported, 4),
@@ -279,7 +337,7 @@ class FinanceEngine:
             "device_costs": devices, "data_confidence": confidence,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "solar_period_complete": solar_period_complete,
-            "assumptions": ("Time-of-use import costs use Home Assistant Recorder hourly grid-import changes and the configured local-time schedule. Avoided-import values use the measured effective import rate for the selected evidence window. Export remains a fixed tariff in this release." if tariff_mode == "time_of_use" else "Fixed tariffs. Direct solar and measured battery discharge to the home are valued as avoided grid purchases. Canonical solar excludes measured export; battery charging is tracked separately. If the Solar Input changes mid-day and the solar period is incomplete, Today is temporarily reconstructed from measured home, grid and battery totals until midnight."),
+            "assumptions": ("Dynamic import prices use absolute timestamped price slots supplied through the AION EMS Zeus set_energy_prices action. Recorder grid-import intervals are matched to those slots; export remains fixed." if tariff_mode == "dynamic" else ("Time-of-use import costs use Home Assistant Recorder hourly grid-import changes and the configured local-time schedule. Avoided-import values use the measured effective import rate for the selected evidence window. Export remains a fixed tariff in this release." if tariff_mode == "time_of_use" else "Fixed tariffs. Direct solar and measured battery discharge to the home are valued as avoided grid purchases. Canonical solar excludes measured export; battery charging is tracked separately. If the Solar Input changes mid-day and the solar period is incomplete, Today is temporarily reconstructed from measured home, grid and battery totals until midnight.")),
         }
         return self.last
 

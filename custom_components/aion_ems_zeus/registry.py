@@ -18,6 +18,9 @@ DEFAULT_ROOMS = [
     {"id": "garage", "name": "Garage", "icon": "mdi:garage"},
 ]
 
+MAX_AUDIT_ENTRIES = 250
+
+
 DEFAULT_GROUPS = [
     {"id": "solar", "name": "Solar", "category": "generation", "priority": "high", "icon": "mdi:solar-power-variant"},
     {"id": "battery", "name": "Battery", "category": "storage", "priority": "high", "icon": "mdi:battery"},
@@ -59,6 +62,7 @@ class RegistryEngine:
             self.data.setdefault("groups", DEFAULT_GROUPS)
             self.data.setdefault("backups", [])
             self.data.setdefault("audit", [])
+            self.data["audit"] = list(self.data.get("audit", []))[-MAX_AUDIT_ENTRIES:]
             self.data.setdefault("entity_mappings", {})
             self.data.setdefault("sites", [{"id": "home", "name": "Home", "enabled": True, "icon": "mdi:home-lightning-bolt"}])
             self.data.setdefault("topology_settings", {"default_site_id": "home", "balance_tolerance_percent": 10})
@@ -150,6 +154,13 @@ class RegistryEngine:
         self.event_bus.publish("RegistryLoaded", "RegistryEngine", self.summary())
 
     async def async_save(self) -> None:
+        # Long-run stability: keep the persistent audit useful but bounded.
+        # Several configuration/services append audit records over the life of
+        # the installation; serialising an ever-growing list wastes memory and
+        # storage I/O without improving diagnostics.
+        audit = self.data.get("audit")
+        if isinstance(audit, list) and len(audit) > MAX_AUDIT_ENTRIES:
+            self.data["audit"] = audit[-MAX_AUDIT_ENTRIES:]
         await self.store.async_save(self.data)
 
     def build_device(

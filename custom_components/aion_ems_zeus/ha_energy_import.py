@@ -56,13 +56,28 @@ class HomeAssistantEnergyImporter:
     def _entity_info(self, entity_id: str | None) -> dict[str, Any]:
         state = self._state(entity_id)
         attrs = state.attributes if state is not None else {}
+        name = attrs.get("friendly_name") if state is not None else entity_id
+        semantic_text = f" {entity_id or ''} {name or ''} ".lower().replace("_", " ")
+        reset_tokens = (
+            " daily ", " today ", " day ", " täglich ", " taeglich ",
+            " journalier ", " giornalier ", " 24h "
+        )
+        reset_like = any(token in semantic_text for token in reset_tokens)
+        state_class = attrs.get("state_class")
+        energy_semantics = (
+            "daily_reset" if reset_like
+            else "lifetime_total" if state_class == "total_increasing"
+            else "unknown"
+        )
         return {
             "entity_id": entity_id,
             "available": bool(state is not None and str(state.state).lower() not in {"unknown", "unavailable", "none", ""}),
-            "name": attrs.get("friendly_name") if state is not None else entity_id,
+            "name": name,
             "unit": attrs.get("unit_of_measurement"),
             "device_class": attrs.get("device_class"),
-            "state_class": attrs.get("state_class"),
+            "state_class": state_class,
+            "last_reset": attrs.get("last_reset"),
+            "energy_semantics": energy_semantics,
         }
 
     def _energy_valid(self, entity_id: str | None) -> bool:
@@ -100,6 +115,43 @@ class HomeAssistantEnergyImporter:
         candidates.sort(reverse=True)
         return candidates[0][1] if candidates else None
 
+    def _directional_power_partner(self, energy_entity: str | None, direction: str) -> str | None:
+        """Find a live power partner for a directional HA Energy source.
+
+        HA Energy establishes import/export semantics for the configured energy
+        statistic. A strongly related live power sensor can inherit that
+        direction even when its name itself does not say "grid import/export".
+        """
+        partner = self._find_power_partner(energy_entity)
+        if not partner:
+            return None
+        state = self._state(partner)
+        text = f" {partner} {(state.attributes.get('friendly_name') if state else '') or ''} ".lower().replace('_', ' ')
+        import_tokens = ("grid import", "import power", "imported", "from grid", "bezug", "netzbezug")
+        export_tokens = ("grid export", "export power", "exported", "feed in", "feed-in", "einspeis", "netzeinspeis")
+        wanted = import_tokens if direction == "import" else export_tokens
+        opposite = export_tokens if direction == "import" else import_tokens
+        if any(token in text for token in opposite):
+            return None
+        if any(token in text for token in wanted):
+            return partner
+
+        def stem(entity_id: str | None) -> str:
+            raw = str(entity_id or "").split(".", 1)[-1].lower()
+            for _ in range(2):
+                raw = re.sub(r"(?:_)?(daily|today|day|total|lifetime|energy|kwh|wh)$", "", raw)
+            return raw.strip("_- ")
+
+        e_stem = stem(energy_entity)
+        p_stem = stem(partner)
+        if e_stem and p_stem and (
+            e_stem == p_stem
+            or (min(len(e_stem), len(p_stem)) >= 4 and
+                (e_stem.startswith(p_stem) or p_stem.startswith(e_stem)))
+        ):
+            return partner
+        return None
+
     def _infer_type(self, name: str, entity_id: str) -> tuple[str, float]:
         text = f" {name} {entity_id} ".lower()
         for device_type, tokens in self.TYPE_RULES:
@@ -128,11 +180,26 @@ class HomeAssistantEnergyImporter:
                 return value
         return None
 
+    def _energy_field_for_semantics(self, total_field: str, today_field: str, entity_id: str | None) -> str:
+        """Route HA Energy energy sensors without pretending daily counters are lifetime totals."""
+        info = self._entity_info(entity_id)
+        semantics = str(info.get("energy_semantics") or "unknown")
+        if semantics == "daily_reset":
+            return today_field
+        # Only explicit total_increasing, non-daily-looking sensors receive
+        # lifetime authority. Unknown semantics are not promoted to lifetime.
+        if semantics == "lifetime_total":
+            return total_field
+        return today_field if entity_id and any(
+            token in f" {entity_id.lower().replace('_', ' ')} "
+            for token in (" daily ", " today ", " day ")
+        ) else ""
+
     def _whole_home_candidates(self, prefs: dict[str, Any]) -> list[dict[str, Any]]:
         out = []
         seen = set()
 
-        def add(field, entity_id, source, value_kind="energy"):
+        def add(field, entity_id, source, value_kind="energy", derived_from=None, authority="ha_energy"):
             if not entity_id or (field, entity_id) in seen:
                 return
             seen.add((field, entity_id))
@@ -156,6 +223,8 @@ class HomeAssistantEnergyImporter:
                 "field": field,
                 "source": source,
                 "value_kind": value_kind,
+                "authority": authority,
+                "derived_from": derived_from,
                 **info,
                 "valid": valid,
                 "existing_mapping": (self.registry.data.get("entity_mappings") or {}).get(field),
@@ -168,35 +237,69 @@ class HomeAssistantEnergyImporter:
 
             if source_type == "grid":
                 # Current HA schema: one unified grid source with direct fields.
-                add("grid_import_energy_total", item.get("stat_energy_from"), "ha_energy_grid_import")
-                add("grid_export_energy_total", item.get("stat_energy_to"), "ha_energy_grid_export")
+                grid_import_energy = item.get("stat_energy_from")
+                grid_export_energy = item.get("stat_energy_to")
+                import_field = self._energy_field_for_semantics("grid_import_energy_total", "grid_import_energy_today", grid_import_energy)
+                export_field = self._energy_field_for_semantics("grid_export_energy_total", "grid_export_energy_today", grid_export_energy)
+                if import_field:
+                    add(import_field, grid_import_energy, "ha_energy_grid_import")
+                if export_field:
+                    add(export_field, grid_export_energy, "ha_energy_grid_export")
                 add("grid_power", item.get("stat_rate"), "ha_energy_grid_power", "power")
+                import_power = self._directional_power_partner(grid_import_energy, "import")
+                export_power = self._directional_power_partner(grid_export_energy, "export")
+                add("grid_import_power", import_power, "ha_energy_grid_import_power_partner", "power", grid_import_energy, "ha_energy_derived")
+                add("grid_export_power", export_power, "ha_energy_grid_export_power_partner", "power", grid_export_energy, "ha_energy_derived")
 
                 # Legacy schema: arrays under flow_from/flow_to/power.
                 for flow in item.get("flow_from") or []:
-                    add("grid_import_energy_total", self._first_entity(flow, ("stat_energy_from", "entity_id")), "ha_energy_grid_import_legacy")
+                    legacy = self._first_entity(flow, ("stat_energy_from", "entity_id"))
+                    field = self._energy_field_for_semantics("grid_import_energy_total", "grid_import_energy_today", legacy)
+                    if field:
+                        add(field, legacy, "ha_energy_grid_import_legacy")
                 for flow in item.get("flow_to") or []:
-                    add("grid_export_energy_total", self._first_entity(flow, ("stat_energy_to", "entity_id")), "ha_energy_grid_export_legacy")
+                    legacy = self._first_entity(flow, ("stat_energy_to", "entity_id"))
+                    field = self._energy_field_for_semantics("grid_export_energy_total", "grid_export_energy_today", legacy)
+                    if field:
+                        add(field, legacy, "ha_energy_grid_export_legacy")
                 for power in item.get("power") or []:
                     if isinstance(power, dict):
                         add("grid_power", power.get("stat_rate"), "ha_energy_grid_power_legacy", "power")
 
             elif source_type == "solar":
-                add("solar_energy_total", item.get("stat_energy_from"), "ha_energy_solar")
-                add("solar_power", item.get("stat_rate"), "ha_energy_solar_power", "power")
+                solar_energy = item.get("stat_energy_from")
+                solar_field = self._energy_field_for_semantics("solar_energy_total", "solar_energy_today", solar_energy)
+                if solar_field:
+                    add(solar_field, solar_energy, "ha_energy_solar")
+                solar_rate = item.get("stat_rate")
+                add("solar_power", solar_rate, "ha_energy_solar_power", "power")
+                if not solar_rate:
+                    add("solar_power", self._find_power_partner(solar_energy), "ha_energy_solar_power_partner", "power", solar_energy, "ha_energy_derived")
 
             elif source_type == "battery":
                 # HA semantics: stat_energy_from = battery discharge; stat_energy_to = battery charge.
-                add("battery_discharge_energy_total", item.get("stat_energy_from"), "ha_energy_battery_discharge")
-                add("battery_charge_energy_total", item.get("stat_energy_to"), "ha_energy_battery_charge")
+                battery_discharge = item.get("stat_energy_from")
+                battery_charge = item.get("stat_energy_to")
+                discharge_field = self._energy_field_for_semantics("battery_discharge_energy_total", "battery_discharge_energy_today", battery_discharge)
+                charge_field = self._energy_field_for_semantics("battery_charge_energy_total", "battery_charge_energy_today", battery_charge)
+                if discharge_field:
+                    add(discharge_field, battery_discharge, "ha_energy_battery_discharge")
+                if charge_field:
+                    add(charge_field, battery_charge, "ha_energy_battery_charge")
                 add("battery_power", item.get("stat_rate"), "ha_energy_battery_power", "power")
                 add("battery_soc", item.get("stat_soc"), "ha_energy_battery_soc", "soc")
 
                 # Compatibility with any older nested battery shape.
                 for flow in item.get("flow_from") or []:
-                    add("battery_discharge_energy_total", self._first_entity(flow, ("stat_energy_from", "entity_id")), "ha_energy_battery_discharge_legacy")
+                    legacy = self._first_entity(flow, ("stat_energy_from", "entity_id"))
+                    field = self._energy_field_for_semantics("battery_discharge_energy_total", "battery_discharge_energy_today", legacy)
+                    if field:
+                        add(field, legacy, "ha_energy_battery_discharge_legacy")
                 for flow in item.get("flow_to") or []:
-                    add("battery_charge_energy_total", self._first_entity(flow, ("stat_energy_to", "entity_id")), "ha_energy_battery_charge_legacy")
+                    legacy = self._first_entity(flow, ("stat_energy_to", "entity_id"))
+                    field = self._energy_field_for_semantics("battery_charge_energy_total", "battery_charge_energy_today", legacy)
+                    if field:
+                        add(field, legacy, "ha_energy_battery_charge_legacy")
 
         return out
 
@@ -291,7 +394,7 @@ class HomeAssistantEnergyImporter:
                 "raw_energy_source_count": len(raw_sources),
                 "raw_source_types": raw_source_types,
                 "raw_device_consumption_count": len(raw_devices),
-                "parser_version": "15.3.11-current-and-legacy",
+                "parser_version": "15.3.12-semantic-routing",
             },
             "counts": {
                 "whole_home": len(whole_home),

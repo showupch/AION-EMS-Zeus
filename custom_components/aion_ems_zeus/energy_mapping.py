@@ -1,5 +1,7 @@
 """Manual, registry-backed Home Assistant entity mapping for AION EMS Zeus."""
 from __future__ import annotations
+
+from time import monotonic
 from typing import Any
 
 AION_OUTPUT_PREFIXES = ("sensor.aion_ems_zeus_", "binary_sensor.aion_ems_zeus_", "switch.aion_ems_zeus_")
@@ -55,6 +57,13 @@ class EnergyMappingEngine:
         self.last = {"status":"Not mapped", "mapped_count":0, "missing_count":len(self.FIELD_RULES)}
         self.public_last = {"status":"Not mapped", "mapped_count":0, "missing_count":len(self.FIELD_RULES), "invalid_count":0, "mappings":{}}
         self.last_test: dict[str, Any] = {}
+        # Candidate suggestions depend on entity identity/attributes, not live
+        # numeric state. Cache the compact frontend suggestion set so the 2 s
+        # live energy refresh path never scans every HA state once per mapping
+        # field. Explicit per-field suggestion requests still scan live.
+        self._suggestion_cache: dict[str, list[dict[str, Any]]] = {}
+        self._suggestion_cache_at = 0.0
+        self._suggestion_cache_seconds = 300.0
 
     @property
     def mappings(self) -> dict[str,str]:
@@ -84,21 +93,91 @@ class EnergyMappingEngine:
             if units and unit not in units: issues.append({"severity":"error","code":"UNIT_MISMATCH","message":f"Expected unit {sorted(units)}; got {unit or 'none'}."})
         return {"status":"valid" if not issues else "invalid", "field":field, "entity_id":entity_id, "exists":state is not None, "available":available, "state":state.state if state else None, "unit":attrs.get("unit_of_measurement"), "device_class":attrs.get("device_class"), "last_changed": state.last_changed.isoformat() if state else None, "last_updated": state.last_updated.isoformat() if state else None, "issues":issues}
 
+    def _score_suggestion(self, field: str, state) -> dict[str, Any] | None:
+        if field not in self.FIELD_RULES:
+            return None
+        if state.entity_id.startswith(AION_OUTPUT_PREFIXES):
+            return None
+        classes, units = self.FIELD_RULES[field]
+        words = field.replace("_total", "").split("_")
+        attrs = state.attributes
+        blob = (state.entity_id + " " + str(attrs.get("friendly_name", ""))).lower()
+        score = sum(20 for word in words if word in blob)
+        if classes and attrs.get("device_class") in classes:
+            score += 30
+        if units and attrs.get("unit_of_measurement") in units:
+            score += 20
+        if not score:
+            return None
+        return {
+            "entity_id": state.entity_id,
+            "name": attrs.get("friendly_name", state.entity_id),
+            "score": score,
+        }
+
+    def _frontend_suggestions(self, limit: int = 3) -> dict[str, list[dict[str, Any]]]:
+        """Return cached compact suggestions for the Energy Sources UI.
+
+        Older builds called ``hass.states.async_all()`` separately for every
+        mapping field on every live source refresh. On a large HA instance that
+        means thousands of repeated state/attribute reads every ~2 seconds.
+        Build all field candidates from one state snapshot and reuse them for a
+        short period; entity discovery changes far less often than power values.
+        """
+        now = monotonic()
+        if self._suggestion_cache and now - self._suggestion_cache_at < self._suggestion_cache_seconds:
+            return self._suggestion_cache
+
+        fields = tuple(self.FIELD_RULES)
+        scoring = tuple(
+            (field, self.FIELD_RULES[field][0], self.FIELD_RULES[field][1], tuple(field.replace("_total", "").split("_")))
+            for field in fields
+        )
+        ranked: dict[str, list[dict[str, Any]]] = {field: [] for field in fields}
+        states = self.hass.states.async_all()
+        for state in states:
+            if state.entity_id.startswith(AION_OUTPUT_PREFIXES):
+                continue
+            attrs = state.attributes
+            blob = (state.entity_id + " " + str(attrs.get("friendly_name", ""))).lower()
+            device_class = attrs.get("device_class")
+            unit = attrs.get("unit_of_measurement")
+            for field, classes, units, words in scoring:
+                score = sum(20 for word in words if word in blob)
+                if classes and device_class in classes:
+                    score += 30
+                if units and unit in units:
+                    score += 20
+                if score:
+                    ranked[field].append({
+                        "entity_id": state.entity_id,
+                        "name": attrs.get("friendly_name", state.entity_id),
+                        "score": score,
+                    })
+        for field, items in ranked.items():
+            items.sort(key=lambda item: (item["score"], item["entity_id"]), reverse=True)
+            ranked[field] = items[:limit]
+        self._suggestion_cache = ranked
+        self._suggestion_cache_at = now
+        return ranked
+
     def suggestions(self, field: str, limit: int=8) -> list[dict[str,Any]]:
-        if field not in self.FIELD_RULES: return []
-        classes, units=self.FIELD_RULES[field]; words=field.replace("_total","").split("_")
+        """Return current per-field suggestions for explicit user requests."""
+        if field not in self.FIELD_RULES:
+            return []
+        # The normal UI only needs the top three and can use the shared cache.
+        if limit <= 3:
+            return list(self._frontend_suggestions(3).get(field, []))[:limit]
         out=[]
         for state in self.hass.states.async_all():
-            if state.entity_id.startswith(AION_OUTPUT_PREFIXES): continue
-            attrs=state.attributes; blob=(state.entity_id+" "+str(attrs.get("friendly_name",""))).lower(); score=sum(20 for w in words if w in blob)
-            if classes and attrs.get("device_class") in classes: score+=30
-            if units and attrs.get("unit_of_measurement") in units: score+=20
-            if score: out.append({"entity_id":state.entity_id,"name":attrs.get("friendly_name",state.entity_id),"score":score})
+            item = self._score_suggestion(field, state)
+            if item is not None:
+                out.append(item)
         return sorted(out,key=lambda x:(x["score"],x["entity_id"]),reverse=True)[:limit]
 
-    def _source_catalog(self, mapped: dict[str, Any]) -> dict[str, Any]:
+    def _source_catalog(self, mapped: dict[str, Any], mappings: dict[str, str] | None = None) -> dict[str, Any]:
         catalog: dict[str, Any] = {}
-        mappings = self.mappings
+        mappings = mappings if mappings is not None else self.mappings
         for source_id, definition in self.SOURCE_DEFINITIONS.items():
             fields = {k: v for k, v in definition.items() if k not in {"label", "kind"}}
             entities = {role: mappings.get(field) for role, field in fields.items() if mappings.get(field)}
@@ -154,6 +233,7 @@ class EnergyMappingEngine:
         optional_prefixes = ("ev_", "heat_pump_", "water_heater_")
         device_entities = {str(d.get(k)) for d in (self.registry.data.get("devices", []) if self.registry else []) for k in ("power_entity", "energy_entity", "state_entity", "availability_entity") if d.get(k)}
         mappings_ref = self.registry.data.setdefault("entity_mappings", {}) if self.registry else {}
+        mapping_options = self.mapping_options
         pruned=[]
         for field, entity_id in list(mappings_ref.items()):
             if field.startswith(optional_prefixes) and entity_id not in device_entities and self.hass.states.get(entity_id) is None:
@@ -161,9 +241,13 @@ class EnergyMappingEngine:
         if pruned and self.registry:
             self.registry.data.setdefault("audit", []).append({"action":"prune_orphan_mappings","fields":pruned})
             self.hass.async_create_task(self.registry.async_save())
+        # Snapshot configuration after any legacy cleanup. ``self.mappings``
+        # returns a defensive copy, so keeping one refresh-local copy removes
+        # dozens of redundant allocations from the hot path.
+        mappings = dict(mappings_ref)
         mapped={}; invalid={}; missing=[]
         for field in self.FIELD_RULES:
-            entity_id=self.mappings.get(field)
+            entity_id=mappings.get(field)
             if not entity_id: missing.append(field); continue
             result=self.validate(field,entity_id)
             if result["status"]=="valid":
@@ -182,17 +266,18 @@ class EnergyMappingEngine:
                 result["value"] = value
                 result["reason"]="manual registry mapping"; mapped[field]=result
             else: invalid[field]=result
-        source_catalog = self._source_catalog(mapped)
-        self.last={"status":"Ready" if not invalid else "Warning","mapped_count":len(mapped),"missing_count":len(missing),"invalid_count":len(invalid),"mapped":mapped,"invalid":invalid,"missing":missing,"mappings":self.mappings,"mapping_options":self.mapping_options,"fields":list(self.FIELD_RULES),"source_catalog":source_catalog,"source_model_version":"source_first_v1","suggestions":{f:self.suggestions(f,3) for f in self.FIELD_RULES},"last_test":self.last_test,"summary":f"Using {len(mapped)} manually saved mapping(s); discovery suggestions are never activated automatically.","safety":"Read-only mapping. Manual save only. No device control."}
+        source_catalog = self._source_catalog(mapped, mappings)
+        frontend_suggestions = self._frontend_suggestions(3)
+        self.last={"status":"Ready" if not invalid else "Warning","mapped_count":len(mapped),"missing_count":len(missing),"invalid_count":len(invalid),"mapped":mapped,"invalid":invalid,"missing":missing,"mappings":mappings,"mapping_options":mapping_options,"fields":list(self.FIELD_RULES),"source_catalog":source_catalog,"source_model_version":"source_first_v1","suggestions":frontend_suggestions,"last_test":self.last_test,"summary":f"Using {len(mapped)} manually saved mapping(s); discovery suggestions are never activated automatically.","safety":"Read-only mapping. Manual save only. No device control."}
         # Recorder-safe public payload. Full validation details and candidate lists remain
         # in runtime memory and are generated on demand by the Energy Sources page.
         self.public_last={
             "status": self.last["status"],
-            "configured": bool(self.mappings),
+            "configured": bool(mappings),
             "mapped_count": len(mapped),
             "missing_count": len(missing),
             "invalid_count": len(invalid),
-            "mappings": self.mappings,
+            "mappings": mappings,
             "missing_fields": missing,
             "invalid_fields": list(invalid),
             "field_count": len(self.FIELD_RULES),

@@ -170,6 +170,13 @@ class EnergyFlowEngine:
         grid_options = mapping.get("mapping_options", {})
         grid_mode = grid_options.get("grid_mode", "bidirectional" if grid_power is not None else "separate")
         grid_sign = grid_options.get("grid_power_sign", "positive_import")
+        # v15.0.6: explicit separate import/export mappings are authoritative when
+        # present. Both channels are positive magnitudes in Home Assistant, so they
+        # must not be hidden behind an older saved bidirectional mode when users map
+        # both styles at the same time. This keeps Overview/Welcome and Diagnostics
+        # on the same canonical flow evidence.
+        if grid_import is not None or grid_export is not None:
+            grid_mode = "separate"
         if grid_mode == "bidirectional" and grid_power is not None:
             grid_import = None
             grid_export = None
@@ -190,6 +197,12 @@ class EnergyFlowEngine:
         mapped_battery_power = self._value(mapped, "battery_power")
         mapped_battery_charge = self._value(mapped, "battery_charge_power")
         mapped_battery_discharge = self._value(mapped, "battery_discharge_power")
+        # v15.0.6: when dedicated charge/discharge channels are mapped, use those
+        # positive-magnitude channels as the canonical battery direction evidence.
+        # This also covers installations that still have a combined battery sensor
+        # mapped from an earlier configuration.
+        if mapped_battery_charge is not None or mapped_battery_discharge is not None:
+            battery_mode = "separate"
         battery_dc_current = self._value(mapped, "battery_dc_current")
         battery_dc_voltage = self._value(mapped, "battery_dc_voltage")
         devices_cfg = (self.registry.data.get("devices", []) if self.registry else [])
@@ -217,12 +230,20 @@ class EnergyFlowEngine:
         else:
             raw_battery_power = mapped_battery_power if mapped_battery_power is not None else device_totals.get("battery")
             if battery_sign == "unsigned_magnitude":
-                # Magnitude-only sensors contain no directional evidence. Keep the
-                # raw magnitude diagnostic-only and withhold canonical directional
-                # battery flows so House Power cannot be distorted by a guess.
-                battery_power = None
-                battery_charge = None
-                battery_discharge = None
+                # Magnitude-only sensors contain no directional evidence while the
+                # battery is moving power. At a genuine zero/idle reading, however,
+                # direction is irrelevant: both charge and discharge are safely 0 W.
+                # Publishing that idle state lets House Power use the normal energy
+                # balance fallback instead of becoming unavailable just because an
+                # unsigned bidirectional battery sensor is mapped.
+                if raw_battery_power is not None and abs(float(raw_battery_power)) <= 1.0:
+                    battery_power = 0.0
+                    battery_charge = 0.0
+                    battery_discharge = 0.0
+                else:
+                    battery_power = None
+                    battery_charge = None
+                    battery_discharge = None
             else:
                 normalized_battery = raw_battery_power if battery_sign == "positive_discharge" else (-raw_battery_power if raw_battery_power is not None else None)
                 battery_charge = abs(normalized_battery) if normalized_battery is not None and normalized_battery < 0 else 0.0
@@ -254,7 +275,12 @@ class EnergyFlowEngine:
         flexible_known_load = sum(v for v in [ev_power, heat_pump_power, water_heater_power] if v is not None)
 
         house_source = "measured" if house is not None else "unavailable"
-        battery_direction_ambiguous = battery_mode == "bidirectional" and battery_sign == "unsigned_magnitude" and raw_battery_power is not None
+        battery_direction_ambiguous = (
+            battery_mode == "bidirectional"
+            and battery_sign == "unsigned_magnitude"
+            and raw_battery_power is not None
+            and abs(float(raw_battery_power)) > 1.0
+        )
         if house is None and solar is not None and (grid_import is not None or grid_export is not None):
             if battery_direction_ambiguous:
                 # Without battery direction, the energy-balance equation has two
@@ -354,7 +380,11 @@ class EnergyFlowEngine:
             "battery_sign_explicitly_configured": battery_sign_configured,
             "battery_direction": "ambiguous" if battery_direction_ambiguous else "discharging" if (battery_discharge or 0.0) > 0 else "charging" if (battery_charge or 0.0) > 0 else "idle",
             "battery_direction_ambiguous": battery_direction_ambiguous,
-            "battery_accounting_status": "ambiguous_direction" if battery_direction_ambiguous else "direction_known",
+            "battery_accounting_status": (
+                "ambiguous_direction" if battery_direction_ambiguous
+                else "idle_unsigned_safe" if battery_mode == "bidirectional" and battery_sign == "unsigned_magnitude" and raw_battery_power is not None
+                else "direction_known"
+            ),
             "battery_power_magnitude_w": abs(raw_battery_power) if battery_mode == "bidirectional" and raw_battery_power is not None else None,
             "battery_dc_current_a": battery_dc_current,
             "battery_dc_voltage_v": battery_dc_voltage,

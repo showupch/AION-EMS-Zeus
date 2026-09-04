@@ -36,7 +36,7 @@ class DeviceEnergyAttributionEngine:
         self.device_analytics = device_analytics
         self.last: dict[str, Any] = {
             "status": "Waiting", "engine": "Device Energy Attribution Engine",
-            "version": "1.13", "devices": [], "periods": {},
+            "version": "1.14", "devices": [], "periods": {},
         }
 
     @staticmethod
@@ -216,26 +216,74 @@ class DeviceEnergyAttributionEngine:
         return row
 
     def _registered_loads(self) -> list[dict[str, Any]]:
-        """Return DEA loads with registry self-healing and inverter exclusion."""
-        registry_loads = [
-            d for d in list(self.registry.data.get("devices", []) or [])
-            if self._is_consuming_load(d) and d.get("power_entity")
-        ]
-        registry_by_id = {str(d.get("id")): d for d in registry_loads if d.get("id") is not None}
+        """Return all registered consuming loads that carry measured evidence.
 
-        analytics_rows = list((self.device_analytics.summary() or {}).get("devices", []) or [])
-        analytics_rows = [d for d in analytics_rows if self._is_consuming_load(d) and d.get("power_entity")]
-        analytics_by_id = {str(d.get("id")): d for d in analytics_rows if d.get("id") is not None}
+        Room assignment is presentation metadata and is never an eligibility
+        requirement. A registered load is DEA-visible when it has either a
+        mapped power sensor or a mapped energy sensor. This is important for
+        Home Assistant Energy imported devices such as EV chargers, where the
+        energy meter is authoritative even if Recorder power history is still
+        warming up.
+        """
+        def load_key(device: dict[str, Any]) -> str:
+            explicit = str(device.get("id") or "").strip()
+            if explicit:
+                return explicit
+            # Older/imported registry rows may not yet have a stable Zeus id.
+            # Use measured identity locally so they are not silently dropped.
+            return str(
+                device.get("energy_entity")
+                or device.get("power_entity")
+                or device.get("name")
+                or device.get("friendly_name")
+                or ""
+            ).strip()
 
-        # Device Analytics can be stale/empty directly after an integration reload.
-        # Refresh it synchronously from the already-loaded registry before falling
-        # back to registry rows.
+        registry_loads = []
+        for raw in list(self.registry.data.get("devices", []) or []):
+            if not self._is_consuming_load(raw):
+                continue
+            if not (raw.get("power_entity") or raw.get("energy_entity")):
+                continue
+            device = dict(raw)
+            key = load_key(device)
+            if not key:
+                continue
+            device.setdefault("id", key)
+            registry_loads.append(device)
+
+        registry_by_id = {load_key(d): d for d in registry_loads if load_key(d)}
+
+        analytics_rows = []
+        for raw in list((self.device_analytics.summary() or {}).get("devices", []) or []):
+            if not self._is_consuming_load(raw):
+                continue
+            if not (raw.get("power_entity") or raw.get("energy_entity")):
+                continue
+            device = dict(raw)
+            key = load_key(device)
+            if not key:
+                continue
+            device.setdefault("id", key)
+            analytics_rows.append(device)
+        analytics_by_id = {load_key(d): d for d in analytics_rows if load_key(d)}
+
         if registry_by_id and set(registry_by_id) - set(analytics_by_id):
             try:
                 self.device_analytics.refresh()
-                analytics_rows = list((self.device_analytics.summary() or {}).get("devices", []) or [])
-                analytics_rows = [d for d in analytics_rows if self._is_consuming_load(d) and d.get("power_entity")]
-                analytics_by_id = {str(d.get("id")): d for d in analytics_rows if d.get("id") is not None}
+                analytics_rows = []
+                for raw in list((self.device_analytics.summary() or {}).get("devices", []) or []):
+                    if not self._is_consuming_load(raw):
+                        continue
+                    if not (raw.get("power_entity") or raw.get("energy_entity")):
+                        continue
+                    device = dict(raw)
+                    key = load_key(device)
+                    if not key:
+                        continue
+                    device.setdefault("id", key)
+                    analytics_rows.append(device)
+                analytics_by_id = {load_key(d): d for d in analytics_rows if load_key(d)}
             except Exception as err:
                 _LOGGER.warning("DEA device analytics self-heal failed: %s", err)
 
@@ -243,13 +291,8 @@ class DeviceEnergyAttributionEngine:
         for did, registered in registry_by_id.items():
             analytics = analytics_by_id.get(did)
             if analytics is None:
-                result.append(self._fallback_device_row(registered))
+                merged = self._fallback_device_row(registered)
             else:
-                # Device Analytics supplies the calculated period-energy fields,
-                # but Registry owns the entity mappings.  The previous merge order
-                # allowed stale/None analytics mapping fields to overwrite valid
-                # registry power_entity / energy_entity values, which excluded
-                # otherwise valid flexible loads from DEA history collection.
                 merged = {**registered, **analytics}
                 for mapping_key in (
                     "power_entity", "energy_entity", "temperature_entity",
@@ -258,19 +301,25 @@ class DeviceEnergyAttributionEngine:
                     registry_value = registered.get(mapping_key)
                     if registry_value:
                         merged[mapping_key] = registry_value
-                # Keep the registry classification where it exists as well; this
-                # prevents stale analytics metadata from reclassifying a load.
                 for classification_key in ("type", "category", "role", "device_class"):
                     registry_value = registered.get(classification_key)
                     if registry_value:
                         merged[classification_key] = registry_value
-                result.append(merged)
+            merged["id"] = did
+            merged["dea_eligibility"] = (
+                "power+energy" if merged.get("power_entity") and merged.get("energy_entity")
+                else "power" if merged.get("power_entity")
+                else "energy"
+            )
+            result.append(merged)
         return result
 
     async def async_refresh(self) -> dict[str, Any]:
         registry_devices = list(self.registry.data.get("devices", []) or [])
         registry_with_power = [d for d in registry_devices if d.get("power_entity")]
-        registry_consuming = [d for d in registry_with_power if self._is_consuming_load(d)]
+        registry_with_energy = [d for d in registry_devices if d.get("energy_entity")]
+        registry_with_evidence = [d for d in registry_devices if d.get("power_entity") or d.get("energy_entity")]
+        registry_consuming = [d for d in registry_with_evidence if self._is_consuming_load(d)]
         devices = self._registered_loads()
         sources = self._source_entities()
         required_sources = [x for x in sources.values() if x]
@@ -286,7 +335,7 @@ class DeviceEnergyAttributionEngine:
             start = window.start
             if start is None:
                 start = dt_util.start_of_local_day(now - timedelta(days=days-1))
-            entity_ids = required_sources + [str(d.get("power_entity")) for d in devices]
+            entity_ids = required_sources + [str(d.get("power_entity")) for d in devices if d.get("power_entity")]
             seconds = {"5minute": 300, "15minute": 900, "hour": 3600}.get(resolution, 3600)
             try:
                 aligned, history_diagnostics = await self._history_power(entity_ids, start, now, seconds)
@@ -540,7 +589,7 @@ class DeviceEnergyAttributionEngine:
         payload_devices = list(per_device.values())
         self.last = {
             "status": "Ready" if payload_devices else "Waiting",
-            "engine": "Device Energy Attribution Engine", "version": "1.13",
+            "engine": "Device Energy Attribution Engine", "version": "1.14",
             "generated_at": now.isoformat(), "devices": payload_devices,
             "periods": period_payload,
             "method": "Recorder state-history power timing on exact calendar windows; registered-device power is reconciled to measured whole-home demand at each aligned timestamp before energy integration and source allocation.",
@@ -548,6 +597,8 @@ class DeviceEnergyAttributionEngine:
             "registry_diagnostics": {
                 "registered_total": len(registry_devices),
                 "registered_with_power_entity": len(registry_with_power),
+                "registered_with_energy_entity": len(registry_with_energy),
+                "registered_with_measurement_evidence": len(registry_with_evidence),
                 "classified_consuming_loads": len(registry_consuming),
                 "dea_load_rows": len(devices),
             },

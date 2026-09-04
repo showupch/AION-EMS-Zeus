@@ -580,3 +580,36 @@ remove_switch_hub_device:
       name: Device ID
       required: true
       selector: {text: null}
+
+
+set_energy_prices:
+  name: Set Energy Prices
+  description: Import timestamped dynamic electricity import prices from a Home Assistant automation (for example Nord Pool or ENTSO-E).
+  fields:
+    prices:
+      name: Prices
+      description: List of start/end/price objects. Timestamps must include a timezone offset.
+      required: true
+      selector: {object: null}
+    currency:
+      name: Currency
+      required: false
+      default: EUR
+      selector: {text: null}
+    price_unit:
+      name: Price unit
+      description: Unit used by the incoming price values.
+      required: false
+      default: MWh
+      selector:
+        select:
+          options: [MWh, kWh, Wh]
+    source:
+      name: Source
+      required: false
+      default: Home Assistant automation
+      selector: {text: null}
+
+clear_dynamic_tariff:
+  name: Clear Dynamic Tariff
+  description: Remove the imported dynamic price schedule. Existing fixed export tariff settings are preserved.

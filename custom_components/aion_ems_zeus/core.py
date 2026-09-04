@@ -451,9 +451,22 @@ class AionCore:
                 continue
             for key in (
                 "power_entity",
+                # Registered inverter activity can use a dedicated true-PV
+                # power source (especially Hybrid inverters). Watch it live so
+                # Timeline start/stop transitions do not wait for another
+                # unrelated entity update.
+                "solar_power_entity",
                 "energy_entity",
                 "state_entity",
                 "availability_entity",
+                # Heat Pump Timeline / circuit activity evidence. Split Heat
+                # Pumps can have no aggregate power_entity, so these sources
+                # must participate in the event-driven live refresh path.
+                "heating_electrical_power_entity",
+                "dhw_electrical_power_entity",
+                "cooling_electrical_power_entity",
+                "compressor_state_entity",
+                "compressor_activity_entity",
                 # Smart Control / simulator evidence must be watched live so
                 # safety decisions never wait for the slower decision cadence.
                 "control_entity",
@@ -535,10 +548,22 @@ class AionCore:
         self.performance["decision_refreshes"] = int(self.performance.get("decision_refreshes", 0)) + 1
         self.performance["last_decision_duration_ms"] = round((completed - started).total_seconds() * 1000, 1)
         self.performance["last_decision_refresh"] = completed.isoformat()
+        # The decision cadence must advance regardless of who requested the
+        # refresh (live pipeline, auto-capture, startup recovery, or explicit
+        # snapshot). Previously only one caller advanced this timestamp, so a
+        # full decision pass could be repeated again on the very next source
+        # event. Centralizing it here removes that duplicate heavy work.
+        self._last_decision_refresh = completed
         # QA is user-triggered to avoid filesystem and registry checks every minute.
 
-    def refresh_live_pipeline(self, *, force_decisions: bool = False) -> None:
-        """Refresh only live energy immediately; defer heavier engines."""
+    def refresh_live_pipeline(
+        self, *, force_decisions: bool = False, defer_decisions: bool = False
+    ) -> None:
+        """Refresh live energy immediately while keeping heavy work on cadence.
+
+        ``defer_decisions`` is used by capture workflows that need to refresh
+        weather/Recorder evidence first and then run exactly one decision pass.
+        """
         started = datetime.now(timezone.utc)
         self.energy_engine.refresh()
         self.data_bus.refresh()
@@ -572,13 +597,15 @@ class AionCore:
             self._last_quality_refresh = now
 
         decision_due = (
-            force_decisions
-            or self._last_decision_refresh is None
-            or now - self._last_decision_refresh >= self._decision_refresh_interval
+            not defer_decisions
+            and (
+                force_decisions
+                or self._last_decision_refresh is None
+                or now - self._last_decision_refresh >= self._decision_refresh_interval
+            )
         )
         if decision_due:
             self._refresh_decision_and_api_engines()
-            self._last_decision_refresh = now
 
         completed = datetime.now(timezone.utc)
         self.performance["live_refreshes"] = int(self.performance.get("live_refreshes", 0)) + 1
@@ -599,7 +626,10 @@ class AionCore:
     async def async_capture_pipeline_snapshot(self) -> None:
         # Refresh live measurements first, then retrieve modern HA future weather
         # before decision engines calculate the forecast.
-        self.refresh_live_pipeline(force_decisions=False)
+        # Capture needs fresh weather/Recorder evidence before decisions. Defer
+        # the normal live-pipeline decision cadence here so this workflow performs
+        # one heavyweight decision pass instead of potentially two back-to-back.
+        self.refresh_live_pipeline(force_decisions=False, defer_decisions=True)
         self.weather.refresh()
         if hasattr(self.weather, "async_refresh_forecast"):
             await self.weather.async_refresh_forecast()

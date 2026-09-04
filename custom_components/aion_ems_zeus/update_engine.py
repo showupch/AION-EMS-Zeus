@@ -17,10 +17,10 @@ class UpdateEngine:
     """Refresh Zeus when mapped Home Assistant source entities change."""
 
     # v14.8.4-rc.7: keep derived flow sensors close to the source snapshot.
-    # A short burst-coalescing window lets solar/grid/battery updates settle,
-    # then one refresh reads all current HA states together.
-    DEBOUNCE_SECONDS = 2.0
-    MIN_REFRESH_SECONDS = 2.0
+    # A short burst-coalescing window lets related solar/grid/battery updates settle
+    # while keeping event-to-snapshot latency sub-second on normal HA state bursts.
+    DEBOUNCE_SECONDS = 0.45
+    MIN_REFRESH_SECONDS = 0.45
     SAFETY_REFRESH_SECONDS = 900
 
     def __init__(
@@ -41,6 +41,7 @@ class UpdateEngine:
         self._pending_entity: str | None = None
         self._pending_source_changed: datetime | None = None
         self._tracked_entities: set[str] = set()
+        self._tracked_entities_snapshot: tuple[str, ...] = ()
         self._last_refresh_started: datetime | None = None
         self._refresh_in_progress = False
         self.last: dict[str, Any] = {
@@ -77,9 +78,13 @@ class UpdateEngine:
             self._unsub_state()
             self._unsub_state = None
         self._tracked_entities = tracked
-        if tracked:
+        self._tracked_entities_snapshot = tuple(sorted(tracked))
+        if self._tracked_entities_snapshot:
+            # Reuse the canonical sorted snapshot for the subscription instead of
+            # sorting the same entity set a second time. Mapping changes are rare,
+            # but keeping this path allocation-light makes recovery/reload cheaper.
             self._unsub_state = async_track_state_change_event(
-                self.hass, sorted(tracked), self._handle_state_changed
+                self.hass, self._tracked_entities_snapshot, self._handle_state_changed
             )
         self._update_tracking_stats()
 
@@ -117,7 +122,6 @@ class UpdateEngine:
                 return
         self._pending_entity = entity_id
         self._pending_source_changed = getattr(new_state, "last_updated", None)
-        self._update_tracking_stats()
 
         if self._unsub_debounce is None:
             self._unsub_debounce = async_call_later(
@@ -167,7 +171,8 @@ class UpdateEngine:
                     round((completed - source_changed).total_seconds() * 1000, 1),
                 )
             self.last["status"] = "Running"
-            self._update_tracking_stats()
+            # Tracking metadata only changes when subscriptions change. Avoid
+            # rebuilding/copying it on every live source refresh.
             self.event_bus.publish(
                 "UpdateEngineRefreshed",
                 "UpdateEngine",
@@ -189,7 +194,7 @@ class UpdateEngine:
 
     def _update_tracking_stats(self) -> None:
         self.last["tracked_entity_count"] = len(self._tracked_entities)
-        self.last["tracked_entities"] = sorted(self._tracked_entities)
+        self.last["tracked_entities"] = list(self._tracked_entities_snapshot)
 
     def summary(self) -> dict[str, Any]:
         self._update_tracking_stats()

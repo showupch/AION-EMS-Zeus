@@ -160,6 +160,22 @@ class SwitchHubEngine:
         remaining_pool_w = effective_surplus_w
         result_rows: list[dict[str, Any]] = []
 
+        # A configured Solar threshold is also the minimum live export reserve
+        # while a stage is running. If live export falls below that floor, shed
+        # only the highest active Solar stage, then re-evaluate on the next loop.
+        # One-at-a-time shedding prevents multiple loads from dropping together
+        # on a transient measurement.
+        shed_key = None
+        for item in reversed(prepared):
+            if (
+                item["enabled"]
+                and item["trigger"] == "surplus"
+                and item["actual_on"]
+                and export_w + 1.0 < item["required_w"]
+            ):
+                shed_key = item["key"]
+                break
+
         # Stable registry order is the staging priority. Each eligible SOLAR load
         # reserves its configured requirement from the pool before the next load
         # is considered. This makes 1000 W / 1500 W / 2500 W stages deterministic.
@@ -192,19 +208,55 @@ class SwitchHubEngine:
                     )
                 else:
                     available_for_device_w = remaining_pool_w
-                    desired_on = import_w <= 1.0 and remaining_pool_w + 1.0 >= required_w
-                    if desired_on:
+
+                    if key == shed_key:
+                        desired_on = False
+                        reason = (
+                            f"SOLAR stage {stage_position} release · live grid export "
+                            f"{export_w:.0f} W is below the configured {required_w:.0f} W "
+                            f"minimum surplus. Highest active stage is shed first."
+                        )
+                    elif actual_on:
+                        # Lower-priority active stages are held for this cycle if
+                        # another higher stage is being shed. The next evaluation
+                        # uses the new live export and decides again.
+                        desired_on = True
                         remaining_pool_w = max(0.0, remaining_pool_w - required_w)
-                        reason = (
-                            f"SOLAR stage {stage_position} allocated {required_w:.0f} W · "
-                            f"{available_for_device_w:.0f} W available before this stage · "
-                            f"{remaining_pool_w:.0f} W remains."
-                        )
+                        if shed_key:
+                            reason = (
+                                f"SOLAR stage {stage_position} held while a higher stage is "
+                                f"released; live export will be re-evaluated next cycle."
+                            )
+                        else:
+                            reason = (
+                                f"SOLAR stage {stage_position} held · live export "
+                                f"{export_w:.0f} W is at/above the {required_w:.0f} W minimum."
+                            )
                     else:
-                        reason = (
-                            f"SOLAR stage {stage_position} waiting for {required_w:.0f} W · "
-                            f"{available_for_device_w:.0f} W remains available."
+                        # Starting a new load must leave the same configured
+                        # minimum surplus behind after its allocation. This
+                        # avoids a 600 W stage repeatedly starting at 600–1199 W
+                        # export and then immediately violating its 600 W floor.
+                        start_required_w = required_w * 2.0
+                        desired_on = (
+                            import_w <= 1.0
+                            and remaining_pool_w + 1.0 >= start_required_w
                         )
+                        if desired_on:
+                            remaining_pool_w = max(0.0, remaining_pool_w - required_w)
+                            reason = (
+                                f"SOLAR stage {stage_position} allocated {required_w:.0f} W · "
+                                f"{available_for_device_w:.0f} W available before this stage · "
+                                f"{remaining_pool_w:.0f} W remains above the "
+                                f"{required_w:.0f} W minimum reserve."
+                            )
+                        else:
+                            reason = (
+                                f"SOLAR stage {stage_position} waiting · "
+                                f"{available_for_device_w:.0f} W available; "
+                                f"{start_required_w:.0f} W is required to start and preserve "
+                                f"the {required_w:.0f} W minimum surplus."
+                            )
 
                 if desired_on != actual_on and self._cooldown_ready(key, now_utc):
                     service = "turn_on" if desired_on else "turn_off"
@@ -247,7 +299,7 @@ class SwitchHubEngine:
             "devices": result_rows[:30],
             "updated_at": now_utc.isoformat(),
             "anti_chatter_seconds": self.MIN_ACTION_INTERVAL_SECONDS,
-            "solar_staging": "Registry order is priority; each SOLAR device reserves its configured surplus requirement.",
+            "solar_staging": "Registry order is priority; configured surplus is the live minimum reserve. Highest active stage sheds first below its floor; new stages start only when their allocation can leave that reserve intact.",
             "safety": "Only explicitly enabled Switch Hub devices may be controlled.",
         }
         return self.last

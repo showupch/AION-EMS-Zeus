@@ -179,6 +179,61 @@ class DataQualityEngine:
             power = self._validate_entity("Power", device.get("power_entity"), "power", now)
             energy = self._validate_entity("Energy", device.get("energy_entity"), "energy", now)
 
+            # v14.8.10.7: Heat Pumps may expose electrical input as separate
+            # Space Heating / DHW (and optional Cooling) channels instead of a
+            # whole-unit Power/Energy entity. Treat those classified channels as
+            # authoritative device-health evidence rather than reporting a false
+            # 0% Error for an otherwise healthy Heat Pump.
+            if str(device.get("type") or "") == "heat_pump" and bool(device.get("separate_heating_dhw_measurements", False)):
+                def _split_health(kind: str, keys: tuple[str, ...]) -> dict[str, Any] | None:
+                    entity_ids = [str(device.get(key) or "").strip() for key in keys]
+                    entity_ids = [entity_id for entity_id in entity_ids if entity_id]
+                    if not entity_ids:
+                        return None
+                    checks = [self._validate_entity(kind.title(), entity_id, kind, now) for entity_id in entity_ids]
+                    score = round(sum(item.get("score", 0) for item in checks) / len(checks))
+                    statuses = [str(item.get("status") or "") for item in checks]
+                    issues = sorted({issue for item in checks for issue in (item.get("issues") or [])})
+                    status = (
+                        "Error" if score < 50 else
+                        "Warning" if issues else
+                        "Delayed" if "Delayed" in statuses else
+                        "Unavailable" if "Unavailable" in statuses else
+                        "Sleeping" if kind == "energy" and "Sleeping" in statuses else
+                        "Idle" if kind == "power" and all(x in {"Idle", "Healthy"} for x in statuses) and "Idle" in statuses else
+                        "Healthy"
+                    )
+                    return {
+                        "label": f"{kind.title()} (split)",
+                        "entity_id": None,
+                        "source_entities": entity_ids,
+                        "score": score,
+                        "status": status,
+                        "issues": issues,
+                        "applicable": True,
+                        "recommendation": "Split Heat Pump electrical mappings are used for device health.",
+                    }
+
+                power_keys = ["heating_electrical_power_entity", "dhw_electrical_power_entity"]
+                energy_keys = ["heating_electrical_energy_entity", "dhw_electrical_energy_entity"]
+                if bool(device.get("cooling_measurements_enabled", False)):
+                    power_keys.append("cooling_electrical_power_entity")
+                    energy_keys.append("cooling_electrical_energy_entity")
+                split_power = _split_health("power", tuple(power_keys))
+                split_energy = _split_health("energy", tuple(energy_keys))
+                if not str(device.get("power_entity") or "").strip():
+                    if split_power is not None:
+                        power = split_power
+                    else:
+                        power["applicable"] = False
+                        power["status"] = "Not applicable"
+                if not str(device.get("energy_entity") or "").strip():
+                    if split_energy is not None:
+                        energy = split_energy
+                    else:
+                        energy["applicable"] = False
+                        energy["status"] = "Not applicable"
+
             # Device-health authority:
             # - End-use loads require Power + Energy.
             # - Generation/source/meter devices use cumulative Energy as the
@@ -188,8 +243,12 @@ class DataQualityEngine:
             #   If optional Power is healthy we still display it; if not, it is
             #   explicitly marked N/A rather than creating a false 50% warning.
             if consuming_load:
-                power["applicable"] = True
-                energy["applicable"] = True
+                if not (str(device.get("type") or "") == "heat_pump" and bool(device.get("separate_heating_dhw_measurements", False))):
+                    power["applicable"] = True
+                    energy["applicable"] = True
+                else:
+                    power.setdefault("applicable", True)
+                    energy.setdefault("applicable", True)
             else:
                 power["applicable"] = bool(power.get("score", 0) > 0)
                 energy["applicable"] = True

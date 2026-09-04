@@ -121,7 +121,7 @@ class IntegrationHub:
         groups = {}
 
         # First pass: identify real inverter devices directly from Device Registry.
-        for device in getattr(device_reg, "devices", {}).values():
+        for device in device_reg.devices:
             identifiers = flatten(getattr(device, "identifiers", None))
             connections = flatten(getattr(device, "connections", None))
             device_entries = [entry for entry in entries if getattr(entry, "device_id", None) == device.id]

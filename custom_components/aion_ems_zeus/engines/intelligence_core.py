@@ -483,6 +483,86 @@ class PredictiveBatteryOptimizer:
         elif solar_ratio < .65:
             strategy, reason, action = "Preserve energy for weak solar", "Tomorrow's expected solar is low compared with learned demand.", "Protect reserve"
 
+        # Build a calendar-tomorrow advisory plan from the same learned 48-hour
+        # simulation. This is deliberately descriptive: many inverter-managed
+        # batteries (including common hybrid systems) expose monitoring but no
+        # safe real-time command surface to Home Assistant. Zeus therefore
+        # learns and predicts first, and never assumes control capability.
+        tomorrow_date = datetime.now().astimezone().date() + timedelta(days=1)
+        tomorrow_rows = []
+        for item in timeline:
+            stamp = self._dt(item.get("time"))
+            if stamp is not None and stamp.astimezone().date() == tomorrow_date:
+                tomorrow_rows.append(item)
+
+        def phase_kind(item: dict[str, Any]) -> str:
+            power = self._num(item.get("recommended_battery_power_w"))
+            action_text = str(item.get("action") or "").lower()
+            if power > 25 or "charge from" in action_text:
+                return "Charge expected"
+            if power < -25 or "discharge" in action_text:
+                return "Discharge expected"
+            return "Hold / reserve"
+
+        phases: list[dict[str, Any]] = []
+        for item in tomorrow_rows:
+            stamp = self._dt(item.get("time"))
+            if stamp is None:
+                continue
+            local_start = stamp.astimezone()
+            kind = phase_kind(item)
+            if phases and phases[-1]["kind"] == kind and phases[-1]["end"] == local_start.isoformat():
+                phases[-1]["end"] = (local_start + timedelta(hours=1)).isoformat()
+                phases[-1]["solar_kwh"] += self._num(item.get("solar_power_w")) / 1000
+                phases[-1]["home_kwh"] += self._num(item.get("home_power_w")) / 1000
+                phases[-1]["battery_kwh"] += abs(self._num(item.get("recommended_battery_power_w"))) / 1000
+                phases[-1]["end_soc_percent"] = item.get("projected_soc_percent")
+            else:
+                phases.append({
+                    "kind": kind,
+                    "start": local_start.isoformat(),
+                    "end": (local_start + timedelta(hours=1)).isoformat(),
+                    "solar_kwh": self._num(item.get("solar_power_w")) / 1000,
+                    "home_kwh": self._num(item.get("home_power_w")) / 1000,
+                    "battery_kwh": abs(self._num(item.get("recommended_battery_power_w"))) / 1000,
+                    "start_soc_percent": item.get("start_soc_percent"),
+                    "end_soc_percent": item.get("projected_soc_percent"),
+                })
+        for phase in phases:
+            for key in ("solar_kwh", "home_kwh", "battery_kwh"):
+                phase[key] = round(self._num(phase.get(key)), 2)
+
+        learning_state = self.learning.summary() or {}
+        learning_confidence = self._num(learning_state.get("confidence_percent"), 0)
+        tomorrow_solar_kwh = sum(self._num(x.get("solar_power_w")) for x in tomorrow_rows) / 1000
+        tomorrow_home_kwh = sum(self._num(x.get("home_power_w")) for x in tomorrow_rows) / 1000
+        tomorrow_grid_kwh = sum(max(0.0, self._num(x.get("projected_grid_power_w"))) for x in tomorrow_rows) / 1000
+        tomorrow_plan = {
+            "status": "Ready" if tomorrow_rows else "Collecting",
+            "date": tomorrow_date.isoformat(),
+            "mode": "inverter_managed_advisory",
+            "control_capability": "Advisory only",
+            "control_note": "Zeus does not assume that the inverter or battery can accept real-time commands.",
+            "expected_solar_kwh": round(tomorrow_solar_kwh, 2),
+            "expected_home_kwh": round(tomorrow_home_kwh, 2),
+            "expected_grid_import_kwh": round(tomorrow_grid_kwh, 2),
+            "start_soc_percent": tomorrow_rows[0].get("start_soc_percent") if tomorrow_rows else None,
+            "end_soc_percent": tomorrow_rows[-1].get("projected_soc_percent") if tomorrow_rows else None,
+            "recommended_reserve_percent": round(dynamic_reserve, 1),
+            "phases": phases,
+            "learning": {
+                "history_days": learning_state.get("history_days", 0),
+                "history_months": learning_state.get("history_months", 0),
+                "confidence_percent": round(learning_confidence, 1),
+                "learned_home_day_kwh": round(learned_home, 2) if learned_home else None,
+                "summary": learning_state.get("summary") or "Learning evidence is still collecting.",
+            },
+            "forecast_confidence_percent": round(confidence, 1),
+            "confidence_percent": round(max(0.0, min(96.0, confidence * .65 + learning_confidence * .35)), 1),
+            "learning_cycle": "Observe → Learn → Predict → Recommend → Verify → Improve",
+            "safety": "Recommendation only. No battery or inverter command is sent.",
+        }
+
         estimated_saving = avoided_import_kwh * import_rate - avoided_import_kwh * export_rate if tariff_enabled else None
         cycle_throughput = sum(abs(self._num(x.get("recommended_battery_power_w"))) for x in timeline) / 1000
         equivalent_cycles = cycle_throughput / max(2 * capacity, .01)
@@ -529,6 +609,7 @@ class PredictiveBatteryOptimizer:
             "currency": currency, "tariff_aware": tariff_enabled,
             "estimated_equivalent_cycles": round(equivalent_cycles, 3),
             "battery_config": config,
+            "tomorrow_plan": tomorrow_plan,
             "battery_evidence_diagnostics": {
                 "configured": config.get("configured"),
                 "device_id": config.get("device_id"),

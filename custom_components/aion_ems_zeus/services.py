@@ -58,6 +58,8 @@ from .const import (
     SERVICE_CLEAR_WEATHER_SOURCE,
     SERVICE_SAVE_TARIFF_SETTINGS,
     SERVICE_CLEAR_TARIFF_SETTINGS,
+    SERVICE_SET_ENERGY_PRICES,
+    SERVICE_CLEAR_DYNAMIC_TARIFF,
     SERVICE_SAVE_BATTERY_CAPACITY,
     SERVICE_SAVE_HOME_PROFILE,
     SERVICE_CLEAR_BATTERY_CAPACITY,
@@ -403,7 +405,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def run_qa_health_check(call: ServiceCall) -> None:
         core = _core(hass)
-        core.qa_diagnostics.run()
+        await core.qa_diagnostics.run()
         await _refresh_aion_entities(hass)
 
     async def create_nas_backup(call: ServiceCall) -> None:
@@ -1054,6 +1056,89 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         core.refresh_pipeline()
         await _refresh_aion_entities(hass)
 
+    async def set_energy_prices(call: ServiceCall) -> None:
+        """Import an absolute dynamic import-price schedule from a HA automation."""
+        from datetime import datetime, timezone
+
+        core = _core(hass)
+        raw_prices = list(call.data.get("prices") or [])
+        if not raw_prices:
+            raise vol.Invalid("prices must contain at least one start/end/price slot")
+        if len(raw_prices) > 400:
+            raise vol.Invalid("prices contains too many slots (maximum 400)")
+
+        currency = str(call.data.get("currency") or "EUR").strip().upper()[:4]
+        price_unit = str(call.data.get("price_unit") or "MWh").strip().lower().replace(" ", "")
+        aliases = {"mwh": "MWh", "eur/mwh": "MWh", "chf/mwh": "MWh", "kwh": "kWh", "eur/kwh": "kWh", "chf/kwh": "kWh", "wh": "Wh"}
+        unit = aliases.get(price_unit)
+        if unit is None:
+            raise vol.Invalid("price_unit must be MWh, kWh or Wh")
+        factor = 0.001 if unit == "MWh" else (1000.0 if unit == "Wh" else 1.0)
+
+        slots = []
+        for idx, raw in enumerate(raw_prices):
+            if not isinstance(raw, dict):
+                raise vol.Invalid(f"price slot {idx + 1} must be an object")
+            try:
+                start = datetime.fromisoformat(str(raw.get("start") or "").replace("Z", "+00:00"))
+                end = datetime.fromisoformat(str(raw.get("end") or "").replace("Z", "+00:00"))
+                price = float(raw.get("price"))
+            except (TypeError, ValueError) as err:
+                raise vol.Invalid(f"price slot {idx + 1} has invalid start/end/price") from err
+            if start.tzinfo is None or end.tzinfo is None:
+                raise vol.Invalid(f"price slot {idx + 1} timestamps must include a timezone offset")
+            if end <= start:
+                raise vol.Invalid(f"price slot {idx + 1} end must be after start")
+            slots.append({
+                "start": start.astimezone(timezone.utc).isoformat(),
+                "end": end.astimezone(timezone.utc).isoformat(),
+                "price": price,
+                "price_per_kwh": round(price * factor, 9),
+            })
+        slots.sort(key=lambda item: item["start"])
+        for previous, current in zip(slots, slots[1:]):
+            if current["start"] < previous["end"]:
+                raise vol.Invalid("dynamic tariff slots cannot overlap")
+
+        now = datetime.now(timezone.utc)
+        source = str(call.data.get("source") or "Home Assistant automation").strip()[:80]
+        tariff = dict(core.registry.data.setdefault("sources", {}).get("tariffs") or {})
+        tariff.update({
+            "enabled": True,
+            "currency": currency,
+            "tariff_mode": "dynamic",
+            "dynamic_prices": slots,
+            "dynamic_source": source,
+            "dynamic_input_unit": unit,
+            "dynamic_received_at": now.isoformat(),
+            "dynamic_coverage_start": slots[0]["start"],
+            "dynamic_coverage_end": slots[-1]["end"],
+            "tou_periods": [],
+        })
+        # Preserve fixed export/standing-charge settings. Dynamic data controls only import prices.
+        tariff.setdefault("export_tariff", 0.0)
+        tariff.setdefault("standing_charge", 0.0)
+        tariff.setdefault("vat_included", True)
+        tariff["import_tariff"] = next((x["price_per_kwh"] for x in slots if x["start"] <= now.isoformat() < x["end"]), slots[0]["price_per_kwh"])
+        core.registry.data.setdefault("sources", {})["tariffs"] = tariff
+        core.registry.data.setdefault("audit", []).append({"action": "set_energy_prices", "source": source, "slot_count": len(slots), "currency": currency, "price_unit": unit})
+        await core.registry.async_save()
+        core.refresh_pipeline()
+        await _refresh_aion_entities(hass)
+
+    async def clear_dynamic_tariff(call: ServiceCall) -> None:
+        core = _core(hass)
+        tariff = dict(core.registry.data.setdefault("sources", {}).get("tariffs") or {})
+        for key in ("dynamic_prices", "dynamic_source", "dynamic_input_unit", "dynamic_received_at", "dynamic_coverage_start", "dynamic_coverage_end"):
+            tariff.pop(key, None)
+        tariff["tariff_mode"] = "fixed"
+        tariff["enabled"] = bool(tariff.get("import_tariff") is not None or tariff.get("export_tariff") is not None)
+        core.registry.data.setdefault("sources", {})["tariffs"] = tariff
+        core.registry.data.setdefault("audit", []).append({"action": "clear_dynamic_tariff"})
+        await core.registry.async_save()
+        core.refresh_pipeline()
+        await _refresh_aion_entities(hass)
+
 
 
     async def save_home_profile(call: ServiceCall) -> None:
@@ -1344,6 +1429,18 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     SERVICE_SAVE_BATTERY_CAPACITY,
     SERVICE_SAVE_HOME_PROFILE,
     SERVICE_CLEAR_BATTERY_CAPACITY, clear_tariff_settings)
+    dynamic_price_schema = vol.Schema({
+        vol.Required("prices"): vol.All(cv.ensure_list, [vol.Schema({
+            vol.Required("start"): cv.string,
+            vol.Required("end"): cv.string,
+            vol.Required("price"): vol.Coerce(float),
+        }, extra=vol.ALLOW_EXTRA)]),
+        vol.Optional("currency", default="EUR"): cv.string,
+        vol.Optional("price_unit", default="MWh"): cv.string,
+        vol.Optional("source", default="Home Assistant automation"): cv.string,
+    })
+    hass.services.async_register(DOMAIN, SERVICE_SET_ENERGY_PRICES, set_energy_prices, schema=dynamic_price_schema)
+    hass.services.async_register(DOMAIN, SERVICE_CLEAR_DYNAMIC_TARIFF, clear_dynamic_tariff)
 
     hass.services.async_register(DOMAIN, SERVICE_IMPORT_DISCOVERY_CANDIDATE, import_discovery_candidate, schema=_device_schema())
 
@@ -1465,6 +1562,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     SERVICE_SAVE_BATTERY_CAPACITY,
     SERVICE_SAVE_HOME_PROFILE,
     SERVICE_CLEAR_BATTERY_CAPACITY, clear_tariff_settings)
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_ENERGY_PRICES):
+        hass.services.async_register(DOMAIN, SERVICE_SET_ENERGY_PRICES, set_energy_prices, schema=dynamic_price_schema)
+    if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_DYNAMIC_TARIFF):
+        hass.services.async_register(DOMAIN, SERVICE_CLEAR_DYNAMIC_TARIFF, clear_dynamic_tariff)
 
 
     if not hass.services.has_service(DOMAIN, SERVICE_SAVE_BATTERY_CAPACITY):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import json
 import re
+from time import monotonic
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -20,6 +21,248 @@ from .const import DOMAIN, NAME, VERSION
 
 _LOGGER = logging.getLogger(__name__)
 
+
+RECORDER_ATTRIBUTE_LIMIT_BYTES = 16384
+RECORDER_GUARD_TARGET_BYTES = 13500
+RECORDER_GUARD_MAX_ENTITY_LIST = 20
+
+
+def _json_payload_bytes(value: Any) -> int:
+    """Return a stable UTF-8 JSON size estimate for Recorder-facing data."""
+    try:
+        return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8"))
+    except Exception:
+        return len(str(value).encode("utf-8", errors="replace"))
+
+
+def _recorder_guard_stats(core) -> dict[str, Any]:
+    """Return/create lightweight runtime Recorder Guard counters."""
+    perf = getattr(core, "performance", None)
+    if not isinstance(perf, dict):
+        return {}
+    guard = perf.get("recorder_guard")
+    if not isinstance(guard, dict):
+        guard = {
+            "enabled": True,
+            "status": "Protected",
+            "limit_bytes": RECORDER_ATTRIBUTE_LIMIT_BYTES,
+            "target_bytes": RECORDER_GUARD_TARGET_BYTES,
+            "checked_updates": 0,
+            "interventions": 0,
+            "protected_entity_count": 0,
+            "protected_entities": [],
+            "largest_recordable_payload_bytes": 0,
+            "last_intervention_entity": None,
+            "last_intervention_payload_bytes": None,
+            "last_intervention_action": None,
+        }
+        perf["recorder_guard"] = guard
+    return guard
+
+
+def _apply_recorder_guard(entity: Any, attrs: dict[str, Any] | None) -> dict[str, Any]:
+    """Protect Recorder automatically while preserving the full live state.
+
+    Zeus keeps all attributes in Home Assistant's live state machine for the UI.
+    When the *recordable* subset approaches Recorder's 16 KiB attribute ceiling,
+    this guard dynamically adds the largest presentation-only attributes to the
+    entity's ``_unrecorded_attributes`` set. No Recorder/YAML configuration is
+    changed and no live Zeus data is removed.
+    """
+    payload = attrs if isinstance(attrs, dict) else {}
+
+    if not hasattr(entity, "_recorder_guard_base_unrecorded"):
+        current = getattr(entity, "_unrecorded_attributes", frozenset()) or frozenset()
+        try:
+            base = frozenset(current)
+        except TypeError:
+            base = frozenset()
+        entity._recorder_guard_base_unrecorded = base
+        entity._recorder_guard_dynamic_unrecorded = set()
+
+    base = getattr(entity, "_recorder_guard_base_unrecorded", frozenset()) or frozenset()
+    dynamic = set(getattr(entity, "_recorder_guard_dynamic_unrecorded", set()) or set())
+    stats = _recorder_guard_stats(getattr(entity, "core", None))
+    if stats:
+        stats["checked_updates"] = int(stats.get("checked_updates", 0) or 0) + 1
+
+    # MATCH_ALL means the entity is already fully protected from Recorder while
+    # remaining fully available to the live Zeus frontend.
+    if MATCH_ALL in base or MATCH_ALL in dynamic:
+        if stats:
+            stats["status"] = "Protected"
+        return payload
+
+    excluded = set(base) | dynamic
+    recordable = {key: value for key, value in payload.items() if key not in excluded}
+    recordable_bytes = _json_payload_bytes(recordable)
+    if stats:
+        stats["largest_recordable_payload_bytes"] = max(
+            int(stats.get("largest_recordable_payload_bytes", 0) or 0), recordable_bytes
+        )
+
+    if recordable_bytes <= RECORDER_GUARD_TARGET_BYTES:
+        return payload
+
+    original_bytes = recordable_bytes
+
+    # Prefer excluding the largest nested/presentation attributes first. Small
+    # scalar metadata remains recordable whenever possible.
+    ranked: list[tuple[int, str]] = []
+    for key, value in recordable.items():
+        size = _json_payload_bytes({key: value})
+        complex_bonus = 1_000_000 if isinstance(value, (dict, list, tuple, set)) else 0
+        verbose_bonus = 500_000 if isinstance(value, str) and len(value) > 512 else 0
+        ranked.append((complex_bonus + verbose_bonus + size, key))
+    ranked.sort(reverse=True)
+
+    for _rank, key in ranked:
+        dynamic.add(key)
+        recordable.pop(key, None)
+        recordable_bytes = _json_payload_bytes(recordable)
+        if recordable_bytes <= RECORDER_GUARD_TARGET_BYTES:
+            break
+
+    # Absolute fail-safe: if a set of tiny scalar attributes is somehow still
+    # oversized, exclude all attributes from Recorder. The live state remains
+    # complete and the entity state itself is still recorded.
+    if recordable_bytes > RECORDER_GUARD_TARGET_BYTES:
+        dynamic = {MATCH_ALL}
+        action = "record_state_only"
+    else:
+        action = "exclude_large_attributes"
+
+    entity._recorder_guard_dynamic_unrecorded = dynamic
+    effective = set(base) | dynamic
+    entity._unrecorded_attributes = frozenset(effective)
+
+    if stats:
+        entity_id = str(getattr(entity, "entity_id", None) or getattr(entity, "_attr_unique_id", "unknown"))
+        protected = list(stats.get("protected_entities") or [])
+        if entity_id not in protected:
+            protected.append(entity_id)
+            protected = protected[-RECORDER_GUARD_MAX_ENTITY_LIST:]
+        stats.update({
+            "status": "Protected",
+            "interventions": int(stats.get("interventions", 0) or 0) + 1,
+            "protected_entity_count": max(int(stats.get("protected_entity_count", 0) or 0), len(protected)),
+            "protected_entities": protected,
+            "last_intervention_entity": entity_id,
+            "last_intervention_payload_bytes": original_bytes,
+            "last_intervention_action": action,
+        })
+
+    if not getattr(entity, "_recorder_guard_logged", False):
+        _LOGGER.info(
+            "Recorder Guard protected %s (%s bytes; action=%s)",
+            getattr(entity, "entity_id", "Zeus entity"), original_bytes, action,
+        )
+        entity._recorder_guard_logged = True
+
+    return payload
+
+
+def _recorder_guard_attributes(core) -> dict[str, Any]:
+    """Expose compact Recorder Guard health/status diagnostics."""
+    guard = dict(_recorder_guard_stats(core) or {})
+    guard["policy"] = "Automatic internal protection; no Recorder YAML/exclusions required."
+    guard["live_data_preserved"] = True
+    guard["recorder_state_preserved"] = True
+    return guard
+
+
+def _smart_control_safety_attributes(core) -> dict[str, Any]:
+    """Return the live Smart Control safety payload from one summary snapshot.
+
+    The payload is intentionally available in Home Assistant's live state for
+    the Zeus frontend, but the dedicated sensor is excluded from Recorder so
+    large nested device/simulation detail can never breach Recorder's 16 KiB
+    state-attribute limit.
+    """
+    data = dict(core.smart_control.summary() or {})
+    devices = []
+    for d in list(data.get("devices") or []):
+        if not isinstance(d, dict):
+            continue
+        devices.append({
+            "device_id": d.get("device_id"),
+            "name": d.get("name"),
+            "type": d.get("type"),
+            "status": d.get("status"),
+            "enabled": d.get("enabled"),
+            "controllable": d.get("controllable"),
+            "control_permission": d.get("control_permission"),
+            "actuator_configured": d.get("actuator_configured"),
+            "actuator_type": d.get("actuator_type"),
+            "power_limits_w": d.get("power_limits_w"),
+            "execution_allowed": d.get("execution_allowed", False),
+            "blocked_reasons": [
+                reason for reason in list(d.get("blocked_reasons") or [])
+                if not (
+                    str(reason) == "Global safety mode is Recommendation Only."
+                    and (
+                        str(d.get("device_profile") or "") == "go_e_charger_mqtt"
+                        or str(d.get("type") or "") == "water_heater"
+                    )
+                )
+            ][:4],
+        })
+    return {
+        "status": data.get("status"),
+        "foundation_version": data.get("foundation_version"),
+        "mode": data.get("mode"),
+        "execution_path": data.get("execution_path"),
+        "automatic_control_enabled": data.get("automatic_control_enabled", False),
+        "supervised_control_enabled": data.get("supervised_control_enabled", False),
+        "recommendation_only": data.get("recommendation_only", True),
+        "fail_closed": data.get("fail_closed", True),
+        "registered_devices": data.get("registered_devices", 0),
+        "controllable_candidates": data.get("controllable_candidates", 0),
+        "permissioned_candidates": data.get("permissioned_candidates", 0),
+        "simulations": list(data.get("simulations") or []),
+        "simulation_count": data.get("simulation_count", 0),
+        "simulation_history": list(data.get("simulation_history") or [])[:8],
+        "simulation_history_count": data.get("simulation_history_count", 0),
+        "latest_simulation_transition": data.get("latest_simulation_transition"),
+        "goe_mqtt": data.get("goe_mqtt") or {},
+        "devices": devices,
+        "recorder_policy": "state_only",
+        "recorder_safe": True,
+    }
+
+
+
+def _learning_preview_attributes(core) -> dict[str, Any]:
+    """Return a compact Learning Preview payload for fast HA state updates.
+
+    The full seasonal/monthly/weekday learning model remains available from the
+    dedicated ``seasonal_analysis`` sensor and inside the learning engine.  The
+    preview entity is intentionally limited to lightweight headline fields used
+    by Overview/Advisor/Memory surfaces so Home Assistant does not repeatedly
+    normalize and serialize the complete long-term profile on every coordinator
+    refresh.
+    """
+    data = dict(core.learning.summary() or {})
+    return {
+        "status": data.get("status"),
+        "generation": data.get("generation"),
+        "history_days": data.get("history_days", 0),
+        "history_months": data.get("history_months", 0),
+        "seasonal_history_months": data.get("seasonal_history_months", data.get("history_months", 0)),
+        "confidence_percent": data.get("confidence_percent", 0),
+        "confidence_label": data.get("confidence_label"),
+        "average_day": dict(data.get("average_day") or {}),
+        "trends_30_day": dict(data.get("trends_30_day") or {}),
+        "best_solar_weekday": data.get("best_solar_weekday"),
+        "highest_load_weekday": data.get("highest_load_weekday"),
+        "recommendations": list(data.get("recommendations") or [])[:4],
+        "summary": data.get("summary"),
+        "method": data.get("method"),
+        "safety": data.get("safety"),
+        "full_profile_entity": "sensor.aion_ems_zeus_seasonal_analysis",
+        "sensor_payload": "compact_preview",
+        "recorder_safe": True,
+    }
 
 def _intelligence_memory_attributes(core) -> dict[str, Any]:
     """Expose a compact Recorder-safe Intelligence Memory sensor payload.
@@ -1102,6 +1345,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             "last_decision_duration_ms": perf.get("last_decision_duration_ms"),
             "engine_count": len(core.engine_names()),
             "engines": core.engine_names(),
+            "recorder_guard": dict(_recorder_guard_stats(core) or {}),
             "note": "Host CPU is measured by Home Assistant system entities; Zeus counters show activity, not an isolated CPU percentage.",
             "recorder_safe": True,
         }
@@ -1167,6 +1411,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     sensors = [
         SimpleSensor(coordinator, core, "Platform Status", "platform_status", "mdi:home-lightning-bolt", lambda c: "Ready", lambda c: {"version": VERSION, "status": "Zeus AI Advisor ready", "architecture": "zeus-12-1-decision-intelligence", "engines": c.engine_names(), "update_status": _update_check.get("status"), "latest_version": _update_check.get("latest_version"), "latest_channel": _update_check.get("latest_channel"), "update_available": _update_check.get("status") == "update_available", "release_url": _update_check.get("release_url"), "update_checked_at": _update_check.get("checked_at").isoformat() if _update_check.get("checked_at") else None, "update_error": _update_check.get("error")}),
         SimpleSensor(coordinator, core, "Performance Diagnostics", "performance_diagnostics", "mdi:speedometer", lambda c: c.update_engine.summary().get("status", "Running"), _performance_attributes),
+        SimpleSensor(coordinator, core, "Recorder Guard", "recorder_guard", "mdi:database-lock-outline", lambda c: _recorder_guard_stats(c).get("status", "Protected"), _recorder_guard_attributes),
         RegistrySummarySensor(coordinator, core, "Registry Summary", "registry_summary", "mdi:database-cog-outline", lambda c: c.registry.summary().get("status"), lambda c: c.registry.summary()),
         SimpleSensor(
             coordinator,
@@ -1177,93 +1422,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             lambda c: c.switch_hub.summary().get("status", "Ready"),
             lambda c: c.switch_hub.summary(),
         ),
-        SimpleSensor(
+        SmartControlSafetySensor(
             coordinator,
             core,
             "Smart Control Safety",
             "smart_control_safety",
             "mdi:shield-lock-outline",
             lambda c: c.smart_control.summary().get("mode", "recommendation_only"),
-            lambda c: {
-                "status": c.smart_control.summary().get("status"),
-                "foundation_version": c.smart_control.summary().get("foundation_version"),
-                "mode": c.smart_control.summary().get("mode"),
-                "execution_path": c.smart_control.summary().get("execution_path"),
-                "automatic_control_enabled": c.smart_control.summary().get("automatic_control_enabled", False),
-                "supervised_control_enabled": c.smart_control.summary().get("supervised_control_enabled", False),
-                "recommendation_only": c.smart_control.summary().get("recommendation_only", True),
-                "fail_closed": c.smart_control.summary().get("fail_closed", True),
-                "registered_devices": c.smart_control.summary().get("registered_devices", 0),
-                "controllable_candidates": c.smart_control.summary().get("controllable_candidates", 0),
-                "permissioned_candidates": c.smart_control.summary().get("permissioned_candidates", 0),
-                "simulations": list(c.smart_control.summary().get("simulations") or []),
-                "simulation_count": c.smart_control.summary().get("simulation_count", 0),
-                # Keep Recorder-facing attributes comfortably below Home
-                # Assistant's 16 KiB state-attribute limit. The Smart Control
-                # engine retains its larger runtime history internally; this
-                # entity exposes only the most recent transitions plus the full
-                # count for UI/diagnostic context.
-                "simulation_history": list(c.smart_control.summary().get("simulation_history") or [])[:8],
-                "simulation_history_count": c.smart_control.summary().get("simulation_history_count", 0),
-                "latest_simulation_transition": c.smart_control.summary().get("latest_simulation_transition"),
-                "simulations": list(c.smart_control.summary().get("simulations") or []),
-                "goe_mqtt": c.smart_control.summary().get("goe_mqtt") or {},
-                "devices": [
-                    {
-                        "device_id": d.get("device_id"),
-                        "name": d.get("name"),
-                        "type": d.get("type"),
-                        "status": d.get("status"),
-                        "enabled": d.get("enabled"),
-                        "controllable": d.get("controllable"),
-                        "control_permission": d.get("control_permission"),
-                        "actuator_configured": d.get("actuator_configured"),
-                        "actuator_type": d.get("actuator_type"),
-                        "power_limits_w": d.get("power_limits_w"),
-                        "execution_allowed": d.get("execution_allowed", False),
-                        "blocked_reasons": [
-                            reason for reason in list(d.get("blocked_reasons") or [])
-                            if not (
-                                str(reason) == "Global safety mode is Recommendation Only."
-                                and (
-                                    str(d.get("device_profile") or "") == "go_e_charger_mqtt"
-                                    or str(d.get("type") or "") == "water_heater"
-                                )
-                            )
-                        ][:4],
-                    }
-                    for d in c.smart_control.summary().get("devices", [])
-                ],
-            },
+            _smart_control_safety_attributes,
         ),
-        SimpleSensor(
+        SmartControlSimulationSensor(
             coordinator,
             core,
             "Smart Control Simulation",
             "smart_control_simulation",
             "mdi:timeline-clock-outline",
-            lambda c: (
-                (c.smart_control.summary().get("latest_simulation_transition") or {}).get("decision")
-                or "Waiting"
-            ),
-            lambda c: {
-                "timestamp": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("timestamp"),
-                "device_id": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("device_id"),
-                "name": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("name"),
-                "requested_power_w": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("requested_power_w"),
-                "requested_power_kw": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("requested_power_kw"),
-                "reason": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("reason"),
-                "current_power_w": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("current_power_w"),
-                "actual_power_w": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("actual_power_w"),
-                "power_error_w": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("power_error_w"),
-                "power_error_percent": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("power_error_percent"),
-                "comparison": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("comparison"),
-                "surplus_w": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("surplus_w"),
-                "boiler_temperature_c": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("boiler_temperature_c"),
-                "element_temperature_c": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("element_temperature_c"),
-                "lockout_active": (c.smart_control.summary().get("latest_simulation_transition") or {}).get("lockout_active"),
-                "would_execute": False,
-            },
         ),
         SimpleSensor(coordinator, core, "Entity Discovery", "entity_discovery", "mdi:magnify-scan", lambda c: c.discovery.summary().get("status"), lambda c: c.discovery.summary()),
         SimpleSensor(coordinator, core, "Energy Mapping", "energy_mapping", "mdi:transmission-tower-import", lambda c: c.energy_mapping.public_summary().get("status"), lambda c: c.energy_mapping.public_summary()),
@@ -1342,7 +1515,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         ForecastSensor(coordinator, core, "Forecast", "forecast", "mdi:weather-partly-cloudy", lambda c: c.forecast.summary().get("status"), lambda c: {k: c.forecast.summary().get(k) for k in ("method", "confidence", "confidence_label", "confidence_factors", "forecast_quality", "solar_range_next_24h", "solar_range_following_24h", "forecast_curve_24h", "surplus_windows", "risk_flags", "weather", "raw_expected_solar_next_24h_kwh", "raw_expected_solar_following_24h_kwh", "expected_solar_next_24h_kwh", "expected_solar_following_24h_kwh", "adaptive_correction", "expected_consumption_next_24h_kwh", "expected_consumption_following_24h_kwh", "expected_grid_import_next_24h_kwh", "expected_grid_export_next_24h_kwh", "projected_battery_soc_24h_percent", "projected_battery_soc_48h_percent", "daily_forecast", "forecast_horizon_hours", "rolling_horizon", "rolling_horizon_started_at", "best_surplus_window", "recommendations", "summary", "limitations", "safety", "recorder_safe")}),
         SimpleSensor(coordinator, core, "Optimizer Preview", "optimizer_preview", "mdi:lightbulb-on-outline", lambda c: c.optimizer.summary().get("status"), lambda c: c.optimizer.summary()),
         SimpleSensor(coordinator, core, "Scheduler Preview", "scheduler_preview", "mdi:calendar-clock", lambda c: c.scheduler.summary().get("status"), _scheduler_preview_attributes),
-        SimpleSensor(coordinator, core, "Learning Engine 2.0", "learning_preview", "mdi:brain", lambda c: c.learning.summary().get("status"), lambda c: c.learning.summary()),
+        SimpleSensor(coordinator, core, "Learning Engine 2.0", "learning_preview", "mdi:brain", lambda c: c.learning.summary().get("status"), _learning_preview_attributes),
         SimpleSensor(coordinator, core, "Long-Term Seasonal Analysis", "seasonal_analysis", "mdi:calendar-range", lambda c: c.learning.summary().get("confidence_label"), lambda c: c.learning.summary()),
         SimpleSensor(coordinator, core, "Home Efficiency", "home_efficiency", "mdi:home-analytics", lambda c: c.home_efficiency.summary().get("score"), lambda c: c.home_efficiency.summary()),
         SimpleSensor(coordinator, core, "Forecast Today", "forecast_today", "mdi:weather-sunny", lambda c: c.forecast.summary().get("expected_solar_next_24h_kwh"), lambda c: {"unit": "kWh", "confidence": c.forecast.summary().get("confidence"), "best_surplus_window": c.forecast.summary().get("best_surplus_window"), "daily_forecast": c.forecast.summary().get("daily_forecast", [])}),
@@ -1406,7 +1579,70 @@ class SimpleSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs = self.attrs_fn(self.core) or {}
-        return attrs
+        return _apply_recorder_guard(self, attrs)
+
+
+class SmartControlSafetySensor(SimpleSensor):
+    """Keep Smart Control safety detail live while Recorder stores state only.
+
+    The frontend consumes nested device/simulation/go-e detail from this live
+    entity. Persisting that presentation payload is redundant and can exceed
+    Home Assistant Recorder's 16 KiB attribute limit, so Recorder only stores
+    the sensor state.
+    """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+
+class SmartControlSimulationSensor(SimpleSensor):
+    """Reuse one Smart Control summary snapshot for state + attributes.
+
+    Home Assistant evaluates native_value and extra_state_attributes back-to-back.
+    Smart Control summary generation is comparatively expensive, so keep the
+    same transition snapshot for that publish cycle instead of rebuilding the
+    full Smart Control summary for every individual attribute.
+    """
+
+    def __init__(self, coordinator, core, name, key, icon) -> None:
+        super().__init__(coordinator, core, name, key, icon, lambda _c: "Waiting", lambda _c: {})
+        self._transition_cache: dict[str, Any] = {}
+        self._transition_cache_at = 0.0
+
+    def _transition(self) -> dict[str, Any]:
+        now = monotonic()
+        if now - self._transition_cache_at > 0.25:
+            summary = self.core.smart_control.summary() or {}
+            transition = summary.get("latest_simulation_transition") or {}
+            self._transition_cache = dict(transition) if isinstance(transition, dict) else {}
+            self._transition_cache_at = now
+        return self._transition_cache
+
+    @property
+    def native_value(self) -> str:
+        return self._transition().get("decision") or "Waiting"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        row = self._transition()
+        attrs = {
+            "timestamp": row.get("timestamp"),
+            "device_id": row.get("device_id"),
+            "name": row.get("name"),
+            "requested_power_w": row.get("requested_power_w"),
+            "requested_power_kw": row.get("requested_power_kw"),
+            "reason": row.get("reason"),
+            "current_power_w": row.get("current_power_w"),
+            "actual_power_w": row.get("actual_power_w"),
+            "power_error_w": row.get("power_error_w"),
+            "power_error_percent": row.get("power_error_percent"),
+            "comparison": row.get("comparison"),
+            "surplus_w": row.get("surplus_w"),
+            "boiler_temperature_c": row.get("boiler_temperature_c"),
+            "element_temperature_c": row.get("element_temperature_c"),
+            "lockout_active": row.get("lockout_active"),
+            "would_execute": False,
+        }
+        return _apply_recorder_guard(self, attrs)
 
 
 class ForecastSensor(SimpleSensor):
@@ -1617,7 +1853,7 @@ class EnergyFlowValueSensor(CoordinatorEntity, SensorEntity):
         update = self.core.update_engine.summary()
         flows = flow.get("flows", {})
         snapshot = flows.get("source_snapshot", {}) if isinstance(flows, dict) else {}
-        return {
+        attrs = {
             "source": "aion_ems_energy_flow",
             "quality_score": flow.get("quality_score"),
             "available": flow.get("available", {}),
@@ -1632,6 +1868,7 @@ class EnergyFlowValueSensor(CoordinatorEntity, SensorEntity):
             "source_snapshot": snapshot,
             "safety": "Read-only derived sensor. No device control.",
         }
+        return _apply_recorder_guard(self, attrs)
 
 
 class ElwaDirectValueSensor(CoordinatorEntity, SensorEntity):

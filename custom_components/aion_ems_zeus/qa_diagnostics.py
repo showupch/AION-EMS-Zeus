@@ -54,7 +54,7 @@ class QADiagnosticsCenter:
             "recommendation": recommendation,
         }
 
-    def _frontend_checks(self) -> list[dict[str, Any]]:
+    def _frontend_checks_sync(self) -> list[dict[str, Any]]:
         checks=[]
         base=Path(__file__).parent
         frontend=base/'frontend'/'device_manager.js'
@@ -71,7 +71,11 @@ class QADiagnosticsCenter:
             checks.append(self._check("frontend_mirror","Frontend","Frontend file mirror","ok" if same else "warning","Embedded and /www dashboard files match." if same else "Embedded and /www dashboard files differ.","Copy the packaged files again and restart Home Assistant." if not same else ""))
         return checks
 
-    def run(self) -> dict[str, Any]:
+    async def _frontend_checks(self) -> list[dict[str, Any]]:
+        """Run filesystem-based frontend QA outside Home Assistant's event loop."""
+        return await self.hass.async_add_executor_job(self._frontend_checks_sync)
+
+    async def run(self) -> dict[str, Any]:
         checks: list[dict[str, Any]]=[]
         data=self.registry.data or {}
         devices=[d for d in data.get('devices',[]) if isinstance(d,dict)]
@@ -341,7 +345,7 @@ class QADiagnosticsCenter:
         oversized=[f"{name} ({size} B)" for name,size in sizes.items() if size>=self.RECORDER_WARNING_BYTES]
         checks.append(self._check("recorder","Recorder","Attribute-size estimate","warning" if oversized else "ok",f"Large summaries: {', '.join(oversized)}" if oversized else f"All sampled summaries are below {self.RECORDER_WARNING_BYTES:,} bytes.","Open the affected module and move remaining detail arrays to dedicated unrecorded entities." if oversized else ""))
 
-        checks.extend(self._frontend_checks())
+        checks.extend(await self._frontend_checks())
 
         errors=sum(1 for c in checks if c['status']=='error')
         warnings=sum(1 for c in checks if c['status']=='warning')
