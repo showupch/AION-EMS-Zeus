@@ -36,7 +36,7 @@ class DeviceEnergyAttributionEngine:
         self.device_analytics = device_analytics
         self.last: dict[str, Any] = {
             "status": "Waiting", "engine": "Device Energy Attribution Engine",
-            "version": "1.14", "devices": [], "periods": {},
+            "version": "1.16", "devices": [], "periods": {},
         }
 
     @staticmethod
@@ -243,8 +243,6 @@ class DeviceEnergyAttributionEngine:
         for raw in list(self.registry.data.get("devices", []) or []):
             if not self._is_consuming_load(raw):
                 continue
-            if not (raw.get("power_entity") or raw.get("energy_entity")):
-                continue
             device = dict(raw)
             key = load_key(device)
             if not key:
@@ -257,8 +255,6 @@ class DeviceEnergyAttributionEngine:
         analytics_rows = []
         for raw in list((self.device_analytics.summary() or {}).get("devices", []) or []):
             if not self._is_consuming_load(raw):
-                continue
-            if not (raw.get("power_entity") or raw.get("energy_entity")):
                 continue
             device = dict(raw)
             key = load_key(device)
@@ -275,8 +271,6 @@ class DeviceEnergyAttributionEngine:
                 for raw in list((self.device_analytics.summary() or {}).get("devices", []) or []):
                     if not self._is_consuming_load(raw):
                         continue
-                    if not (raw.get("power_entity") or raw.get("energy_entity")):
-                        continue
                     device = dict(raw)
                     key = load_key(device)
                     if not key:
@@ -288,11 +282,21 @@ class DeviceEnergyAttributionEngine:
                 _LOGGER.warning("DEA device analytics self-heal failed: %s", err)
 
         result: list[dict[str, Any]] = []
-        for did, registered in registry_by_id.items():
+        # DEA follows the same canonical registered-load population surfaced by
+        # Device Analytics. Registry metadata is merged when available, but a
+        # valid analytics load must never disappear merely because an older
+        # registry snapshot is empty or missing that row.
+        all_ids = list(dict.fromkeys([*registry_by_id.keys(), *analytics_by_id.keys()]))
+        for did in all_ids:
+            registered = registry_by_id.get(did)
             analytics = analytics_by_id.get(did)
-            if analytics is None:
+            if registered is None and analytics is not None:
+                merged = dict(analytics)
+                merged["dea_population_source"] = "device_analytics"
+            elif analytics is None and registered is not None:
                 merged = self._fallback_device_row(registered)
-            else:
+                merged["dea_population_source"] = "registry"
+            elif registered is not None and analytics is not None:
                 merged = {**registered, **analytics}
                 for mapping_key in (
                     "power_entity", "energy_entity", "temperature_entity",
@@ -305,11 +309,15 @@ class DeviceEnergyAttributionEngine:
                     registry_value = registered.get(classification_key)
                     if registry_value:
                         merged[classification_key] = registry_value
+                merged["dea_population_source"] = "registry+device_analytics"
+            else:
+                continue
             merged["id"] = did
             merged["dea_eligibility"] = (
                 "power+energy" if merged.get("power_entity") and merged.get("energy_entity")
                 else "power" if merged.get("power_entity")
-                else "energy"
+                else "energy" if merged.get("energy_entity")
+                else "unmeasured"
             )
             result.append(merged)
         return result
@@ -589,7 +597,7 @@ class DeviceEnergyAttributionEngine:
         payload_devices = list(per_device.values())
         self.last = {
             "status": "Ready" if payload_devices else "Waiting",
-            "engine": "Device Energy Attribution Engine", "version": "1.14",
+            "engine": "Device Energy Attribution Engine", "version": "1.16",
             "generated_at": now.isoformat(), "devices": payload_devices,
             "periods": period_payload,
             "method": "Recorder state-history power timing on exact calendar windows; registered-device power is reconciled to measured whole-home demand at each aligned timestamp before energy integration and source allocation.",
