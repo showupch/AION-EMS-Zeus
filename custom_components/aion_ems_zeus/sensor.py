@@ -1464,6 +1464,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Decision Engine", "decision_engine", "mdi:source-branch-check", lambda c: c.decision_engine.summary().get("decision"), lambda c: c.decision_engine.summary()),
         SimpleSensor(coordinator, core, "Scenario Simulator", "scenario_simulator", "mdi:compare-horizontal", lambda c: c.scenario_simulator.summary().get("status"), lambda c: c.scenario_simulator.summary()),
         SimpleSensor(coordinator, core, "Prediction Accuracy", "prediction_accuracy", "mdi:target-account", lambda c: c.prediction_accuracy.summary().get("status"), lambda c: c.prediction_accuracy.summary()),
+        ForecastExplorerDataSensor(coordinator, core, "Forecast Explorer Data", "forecast_explorer_data", "mdi:chart-timeline-variant-shimmer"),
         SimpleSensor(coordinator, core, "Home Profile", "home_profile", "mdi:home-analytics", lambda c: c.home_profile.summary().get("status"), lambda c: c.home_profile.summary()),
         AnomalyIntelligenceSensor(coordinator, core, "Anomaly Intelligence", "anomaly_intelligence", "mdi:chart-bell-curve-cumulative"),
         SimpleSensor(coordinator, core, "Intelligence Fusion", "intelligence_fusion", "mdi:brain", lambda c: c.intelligence_fusion.summary().get("status"), lambda c: c.intelligence_fusion.summary()),
@@ -1637,6 +1638,23 @@ class AnomalyIntelligenceSensor(SimpleSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return self._snapshot()
+
+
+class ForecastExplorerDataSensor(SimpleSensor):
+    """Unrecorded compact forecast-vs-actual evidence for Forecast Explorer."""
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+    def __init__(self, coordinator, core, name, key, icon) -> None:
+        super().__init__(
+            coordinator,
+            core,
+            name,
+            key,
+            icon,
+            lambda c: (c.prediction_accuracy.explorer_summary() or {}).get("status", "Collecting"),
+            lambda c: c.prediction_accuracy.explorer_summary(),
+        )
 
 
 class SmartControlSafetySensor(SimpleSensor):

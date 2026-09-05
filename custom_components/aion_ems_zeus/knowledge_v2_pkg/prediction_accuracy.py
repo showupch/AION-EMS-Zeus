@@ -305,6 +305,66 @@ class PredictionAccuracyEngine:
         }
         return self._summary
 
+
+    def explorer_summary(self) -> dict[str, Any]:
+        """Compact forecast-vs-actual evidence for Forecast Explorer."""
+        daily = []
+        for row in list(self._daily_samples)[-45:]:
+            predicted = row.get("predicted") or {}
+            actual = row.get("actual") or {}
+            errors = row.get("errors") or {}
+            daily.append({
+                "date": row.get("target_date"),
+                "forecast_created_at": row.get("forecast_created_at"),
+                "solar_forecast_kwh": self._num(predicted.get("solar_kwh")),
+                "solar_actual_kwh": self._num(actual.get("solar_kwh")),
+                "solar_error_kwh": self._num(errors.get("solar_kwh")),
+                "home_forecast_kwh": self._num(predicted.get("home_kwh")),
+                "home_actual_kwh": self._num(actual.get("home_kwh")),
+                "home_error_kwh": self._num(errors.get("home_kwh")),
+            })
+
+        hourly_by_target: dict[str, dict[str, Any]] = {}
+        for row in self._samples:
+            target = str(row.get("forecast_time") or "")
+            if not target:
+                continue
+            lead = int(row.get("lead_hours") or 0)
+            current = hourly_by_target.get(target)
+            if current is not None and int(current.get("lead_hours") or 0) >= lead:
+                continue
+            predicted = row.get("predicted") or {}
+            actual = row.get("actual") or {}
+            errors = row.get("errors") or {}
+            hourly_by_target[target] = {
+                "time": target,
+                "lead_hours": lead,
+                "solar_forecast_w": self._num(predicted.get("solar")),
+                "solar_actual_w": self._num(actual.get("solar")),
+                "solar_error_w": self._num(errors.get("solar")),
+                "home_forecast_w": self._num(predicted.get("home")),
+                "home_actual_w": self._num(actual.get("home")),
+                "home_error_w": self._num(errors.get("home")),
+            }
+        hourly = [hourly_by_target[key] for key in sorted(hourly_by_target)][-72:]
+
+        forecast = {}
+        try:
+            forecast = self.core.forecast.summary() or {}
+        except Exception:
+            forecast = {}
+        quality = forecast.get("forecast_quality") if isinstance(forecast.get("forecast_quality"), dict) else {}
+        return {
+            "status": "Ready" if daily or hourly else "Collecting",
+            "daily": daily,
+            "hourly": hourly,
+            "daily_accuracy": self._daily_accuracy_summary(),
+            "hourly_error": self._summary.get("metric_detail") or {},
+            "uncertainty_band_percent": quality.get("uncertainty_band_percent"),
+            "measurement_note": "Past values are shown only when a forecast was captured before the target and a measured outcome later matured. Missing points are never interpolated.",
+            "recorder_safe": False,
+        }
+
     def summary(self) -> dict[str, Any]:
         return self._summary
 
