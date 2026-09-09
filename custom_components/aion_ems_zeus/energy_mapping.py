@@ -89,9 +89,19 @@ class EnergyMappingEngine:
         if state and not available: issues.append({"severity":"error","code":"ENTITY_UNAVAILABLE","message":"Entity is unavailable or unknown."})
         if field in self.FIELD_RULES and state:
             classes, units=self.FIELD_RULES[field]; dc=attrs.get("device_class"); unit=attrs.get("unit_of_measurement")
-            if classes and dc not in classes: issues.append({"severity":"error","code":"DEVICE_CLASS_MISMATCH","message":f"Expected device class {sorted(classes)}; got {dc or 'none'}."})
-            if units and unit not in units: issues.append({"severity":"error","code":"UNIT_MISMATCH","message":f"Expected unit {sorted(units)}; got {unit or 'none'}."})
-        return {"status":"valid" if not issues else "invalid", "field":field, "entity_id":entity_id, "exists":state is not None, "available":available, "state":state.state if state else None, "unit":attrs.get("unit_of_measurement"), "device_class":attrs.get("device_class"), "last_changed": state.last_changed.isoformat() if state else None, "last_updated": state.last_updated.isoformat() if state else None, "issues":issues}
+            # v16.0.11: manual mappings are unit/value authoritative.
+            # Many MQTT/custom integrations expose perfectly valid numeric power/SOC
+            # sensors without Home Assistant's optional device_class metadata. Keep
+            # the metadata mismatch visible, but do not silently reject the user's
+            # explicit mapping when the value and unit are otherwise usable.
+            if classes and dc not in classes:
+                issues.append({"severity":"warning","code":"DEVICE_CLASS_MISMATCH","message":f"Expected device class {sorted(classes)}; got {dc or 'none'}. Mapping accepted because unit/value evidence is valid."})
+            if units and unit not in units:
+                issues.append({"severity":"error","code":"UNIT_MISMATCH","message":f"Expected unit {sorted(units)}; got {unit or 'none'}."})
+            if (classes or units) and available and self._numeric(state.state) is None:
+                issues.append({"severity":"error","code":"NON_NUMERIC_VALUE","message":"Mapped measurement must have a numeric state."})
+        has_errors = any(item.get("severity") == "error" for item in issues)
+        return {"status":"invalid" if has_errors else "valid", "field":field, "entity_id":entity_id, "exists":state is not None, "available":available, "state":state.state if state else None, "unit":attrs.get("unit_of_measurement"), "device_class":attrs.get("device_class"), "last_changed": state.last_changed.isoformat() if state else None, "last_updated": state.last_updated.isoformat() if state else None, "issues":issues}
 
     def _score_suggestion(self, field: str, state) -> dict[str, Any] | None:
         if field not in self.FIELD_RULES:
