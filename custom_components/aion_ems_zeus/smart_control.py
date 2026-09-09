@@ -1162,6 +1162,13 @@ class SmartControlSafetyEngine:
             battery_entity = str(device.get("control_battery_power_entity") or "").strip()
             interval_s = int(device.get("control_publish_interval_s") or 5)
             interval_s = min(60, max(5, interval_s))
+            # v16.0.12: go-e needs the fast 5 s IDS feed only when there is
+            # enough *export* to make EV charging viable. Below the configured
+            # start threshold, keep sending the real grid value but at a slower
+            # cadence so the charger never relies on stale surplus evidence.
+            surplus_start_w = int(device.get("control_solar_start_threshold_w") or 1500)
+            surplus_start_w = max(0, surplus_start_w)
+            idle_interval_s = 30
 
             # Fail closed: profile may be fully configured while still Observe Only.
             # In that state Zeus emits absolutely no MQTT traffic.
@@ -1192,8 +1199,27 @@ class SmartControlSafetyEngine:
             else:
                 pakku = 0.0
 
+            # go-e pGrid convention: negative = grid export, positive = import.
+            # Never use abs(pGrid): large grid import must not enable fast cadence.
+            export_w = max(0.0, -float(pgrid))
+            fast_surplus = export_w >= float(surplus_start_w)
+            cadence_s = interval_s if fast_surplus else idle_interval_s
+
             last_dt = runtime.get("last_write_dt")
-            due = force_keepalive or last_dt is None or (now - last_dt).total_seconds() >= interval_s
+            last_fast_surplus = bool(runtime.get("goe_fast_surplus", False))
+            threshold_changed = fast_surplus != last_fast_surplus
+            due = (
+                force_keepalive
+                or last_dt is None
+                or threshold_changed
+                or (now - last_dt).total_seconds() >= cadence_s
+            )
+            runtime.update(
+                goe_fast_surplus=fast_surplus,
+                goe_export_w=round(export_w, 1),
+                goe_start_threshold_w=surplus_start_w,
+                goe_publish_cadence_s=cadence_s,
+            )
             if not due:
                 runtime.update(active=True, status="ACTIVE", last_error=None)
                 continue
@@ -1203,7 +1229,7 @@ class SmartControlSafetyEngine:
                 topic,
                 int(round(pgrid)),
                 int(round(pakku)),
-                "PUBLISH",
+                "PUBLISH_FAST" if fast_surplus else "PUBLISH_IDLE",
             )
 
     async def async_evaluate_execution(self, *_args, force_keepalive: bool = False) -> None:

@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity import EntityCategory
 
 from .const import DOMAIN, NAME, VERSION
 from .flow_access import flow_w
@@ -27,6 +28,22 @@ _LOGGER = logging.getLogger(__name__)
 RECORDER_ATTRIBUTE_LIMIT_BYTES = 16384
 RECORDER_GUARD_TARGET_BYTES = 13500
 RECORDER_GUARD_MAX_ENTITY_LIST = 20
+RECORDER_GUARD_FREQUENT_INTERVAL_SECONDS = 10.0
+RECORDER_GUARD_FREQUENT_MIN_PAYLOAD_BYTES = 1024
+RECORDER_GUARD_FREQUENT_BUDGET_BYTES_PER_HOUR = 5_000_000
+
+# Internal/diagnostic entities are intentionally live in Home Assistant for the
+# Zeus frontend, but their rapidly changing nested attributes have no useful
+# historical meaning. Recorder stores their state only.
+RECORDER_STATE_ONLY_KEYS = frozenset({
+    "event_bus",
+    "data_bus",
+    "performance_diagnostics",
+    "observation_knowledge",
+    "runtime_resilience",
+    "update_engine",
+    "recorder_guard",
+})
 
 
 def _json_payload_bytes(value: Any) -> int:
@@ -54,6 +71,11 @@ def _recorder_guard_stats(core) -> dict[str, Any]:
             "protected_entity_count": 0,
             "protected_entities": [],
             "largest_recordable_payload_bytes": 0,
+            "frequency_aware": True,
+            "frequent_update_interventions": 0,
+            "state_only_entity_count": 0,
+            "estimated_recordable_bytes_per_hour": 0,
+            "last_observed_interval_seconds": None,
             "last_intervention_entity": None,
             "last_intervention_payload_bytes": None,
             "last_intervention_action": None,
@@ -102,6 +124,50 @@ def _apply_recorder_guard(entity: Any, attrs: dict[str, Any] | None) -> dict[str
         stats["largest_recordable_payload_bytes"] = max(
             int(stats.get("largest_recordable_payload_bytes", 0) or 0), recordable_bytes
         )
+
+    # Frequency-aware protection: a payload does not need to exceed 16 KiB to
+    # damage Recorder. A multi-KB mostly-unique payload every few seconds can
+    # create gigabytes of state_attributes rows in a week. Track the actual
+    # coordinator update interval per entity and automatically switch diagnostic
+    # entities to state-only recording when their projected attribute write volume
+    # is excessive. Live Home Assistant attributes remain fully available.
+    now = monotonic()
+    previous_at = getattr(entity, "_recorder_guard_previous_update_at", None)
+    interval_s = (now - previous_at) if previous_at is not None else None
+    entity._recorder_guard_previous_update_at = now
+
+    if interval_s is not None and interval_s > 0:
+        previous_avg = getattr(entity, "_recorder_guard_average_interval_s", None)
+        average_interval_s = interval_s if previous_avg is None else (previous_avg * 0.8 + interval_s * 0.2)
+        entity._recorder_guard_average_interval_s = average_interval_s
+        estimated_per_hour = int(recordable_bytes * (3600.0 / max(average_interval_s, 0.1)))
+        if stats:
+            stats["last_observed_interval_seconds"] = round(average_interval_s, 2)
+            stats["estimated_recordable_bytes_per_hour"] = max(
+                int(stats.get("estimated_recordable_bytes_per_hour", 0) or 0),
+                estimated_per_hour,
+            )
+        diagnostic_entity = getattr(entity, "_attr_entity_category", None) == EntityCategory.DIAGNOSTIC
+        frequent_bloat = (
+            diagnostic_entity
+            and average_interval_s <= RECORDER_GUARD_FREQUENT_INTERVAL_SECONDS
+            and recordable_bytes >= RECORDER_GUARD_FREQUENT_MIN_PAYLOAD_BYTES
+            and estimated_per_hour >= RECORDER_GUARD_FREQUENT_BUDGET_BYTES_PER_HOUR
+        )
+        if frequent_bloat:
+            # HA caches unrecorded attribute metadata from the entity class when
+            # the platform entity is added. Runtime mutation is intentionally not
+            # used here. Known high-write Zeus diagnostics use dedicated
+            # class-level protected entity classes; this branch remains a monitor
+            # for future entities and reports any uncovered high-volume sensor.
+            if stats:
+                stats["status"] = "Review"
+                stats["frequent_update_interventions"] = int(stats.get("frequent_update_interventions", 0) or 0) + 1
+                stats["last_intervention_entity"] = str(
+                    getattr(entity, "entity_id", None) or getattr(entity, "_attr_unique_id", "unknown")
+                )
+                stats["last_intervention_payload_bytes"] = recordable_bytes
+                stats["last_intervention_action"] = "frequency_candidate_detected"
 
     if recordable_bytes <= RECORDER_GUARD_TARGET_BYTES:
         return payload
@@ -167,7 +233,8 @@ def _apply_recorder_guard(entity: Any, attrs: dict[str, Any] | None) -> dict[str
 def _recorder_guard_attributes(core) -> dict[str, Any]:
     """Expose compact Recorder Guard health/status diagnostics."""
     guard = dict(_recorder_guard_stats(core) or {})
-    guard["policy"] = "Automatic internal protection; no Recorder YAML/exclusions required."
+    guard["state_only_entity_count"] = 8
+    guard["policy"] = "Class-level Recorder protection for high-write internal diagnostics; frequency monitoring remains active. No Recorder YAML exclusions required for protected Zeus entities."
     guard["live_data_preserved"] = True
     guard["recorder_state_preserved"] = True
     return guard
@@ -1596,8 +1663,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     sensors = [
         SimpleSensor(coordinator, core, "Platform Status", "platform_status", "mdi:home-lightning-bolt", lambda c: "Ready", lambda c: {"version": VERSION, "status": "Zeus AI Advisor ready", "architecture": "zeus-12-1-decision-intelligence", "engines": c.engine_names(), "update_status": _update_check.get("status"), "latest_version": _update_check.get("latest_version"), "latest_channel": _update_check.get("latest_channel"), "update_available": _update_check.get("status") == "update_available", "release_url": _update_check.get("release_url"), "update_checked_at": _update_check.get("checked_at").isoformat() if _update_check.get("checked_at") else None, "update_error": _update_check.get("error")}),
-        SimpleSensor(coordinator, core, "Performance Diagnostics", "performance_diagnostics", "mdi:speedometer", lambda c: c.update_engine.summary().get("status", "Running"), _performance_attributes),
-        SimpleSensor(coordinator, core, "Recorder Guard", "recorder_guard", "mdi:database-lock-outline", lambda c: _recorder_guard_stats(c).get("status", "Protected"), _recorder_guard_attributes),
+        RecorderStateOnlySimpleSensor(coordinator, core, "Performance Diagnostics", "performance_diagnostics", "mdi:speedometer", lambda c: c.update_engine.summary().get("status", "Running"), _performance_attributes),
+        RecorderStateOnlySimpleSensor(coordinator, core, "Recorder Guard", "recorder_guard", "mdi:database-lock-outline", lambda c: _recorder_guard_stats(c).get("status", "Protected"), _recorder_guard_attributes),
         RegistrySummarySensor(coordinator, core, "Registry Summary", "registry_summary", "mdi:database-cog-outline", lambda c: c.registry.summary().get("status"), lambda c: c.registry.summary()),
         SimpleSensor(
             coordinator,
@@ -1637,7 +1704,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         PluginDiscoverySensor(coordinator, core, "Inverter Plugin Discovery", "plugin_inverter_adapters", "mdi:solar-power-variant", lambda c: next((x.get("health") for x in c.integration_hub.summary().get("plugins", []) if x.get("id") == "inverter_adapters"), "Waiting"), lambda c: _plugin_attributes(c, "inverter_adapters")),
         SimpleSensor(coordinator, core, "Multi-Inverter Manager", "multi_inverter", "mdi:solar-power-variant", lambda c: c.energy_topology.summary().get("status"), lambda c: c.energy_topology.summary()),
         SimpleSensor(coordinator, core, "Energy Topology", "energy_topology", "mdi:transit-connection-variant", lambda c: c.energy_topology.summary().get("summary"), lambda c: c.energy_topology.summary()),
-        SimpleSensor(coordinator, core, "Data Bus", "data_bus", "mdi:bus", lambda c: c.data_bus.summary().get("status"), lambda c: c.data_bus.summary()),
+        RecorderStateOnlySimpleSensor(coordinator, core, "Data Bus", "data_bus", "mdi:bus", lambda c: c.data_bus.summary().get("status"), lambda c: c.data_bus.summary()),
         SimpleSensor(coordinator, core, "Data Lake", "data_lake", "mdi:database-clock-outline", lambda c: c.data_lake.summary().get("status"), lambda c: c.data_lake.summary()),
         SimpleSensor(coordinator, core, "Knowledge Engine", "knowledge_engine", "mdi:book-open-variant", lambda c: c.knowledge.summary().get("status"), lambda c: c.knowledge.summary()),
         SimpleSensor(coordinator, core, "Knowledge Engine 2.0", "knowledge_engine_v2", "mdi:brain", lambda c: c.knowledge_v2.summary().get("status"), lambda c: c.knowledge_v2.summary()),
@@ -1654,7 +1721,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Home Profile", "home_profile", "mdi:home-analytics", lambda c: c.home_profile.summary().get("status"), lambda c: c.home_profile.summary()),
         AnomalyIntelligenceSensor(coordinator, core, "Anomaly Intelligence", "anomaly_intelligence", "mdi:chart-bell-curve-cumulative"),
         SimpleSensor(coordinator, core, "Intelligence Fusion", "intelligence_fusion", "mdi:brain", lambda c: c.intelligence_fusion.summary().get("status"), lambda c: c.intelligence_fusion.summary()),
-        SimpleSensor(coordinator, core, "Runtime Resilience", "runtime_resilience", "mdi:shield-sync-outline", lambda c: c.runtime_resilience.summary().get("status"), lambda c: c.runtime_resilience.summary()),
+        RecorderStateOnlySimpleSensor(coordinator, core, "Runtime Resilience", "runtime_resilience", "mdi:shield-sync-outline", lambda c: c.runtime_resilience.summary().get("status"), lambda c: c.runtime_resilience.summary()),
         SimpleSensor(coordinator, core, "Data Consistency", "data_consistency", "mdi:compare-horizontal", lambda c: c.data_consistency.summary().get("status"), lambda c: c.data_consistency.summary()),
         SimpleSensor(coordinator, core, "Intelligence Quality Gate", "intelligence_quality_gate", "mdi:shield-check-outline", lambda c: c.intelligence_quality_gate.summary().get("status"), lambda c: c.intelligence_quality_gate.summary()),
         SimpleSensor(coordinator, core, "Release Readiness", "release_readiness", "mdi:clipboard-check-outline", lambda c: c.release_readiness.summary().get("status"), lambda c: c.release_readiness.summary()),
@@ -1664,12 +1731,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Capability Report", "capability_report", "mdi:clipboard-check-multiple-outline", lambda c: c.capability.summary().get("status"), lambda c: c.capability.summary()),
         SimpleSensor(coordinator, core, "Diagnostics", "diagnostics", "mdi:stethoscope", lambda c: c.diagnostics.summary().get("status"), lambda c: c.diagnostics.summary()),
         SimpleSensor(coordinator, core, "QA Diagnostics Center", "qa_diagnostics", "mdi:clipboard-pulse-outline", lambda c: c.qa_diagnostics.summary().get("status"), lambda c: c.qa_diagnostics.summary()),
-        SimpleSensor(coordinator, core, "Event Bus", "event_bus", "mdi:transit-connection-variant", lambda c: f"{len(c.event_bus.events)} events", lambda c: {"event_count": len(c.event_bus.events), "recent_events": c.event_bus.recent(3), "note": "Recorder-safe compact list."}),
+        RecorderStateOnlySimpleSensor(coordinator, core, "Event Bus", "event_bus", "mdi:transit-connection-variant", lambda c: f"{len(c.event_bus.events)} events", lambda c: {"event_count": len(c.event_bus.events), "recent_events": c.event_bus.recent(3), "note": "Recorder-safe compact list."}),
         SimpleSensor(coordinator, core, "Device Manager", "device_manager", "mdi:devices-cog", _device_manager_state, _device_manager_attributes),
         SimpleSensor(coordinator, core, "Device Import Wizard", "device_import_wizard", "mdi:database-import-outline", lambda c: c.device_import_wizard.summary().get("status", "Not run"), lambda c: c.device_import_wizard.summary()),
         SimpleSensor(coordinator, core, "Home Assistant Energy Import", "ha_energy_import", "mdi:home-assistant", lambda c: c.ha_energy_import.summary().get("status", "Not run"), lambda c: c.ha_energy_import.summary()),
         SimpleSensor(coordinator, core, "Helios Migration Preview", "helios_migration_preview", "mdi:database-arrow-right-outline", lambda c: c.migration.summary().get("status"), lambda c: c.migration.summary()),
-        SimpleSensor(coordinator, core, "Update Engine", "update_engine", "mdi:update", lambda c: c.update_engine.summary().get("status"), lambda c: c.update_engine.summary()),
+        RecorderStateOnlySimpleSensor(coordinator, core, "Update Engine", "update_engine", "mdi:update", lambda c: c.update_engine.summary().get("status"), lambda c: c.update_engine.summary()),
         DataQualitySensor(coordinator, core, "Data Quality", "data_quality", "mdi:check-decagram-outline", lambda c: c.data_quality.summary().get("status"), lambda c: c.data_quality.summary()),
         SimpleSensor(coordinator, core, "Historical Analytics", "historical_analytics", "mdi:chart-timeline-variant", lambda c: c.history.summary().get("status"), lambda c: c.history.recorder_summary()),
         HistoricalChartDataSensor(coordinator, core, "Historical Chart Data", "historical_chart_data", "mdi:chart-areaspline", lambda c: c.history.summary().get("status"), lambda c: c.history.recorder_chart_data()),
@@ -1690,7 +1757,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "System Story", "system_story", "mdi:text-box-outline", lambda c: c.system_story.summary().get("action_state", "Monitoring"), lambda c: c.system_story.summary()),
         SimpleSensor(coordinator, core, "Hyper Analytics", "hyper_analytics", "mdi:creation", lambda c: c.hyper_analytics.summary().get("headline"), lambda c: c.hyper_analytics.summary()),
         SimpleSensor(coordinator, core, "Zeus Brain", "zeus_brain", "mdi:head-cog-outline", lambda c: c.brain.summary().get("headline"), lambda c: c.brain.summary()),
-        SimpleSensor(coordinator, core, "Observation Knowledge", "observation_knowledge", "mdi:graph-outline", lambda c: c.observation_knowledge.summary().get("headline"), lambda c: c.observation_knowledge.summary()),
+        RecorderStateOnlySimpleSensor(coordinator, core, "Observation Knowledge", "observation_knowledge", "mdi:graph-outline", lambda c: c.observation_knowledge.summary().get("headline"), lambda c: c.observation_knowledge.summary()),
         SimpleSensor(coordinator, core, "Reasoning Explain", "reasoning_explain", "mdi:source-branch-check", lambda c: c.reasoning_explain.summary().get("headline"), lambda c: c.reasoning_explain.summary()),
         SimpleSensor(coordinator, core, "Device Analytics", "device_analytics", "mdi:devices-clock", lambda c: c.device_analytics.summary().get("status"), _device_analytics_attributes),
         SimpleSensor(coordinator, core, "Heat Pump Intelligence", "heat_pump_intelligence", "mdi:heat-pump-outline", lambda c: "Ready" if any(str(d.get("type") or "") == "heat_pump" for d in (c.device_analytics.summary().get("devices") or [])) else "No registered Heat Pump", _heat_pump_intelligence_attributes),
@@ -1742,7 +1809,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         EVPowerSensor(coordinator, core, "EV Power", "ev_power", "ev_power", "mdi:ev-station", "W", SensorDeviceClass.POWER),
         EnergyFlowValueSensor(coordinator, core, "Heat Pump Power", "heat_pump_power", "heat_pump_power", "mdi:heat-pump", "W", SensorDeviceClass.POWER),
         EnergyFlowValueSensor(coordinator, core, "Water Heater Power", "water_heater_power", "water_heater_power", "mdi:water-boiler", "W", SensorDeviceClass.POWER),
-        EnergyFlowValueSensor(coordinator, core, "Known Major Loads Power", "known_major_loads_power", "known_major_loads_power", "mdi:devices", "W", SensorDeviceClass.POWER),
+        RecorderStateOnlyEnergyFlowValueSensor(coordinator, core, "Known Major Loads Power", "known_major_loads_power", "known_major_loads_power", "mdi:devices", "W", SensorDeviceClass.POWER),
         ElwaDirectValueSensor(coordinator, core, "ELWA Power", "zeus_elwa_power", "power_w", "sensor.zeus_elwa_power", "mdi:water-boiler", "W", SensorDeviceClass.POWER),
         ElwaDirectValueSensor(coordinator, core, "ELWA Temperature", "zeus_elwa_temperature", "temperature_c", "sensor.zeus_elwa_temperature", "mdi:thermometer-water", "°C", SensorDeviceClass.TEMPERATURE),
         ElwaDirectEnergySensor(coordinator, core),
@@ -1761,6 +1828,8 @@ class SimpleSensor(CoordinatorEntity, SensorEntity):
         self.entity_id = f"sensor.aion_ems_zeus_{key}"
         self.value_fn = value_fn
         self.attrs_fn = attrs_fn
+        if key in RECORDER_STATE_ONLY_KEYS:
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def native_value(self) -> str:
@@ -1770,6 +1839,19 @@ class SimpleSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs = self.attrs_fn(self.core) or {}
         return _apply_recorder_guard(self, attrs)
+
+
+class RecorderStateOnlySimpleSensor(SimpleSensor):
+    """Live Zeus diagnostic sensor whose attributes are never stored by Recorder.
+
+    Home Assistant requires ``_unrecorded_attributes`` to be declared on the
+    entity class (not assigned per instance). MATCH_ALL keeps the complete live
+    attribute payload available to the Zeus frontend while Recorder stores only
+    the compact entity state plus HA's unavoidable standard metadata.
+    """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
 
 class AnomalyIntelligenceSensor(SimpleSensor):
@@ -2094,6 +2176,8 @@ class EnergyFlowValueSensor(CoordinatorEntity, SensorEntity):
         self._attr_device_class = device_class
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self.entity_id = f"sensor.aion_ems_zeus_{key}"
+        if key == "known_major_loads_power":
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def native_value(self):
@@ -2232,6 +2316,13 @@ class EVPowerSensor(EnergyFlowValueSensor):
             "safety": "Read-only derived sensor. No device control.",
         }
         return _apply_recorder_guard(self, attrs)
+
+
+class RecorderStateOnlyEnergyFlowValueSensor(EnergyFlowValueSensor):
+    """Energy-flow numeric state with live-only verbose attributes."""
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
 
 class ElwaDirectValueSensor(CoordinatorEntity, SensorEntity):
