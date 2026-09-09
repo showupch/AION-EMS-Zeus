@@ -1144,10 +1144,13 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const sumRows=(rows,date)=>{const out={date};for(const k of keys)out[k]=rows.reduce((n,r)=>n+(Number(r[k])||0),0);return out;};
     if(period==='today'){
       if(!hasToday)return [];
-      const zero={date:`${todayKey}T00:00:00`,solar_energy_kwh:0,house_energy_kwh:0,grid_import_energy_kwh:0,grid_export_energy_kwh:0,battery_charge_energy_kwh:0,battery_discharge_energy_kwh:0};
       const now=new Date(),pad=n=>String(n).padStart(2,'0');
       const current={...todayRow,date:`${todayKey}T${pad(now.getHours())}:${pad(now.getMinutes())}:00`};
-      return [zero,current];
+      // v16.0.15: Today is one active partial-day bucket. Older builds added
+      // an artificial midnight zero row as a chart baseline; bar-based Battery
+      // and Finance views rendered that synthetic row as a second blank
+      // "Today" entry. Single-point charts already handle one row correctly.
+      return [current];
     }
     if(period==='week'){
       const rolling=upsertToday(chart.rolling_7||history.last_7_days||[]);
