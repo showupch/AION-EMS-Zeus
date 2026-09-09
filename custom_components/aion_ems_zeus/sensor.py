@@ -233,8 +233,8 @@ def _apply_recorder_guard(entity: Any, attrs: dict[str, Any] | None) -> dict[str
 def _recorder_guard_attributes(core) -> dict[str, Any]:
     """Expose compact Recorder Guard health/status diagnostics."""
     guard = dict(_recorder_guard_stats(core) or {})
-    guard["state_only_entity_count"] = 8
-    guard["policy"] = "Class-level Recorder protection for high-write internal diagnostics; frequency monitoring remains active. No Recorder YAML exclusions required for protected Zeus entities."
+    guard["state_only_entity_count"] = "all_rich_zeus_sensor_classes"
+    guard["policy"] = "Recorder stores Zeus sensor states while rapidly changing rich attributes remain live-only. Frequency monitoring remains active; no Recorder YAML exclusions are required for Zeus sensors."
     guard["live_data_preserved"] = True
     guard["recorder_state_preserved"] = True
     return guard
@@ -1818,6 +1818,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 
 class SimpleSensor(CoordinatorEntity, SensorEntity):
+    """Zeus rich-state sensor with live-only attributes.
+
+    Recorder keeps the entity state history, while the large and rapidly
+    changing JSON attributes remain available only in Home Assistant's live
+    state machine for Zeus dashboards.
+    """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
     def __init__(self, coordinator, core, name, key, icon, value_fn, attrs_fn) -> None:
         super().__init__(coordinator)
         self.core = core
@@ -2162,7 +2171,14 @@ class FinanceValueSensor(CoordinatorEntity, SensorEntity):
 
 
 class EnergyFlowValueSensor(CoordinatorEntity, SensorEntity):
-    """Individual numeric sensor from Energy Flow snapshot."""
+    """Individual numeric sensor from Energy Flow snapshot.
+
+    Numeric state history remains recorded. High-frequency diagnostic/source
+    attributes stay live-only to prevent one unique state_attributes row per
+    coordinator refresh.
+    """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(self, coordinator, core, name, key, flow_key, icon, unit, device_class) -> None:
         super().__init__(coordinator)
@@ -2227,6 +2243,8 @@ class EVSurplusGridSignalSensor(CoordinatorEntity, SensorEntity):
     Zeus does not control charger current or phases; it only publishes the
     canonical measured grid balance.
     """
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(self, coordinator, core) -> None:
         super().__init__(coordinator)
@@ -2328,6 +2346,8 @@ class RecorderStateOnlyEnergyFlowValueSensor(EnergyFlowValueSensor):
 class ElwaDirectValueSensor(CoordinatorEntity, SensorEntity):
     """Zeus-owned HA entity backed by direct my-PV ELWA Modbus evidence."""
 
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
     def __init__(self, coordinator, core, name, key, value_key, entity_id, icon, unit, device_class) -> None:
         super().__init__(coordinator)
         self.core = core
@@ -2383,6 +2403,7 @@ class ElwaDirectEnergySensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     therefore create a small evidence gap instead of inventing consumption.
     """
 
+    _unrecorded_attributes = frozenset({MATCH_ALL})
     _attr_has_entity_name = True
     _attr_name = "ELWA Energy"
     _attr_unique_id = f"{DOMAIN}_zeus_elwa_energy"
@@ -2478,6 +2499,8 @@ class ElwaDirectEnergySensor(CoordinatorEntity, RestoreEntity, SensorEntity):
 
 class TopologyValueSensor(CoordinatorEntity, SensorEntity):
     """Numeric read-only value from the multi-inverter topology engine."""
+
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(self, coordinator, core, name, key, topology_key, icon, unit, device_class) -> None:
         super().__init__(coordinator)
