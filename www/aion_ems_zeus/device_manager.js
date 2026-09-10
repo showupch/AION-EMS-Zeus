@@ -20,13 +20,14 @@ class AionEmsDeviceManager extends HTMLElement {
     if(!this._rendered&&this._setupState===null){const registry=hass.states?.['sensor.aion_ems_zeus_registry_summary']?.attributes||{};const mapping=hass.states?.['sensor.aion_ems_zeus_energy_mapping']?.attributes||{};const configured=(Number(registry.device_count||0)>0)||(Number(registry.room_count||0)>0)||(mapping.configured===true)||(Number(mapping.mapped_count||0)>0);if(configured){this._setupState='1';this._wizardOpen=false;try{localStorage.setItem('aion_zeus_setup_complete','1');}catch(_e){}}}
     const liveIds=['sensor.aion_ems_zeus_solar_power','sensor.aion_ems_zeus_house_power','sensor.aion_ems_zeus_battery_charge_power','sensor.aion_ems_zeus_battery_discharge_power','sensor.aion_ems_zeus_grid_import_power','sensor.aion_ems_zeus_grid_export_power'];
     const nowMs=Date.now();
-    if(!this._lastLiveSampleAt||nowMs-this._lastLiveSampleAt>=15000){
-      const liveValue=id=>{const st=hass.states?.[id];const raw=Number(st?.state);if(!Number.isFinite(raw))return 0;const unit=String(st?.attributes?.unit_of_measurement||'W').toLowerCase();return unit==='kw'?raw*1000:raw;};
-      this._livePowerSamples.push({time:nowMs,solar:Math.max(0,liveValue(liveIds[0])),home:Math.max(0,liveValue(liveIds[1])),battery:liveValue(liveIds[3])-liveValue(liveIds[2]),grid:liveValue(liveIds[4])-liveValue(liveIds[5])});
+    if(!this._lastLiveSampleAt||nowMs-this._lastLiveSampleAt>=5000){
+      const flowLive=hass.states?.['sensor.aion_ems_zeus_energy_flow']?.attributes?.flows||{};
+      const flowW=(key,fallbackId)=>{const item=flowLive?.[key];const direct=Number(item&&typeof item==='object'?item.w:item);if(Number.isFinite(direct))return direct;const st=hass.states?.[fallbackId];const raw=Number(st?.state);if(!Number.isFinite(raw))return 0;const unit=String(st?.attributes?.unit_of_measurement||'W').toLowerCase();return unit==='kw'?raw*1000:raw;};
+      this._livePowerSamples.push({time:nowMs,solar:Math.max(0,flowW('solar_power',liveIds[0])),home:Math.max(0,flowW('house_power',liveIds[1])),battery:flowW('battery_discharge_power',liveIds[3])-flowW('battery_charge_power',liveIds[2]),grid:flowW('grid_import_power',liveIds[4])-flowW('grid_export_power',liveIds[5])});
       this._livePowerSamples=this._livePowerSamples.filter(x=>nowMs-x.time<=3600000).slice(-40);
       this._lastLiveSampleAt=nowMs;
     }
-    const watched=['sensor.aion_ems_zeus_device_manager','sensor.aion_ems_zeus_registry_summary','sensor.aion_ems_zeus_energy_mapping','sensor.aion_ems_zeus_entity_discovery','sensor.aion_ems_zeus_integration_hub','sensor.aion_ems_zeus_settings_api','sensor.aion_ems_zeus_smart_control_safety',...liveIds];
+    const watched=['sensor.aion_ems_zeus_device_manager','sensor.aion_ems_zeus_registry_summary','sensor.aion_ems_zeus_energy_mapping','sensor.aion_ems_zeus_entity_discovery','sensor.aion_ems_zeus_integration_hub','sensor.aion_ems_zeus_settings_api','sensor.aion_ems_zeus_smart_control_safety','sensor.aion_ems_zeus_energy_flow',...liveIds];
     const signature=watched.map(id=>{const st=hass.states?.[id];return st?`${id}:${st.state}:${st.last_updated}`:`${id}:missing`;}).join('|');
     if(!this._rendered){this._managerSignature=signature;this.render();return;}
     if(signature===this._managerSignature)return;
@@ -858,7 +859,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
   pageRefreshInterval(page=this._page){
     // Full DOM renders are intentionally conservative. Home Assistant state
     // updates continue normally; this only rate-limits visible page rebuilds.
-    if(page==='flow'||page==='topology'||page==='kiosk'||page==='command_center')return 1000;
+    if(page==='flow'||page==='topology'||page==='kiosk'||page==='command_center'||page==='live')return 1000;
     if(page==='daily_report')return 20000;
     if(page==='dashboard')return 20000;
     if(page==='briefing')return 30000;
@@ -1579,13 +1580,24 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
   livePowerPage(){
     const finite=v=>{const n=Number(v);return Number.isFinite(n)?n:null;};
     const sensorValue=id=>{const st=this.s(id);if(!st||['unknown','unavailable','none',''].includes(String(st.state||'').trim().toLowerCase()))return null;return finite(st.state);};
-    const solar=sensorValue('sensor.aion_ems_zeus_solar_power');
-    const house=sensorValue('sensor.aion_ems_zeus_house_power');
-    const gridImport=sensorValue('sensor.aion_ems_zeus_grid_import_power');
-    const gridExport=sensorValue('sensor.aion_ems_zeus_grid_export_power');
-    const batteryCharge=sensorValue('sensor.aion_ems_zeus_battery_charge_power');
-    const batteryDischarge=sensorValue('sensor.aion_ems_zeus_battery_discharge_power');
-    const batterySoc=sensorValue('sensor.aion_ems_zeus_battery_soc');
+    const flowState=this.s('sensor.aion_ems_zeus_energy_flow');
+    const flowAttrs=flowState?.attributes||{};
+    const flowValues=flowAttrs.flows||{};
+    const flowValue=(key,fallbackId)=>{
+      const item=flowValues?.[key];
+      const direct=finite(item&&typeof item==='object'?(item.w??item.value):item);
+      if(direct!=null)return direct;
+      const flat=finite(flowAttrs?.[`${key}_w`]);
+      if(flat!=null)return flat;
+      return sensorValue(fallbackId);
+    };
+    const solar=flowValue('solar_power','sensor.aion_ems_zeus_solar_power');
+    const house=flowValue('house_power','sensor.aion_ems_zeus_house_power');
+    const gridImport=flowValue('grid_import_power','sensor.aion_ems_zeus_grid_import_power');
+    const gridExport=flowValue('grid_export_power','sensor.aion_ems_zeus_grid_export_power');
+    const batteryCharge=flowValue('battery_charge_power','sensor.aion_ems_zeus_battery_charge_power');
+    const batteryDischarge=flowValue('battery_discharge_power','sensor.aion_ems_zeus_battery_discharge_power');
+    const batterySoc=finite(flowAttrs.battery_soc_percent)??sensorValue('sensor.aion_ems_zeus_battery_soc');
     const gridNet=gridImport==null&&gridExport==null?null:Math.max(0,gridImport||0)-Math.max(0,gridExport||0);
     const batteryNet=batteryCharge==null&&batteryDischarge==null?null:Math.max(0,batteryCharge||0)-Math.max(0,batteryDischarge||0);
     const devices=this.deviceData();
