@@ -32,6 +32,12 @@ RECORDER_GUARD_FREQUENT_INTERVAL_SECONDS = 10.0
 RECORDER_GUARD_FREQUENT_MIN_PAYLOAD_BYTES = 1024
 RECORDER_GUARD_FREQUENT_BUDGET_BYTES_PER_HOUR = 5_000_000
 
+# Recorder state-row sampling for high-frequency numeric Energy Flow entities.
+# Zeus core/attribution continues to refresh at the normal fast coordinator rate;
+# only the HA entity state publication cadence is reduced. The rich Energy Flow
+# summary remains the fast live authority for the Zeus frontend.
+ENERGY_FLOW_ENTITY_PUBLISH_INTERVAL_SECONDS = 5.0
+
 # Internal/diagnostic entities are intentionally live in Home Assistant for the
 # Zeus frontend, but their rapidly changing nested attributes have no useful
 # historical meaning. Recorder stores their state only.
@@ -2185,6 +2191,25 @@ class EnergyFlowValueSensor(CoordinatorEntity, SensorEntity):
         self.entity_id = f"sensor.aion_ems_zeus_{key}"
         if key == "known_major_loads_power":
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._zeus_last_entity_publish_monotonic = 0.0
+
+    def _handle_coordinator_update(self) -> None:
+        """Publish high-frequency numeric states to HA at a Recorder-safe cadence.
+
+        The Energy Flow engine itself still refreshes at full coordinator speed.
+        Attribution, control, diagnostics and the fast Energy Flow summary are
+        therefore unchanged. Only these convenience numeric entity state changes
+        are sampled to reduce Recorder state-row volume.
+        """
+        now = monotonic()
+        if (
+            self._zeus_last_entity_publish_monotonic
+            and now - self._zeus_last_entity_publish_monotonic
+            < ENERGY_FLOW_ENTITY_PUBLISH_INTERVAL_SECONDS
+        ):
+            return
+        self._zeus_last_entity_publish_monotonic = now
+        self.async_write_ha_state()
 
     @property
     def native_value(self):
