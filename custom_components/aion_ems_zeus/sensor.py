@@ -2064,12 +2064,7 @@ class DailyBriefingSensor(SimpleSensor):
     Recorder skips those duplicated nested payloads.
     """
 
-    _unrecorded_attributes = frozenset({
-        "today",
-        "top_device",
-        "recommendation",
-        "best_surplus_window",
-    })
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
 
 class PredictiveBatterySensor(SimpleSensor):
@@ -2080,7 +2075,7 @@ class PredictiveBatterySensor(SimpleSensor):
     avoiding the 16 KiB attribute-storage ceiling without changing battery math.
     """
 
-    _unrecorded_attributes = frozenset({"timeline"})
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
 
 class IntelligenceEngineSensor(SimpleSensor):
@@ -2092,7 +2087,7 @@ class IntelligenceEngineSensor(SimpleSensor):
     excluded from Recorder to avoid duplicate large payloads.
     """
 
-    _unrecorded_attributes = frozenset({"optimizer", "knowledge", "briefing"})
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
 
 class OptimizationIntelligenceSensor(SimpleSensor):
@@ -2104,10 +2099,11 @@ class OptimizationIntelligenceSensor(SimpleSensor):
     duplication in the database.
     """
 
-    _unrecorded_attributes = frozenset({"daily_energy_orchestrator"})
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
 
 class DataQualitySensor(SimpleSensor):
+
     """Data-quality summary with recorder-safe live detail attributes.
 
     The full validation details remain available in Home Assistant's live state
@@ -2115,12 +2111,7 @@ class DataQualitySensor(SimpleSensor):
     database rows stay below Home Assistant's 16 KiB attribute limit.
     """
 
-    _unrecorded_attributes = frozenset({
-        "source_scores",
-        "device_health",
-        "mapping_suggestions",
-        "issues",
-    })
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
 
 class WeatherStatisticsSensor(SimpleSensor):

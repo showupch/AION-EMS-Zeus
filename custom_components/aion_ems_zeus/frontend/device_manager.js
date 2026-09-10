@@ -1126,13 +1126,33 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
   }
   financePeriodValueData(period='today',finance={}){
     // Shared Finance-period value authority for the Finance UI and Copilot.
-    // Energy comes only from financePeriodData(), which already reconciles the
-    // canonical whole-home period boundary and Battery -> Home allocation.
-    const energy=this.financePeriodData(period,finance),n=v=>Math.max(0,Number(v)||0);
+    // Week/month/year use canonical Historical Analytics period energy. Today is
+    // special: the backend Finance Engine already owns the live current-day
+    // accounting and can remain valid even when Historical Analytics has not yet
+    // materialized its current-day bucket on a newly installed/restarted system.
+    const energy=this.financePeriodData(period,finance),n=v=>Math.max(0,Number(v)||0),finite=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
+    if(period==='today'){
+      if(finite(finance.grid_import_kwh))energy.finance_import_kwh=n(finance.grid_import_kwh);
+      if(finite(finance.grid_export_kwh))energy.finance_export_kwh=n(finance.grid_export_kwh);
+      if(finite(finance.direct_solar_to_home_kwh))energy.finance_direct_solar_to_home_kwh=n(finance.direct_solar_to_home_kwh);
+      if(finite(finance.battery_support_to_home_kwh))energy.finance_battery_support_to_home_kwh=n(finance.battery_support_to_home_kwh);
+      energy.finance_avoided_import_kwh=n(energy.finance_direct_solar_to_home_kwh)+n(energy.finance_battery_support_to_home_kwh);
+    }
     const tou=finance.tariff_mode==='time_of_use'?(finance.tou_period_values?.[period]||null):null,configuredImport=n(finance.import_tariff),importTariff=tou&&Number(tou.effective_import_tariff)>0?n(tou.effective_import_tariff):configuredImport,exportTariff=n(finance.export_tariff),standingDaily=n(finance.standing_charge),dayCount=Math.max(1,this.numberValue(energy.day_count,1));
-    const gridCost=tou&&Number.isFinite(Number(tou.grid_cost))?n(tou.grid_cost):n(energy.finance_import_kwh)*importTariff,exportRevenue=tou&&Number.isFinite(Number(tou.export_revenue))?n(tou.export_revenue):n(energy.finance_export_kwh)*exportTariff,directSolarSavings=n(energy.finance_direct_solar_to_home_kwh)*importTariff,batterySavings=n(energy.finance_battery_support_to_home_kwh)*importTariff,standingCost=standingDaily*dayCount;
-    const avoidedImport=directSolarSavings+batterySavings,netBenefit=avoidedImport+exportRevenue-gridCost-standingCost;
-    return {...energy,finance_import_tariff:importTariff,finance_export_tariff:exportTariff,finance_standing_cost:standingCost,finance_grid_cost:gridCost,finance_export_revenue:exportRevenue,finance_direct_solar_value:directSolarSavings,finance_battery_support_value:batterySavings,finance_avoided_import_value:avoidedImport,finance_net_benefit:netBenefit,finance_value_authority:'canonical_period_energy_plus_configured_tariffs'};
+    let gridCost=tou&&Number.isFinite(Number(tou.grid_cost))?n(tou.grid_cost):n(energy.finance_import_kwh)*importTariff,exportRevenue=tou&&Number.isFinite(Number(tou.export_revenue))?n(tou.export_revenue):n(energy.finance_export_kwh)*exportTariff,directSolarSavings=n(energy.finance_direct_solar_to_home_kwh)*importTariff,batterySavings=n(energy.finance_battery_support_to_home_kwh)*importTariff,standingCost=standingDaily*dayCount;
+    // For Today, prefer the backend's already-computed value fields. This also
+    // preserves TOU/dynamic-price handling instead of recalculating it from an
+    // incomplete frontend current-day bucket.
+    if(period==='today'){
+      if(finite(finance.grid_cost_today))gridCost=n(finance.grid_cost_today);
+      if(finite(finance.export_revenue_today))exportRevenue=n(finance.export_revenue_today);
+      if(finite(finance.solar_value_today))directSolarSavings=n(finance.solar_value_today);
+      if(finite(finance.battery_support_value_today))batterySavings=n(finance.battery_support_value_today);
+    }
+    const avoidedImport=directSolarSavings+batterySavings;
+    const computedNet=avoidedImport+exportRevenue-gridCost-standingCost;
+    const netBenefit=period==='today'&&finite(finance.net_benefit_today)?Number(finance.net_benefit_today):computedNet;
+    return {...energy,finance_import_tariff:importTariff,finance_export_tariff:exportTariff,finance_standing_cost:standingCost,finance_grid_cost:gridCost,finance_export_revenue:exportRevenue,finance_direct_solar_value:directSolarSavings,finance_battery_support_value:batterySavings,finance_avoided_import_value:avoidedImport,finance_net_benefit:netBenefit,finance_value_authority:period==='today'?'backend_finance_today_live_authority':'canonical_period_energy_plus_configured_tariffs'};
   }
   localDateKey(date=new Date()){const d=date instanceof Date?date:new Date(date),pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;}
   periodChartRows(period=this._analyticsPeriod){
@@ -3181,6 +3201,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const control=this.s('sensor.aion_ems_zeus_smart_control_safety')?.attributes||{};
     const qa=this.s('sensor.aion_ems_zeus_qa_diagnostics')?.attributes||{};
     const perf=this.s('sensor.aion_ems_zeus_performance_diagnostics')?.attributes||{};
+    const finance=this.s('sensor.aion_ems_zeus_finance_summary')?.attributes||{};
     const version=String(platform.version||'16.0.10').replace(/^v/i,'');
     const source=flow.source_snapshot&&typeof flow.source_snapshot==='object'?flow.source_snapshot:{};
     const sourceKeys=['solar_power','grid_import_power','grid_export_power','battery_charge_power','battery_discharge_power','grid_power','battery_power'];
@@ -3191,7 +3212,18 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const simulations=(Array.isArray(control.simulations)?control.simulations:[]).map(x=>({device_id:x.device_id||null,allowed:x.allowed,reason:x.reason||null,requested_power_w:x.requested_power_w??null,live:x.live?{surplus_w:x.live.surplus_w??null,boiler_temperature_c:x.live.boiler_temperature_c??null,element_temperature_c:x.live.element_temperature_c??null}:null,execution:x.execution?{status:x.execution.status||null,active:x.execution.active,last_value_w:x.execution.last_value_w??null,last_write_at:x.execution.last_write_at||null,last_error:x.execution.last_error||null,interlocks:Array.isArray(x.execution.interlocks)?x.execution.interlocks:[]}:null}));
     const goe=(((control.goe_mqtt||{}).devices)||[]).map(x=>({device_id:x.device_id||null,active:!!x.active,topic:x.topic||null,grid_power_entity:x.grid_power_entity||null,last_publish_at:x.last_publish_at||null,last_error:x.last_error||null}));
     const checks=Array.isArray(qa.checks)?qa.checks.slice(0,50).map(x=>({category:x.category||x.area||null,name:x.name||x.check||x.title||null,status:x.status||x.result||null,message:x.message||x.detail||null})):[];
-    const report={report_schema:'aion_ems_zeus_diagnostic_report_v1',generated_at:new Date().toISOString(),privacy:'No credentials, passwords, access tokens, MQTT credentials, NAS server addresses or secret connection data are included.',system:{zeus_version:version,frontend_version:'16.0.10',registered_devices:devices.length,performance:perf.status||perf.mode||null,recorder_attribute_limit_bytes:16384,energy_flow_recorder_protected:true},energy_flow:{status:flowRoot.status||flowState?.state||null,snapshot_completed:flow.snapshot_completed||flow.flow_snapshot_completed||flow.snapshot_timestamp||flow.last_updated||null,update_latency_ms:flowRoot.update_latency_ms??flow.update_latency_ms??perf.update_latency_ms??'unavailable',source_skew_ms:flow.source_skew_ms??null,house_power_w:this.value('sensor.aion_ems_zeus_house_power'),solar_power_w:this.value('sensor.aion_ems_zeus_solar_power'),grid_import_power_w:this.value('sensor.aion_ems_zeus_grid_import_power'),grid_export_power_w:this.value('sensor.aion_ems_zeus_grid_export_power'),battery_charge_power_w:this.value('sensor.aion_ems_zeus_battery_charge_power'),battery_discharge_power_w:this.value('sensor.aion_ems_zeus_battery_discharge_power'),sources},registered_devices:devices,smart_control:{execution_path:control.execution_path||null,registered_devices:control.registered_devices??devices.length,controllable_candidates:control.controllable_candidates??null,permissioned_candidates:control.permissioned_candidates??null,devices:focused,simulations,goe_mqtt:goe},self_test:{status:qa.status||'Not run',score:qa.score??null,grade:qa.grade||null,passed:qa.passed_count??null,warnings:qa.warning_count??null,errors:qa.error_count??null,checks}}; return this._sanitizeDiagnosticExport(report);
+    const compactTouValues={};
+    for(const period of ['today','week','month','year']){
+      const x=(finance.tou_period_values&&typeof finance.tou_period_values==='object')?finance.tou_period_values[period]:null;
+      if(x&&typeof x==='object')compactTouValues[period]={grid_import_kwh:x.grid_import_kwh??null,grid_export_kwh:x.grid_export_kwh??null,grid_cost:x.grid_cost??null,export_revenue:x.export_revenue??null,effective_import_tariff:x.effective_import_tariff??null,hour_count:x.hour_count??null,coverage_complete:x.coverage_complete??null,coverage_start:x.coverage_start||null,coverage_end:x.coverage_end||null,evidence_source:x.evidence_source||null};
+    }
+    const financePeriods={};
+    for(const period of ['today','week','month','year']){
+      const e=this.financePeriodData(period,finance)||{};
+      financePeriods[period]={grid_import_kwh:e.finance_import_kwh??e.grid_import_energy_kwh??null,grid_export_kwh:e.finance_export_kwh??e.grid_export_energy_kwh??null,direct_solar_to_home_kwh:e.finance_direct_solar_to_home_kwh??null,battery_support_to_home_kwh:e.finance_battery_support_to_home_kwh??null,day_count:e.day_count??null};
+    }
+    const financeDiagnostic={configured:!!finance.configured,currency:finance.currency||null,tariff_mode:finance.tariff_mode||null,import_tariff:finance.import_tariff??null,active_import_tariff:finance.active_import_tariff??null,active_tariff_name:finance.active_tariff_name||null,effective_import_tariff_today:finance.effective_import_tariff_today??null,export_tariff:finance.export_tariff??null,active_export_tariff:finance.active_export_tariff??null,standing_charge:finance.standing_charge??null,tou_periods:Array.isArray(finance.tou_periods)?finance.tou_periods.map(x=>({name:x.name||null,start:x.start||null,end:x.end||null,import_tariff:x.import_tariff??null})):[],tou_period_values:compactTouValues,canonical_period_energy:financePeriods,backend_today:{grid_import_kwh:finance.grid_import_kwh??null,grid_export_kwh:finance.grid_export_kwh??null,grid_cost:finance.grid_cost_today??null,export_revenue:finance.export_revenue_today??null,solar_value:finance.solar_value_today??null,battery_support_value:finance.battery_support_value_today??null,net_benefit:finance.net_benefit_today??null},assumptions:finance.assumptions||null};
+    const report={report_schema:'aion_ems_zeus_diagnostic_report_v1',generated_at:new Date().toISOString(),privacy:'No credentials, passwords, access tokens, MQTT credentials, NAS server addresses or secret connection data are included.',system:{zeus_version:version,frontend_version:'16.0.10',registered_devices:devices.length,performance:perf.status||perf.mode||null,recorder_attribute_limit_bytes:16384,energy_flow_recorder_protected:true},energy_flow:{status:flowRoot.status||flowState?.state||null,snapshot_completed:flow.snapshot_completed||flow.flow_snapshot_completed||flow.snapshot_timestamp||flow.last_updated||null,update_latency_ms:flowRoot.update_latency_ms??flow.update_latency_ms??perf.update_latency_ms??'unavailable',source_skew_ms:flow.source_skew_ms??null,house_power_w:this.value('sensor.aion_ems_zeus_house_power'),solar_power_w:this.value('sensor.aion_ems_zeus_solar_power'),grid_import_power_w:this.value('sensor.aion_ems_zeus_grid_import_power'),grid_export_power_w:this.value('sensor.aion_ems_zeus_grid_export_power'),battery_charge_power_w:this.value('sensor.aion_ems_zeus_battery_charge_power'),battery_discharge_power_w:this.value('sensor.aion_ems_zeus_battery_discharge_power'),sources},finance:financeDiagnostic,registered_devices:devices,smart_control:{execution_path:control.execution_path||null,registered_devices:control.registered_devices??devices.length,controllable_candidates:control.controllable_candidates??null,permissioned_candidates:control.permissioned_candidates??null,devices:focused,simulations,goe_mqtt:goe},self_test:{status:qa.status||'Not run',score:qa.score??null,grade:qa.grade||null,passed:qa.passed_count??null,warnings:qa.warning_count??null,errors:qa.error_count??null,checks}}; return this._sanitizeDiagnosticExport(report);
   }
   _sanitizeDiagnosticExport(value){
     if(value==null) return value;
@@ -6324,7 +6356,10 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const e=this.financePeriodValueData(period,f),title=this.periodLabel(period);
     const gridCost=Number(e.finance_grid_cost)||0,solarSaving=Number(e.finance_direct_solar_value)||0,batterySaving=Number(e.finance_battery_support_value)||0,exportIncome=Number(e.finance_export_revenue)||0,net=Number(e.finance_net_benefit)||0;
     const imp=Number(e.finance_import_kwh)||0,exp=Number(e.finance_export_kwh)||0,direct=Number(e.finance_direct_solar_to_home_kwh)||0,battery=Number(e.finance_battery_support_to_home_kwh)||0;
-    const history=this.historicalData()||{},periodRows=this.periodChartRows(period),totalRows=(history.chart_history?.year||history.chart_history?.month||history.last_30_days||[]),rows=(period==='total'?(Array.isArray(totalRows)?totalRows:[]):periodRows);
+    const history=this.historicalData()||{},periodRows=this.periodChartRows(period),totalRows=(history.chart_history?.year||history.chart_history?.month||history.last_30_days||[]);
+    const todayLiveRow={date:new Date().toISOString(),grid_import_energy_kwh:imp,grid_export_energy_kwh:exp};
+    const todayRows=(period==='today'&&(!periodRows.length||periodRows.every(r=>(Number(r.grid_import_energy_kwh)||0)<=0&&(Number(r.grid_export_energy_kwh)||0)<=0)))?[todayLiveRow]:periodRows;
+    const rows=(period==='total'?(Array.isArray(totalRows)?totalRows:[]):todayRows);
     const importTariff=Number(e.finance_import_tariff)||0,exportTariff=Number(e.finance_export_tariff)||0;
     const labelFor=r=>{const raw=String(r.date||'');if(period==='today')return raw.includes('T')?raw.slice(11,16):'Now';if(period==='year'||period==='total')return raw.slice(0,7);return raw.slice(5,10);};
 

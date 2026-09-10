@@ -138,7 +138,7 @@ class FinanceEngine:
         return None, "No price slot"
 
     def _dynamic_hourly_values(self, slots: list[dict[str, Any]], export_rate: float, export_depreciation: float | None = None) -> dict[str, Any]:
-        rows = list(getattr(self.analytics, "_ha_consumption_hourly", []) or [])
+        rows, evidence_source = self._finance_hourly_grid_rows()
         now = dt_util.now(); today = now.date(); week_start = today - timedelta(days=today.weekday()); month_start = today.replace(day=1); year_start = today.replace(month=1, day=1)
         scopes = {"today": today, "week": week_start, "month": month_start, "year": year_start}; values = {}
         for scope, start_date in scopes.items():
@@ -155,7 +155,7 @@ class FinanceEngine:
                 imported += imp; exported += exp; cost += imp * rate; revenue += exp * slot_export_rate; matched += 1
                 earliest = local if earliest is None or local < earliest else earliest; latest = local if latest is None or local > latest else latest
             effective = cost / imported if imported > 0 else 0.0
-            values[scope] = {"grid_import_kwh": round(imported,4), "grid_export_kwh": round(exported,4), "grid_cost": round(cost,4), "export_revenue": round(revenue,4), "effective_import_tariff": round(effective,6), "hour_count": matched, "coverage_complete": bool(matched), "coverage_start": earliest.isoformat() if earliest else None, "coverage_end": latest.isoformat() if latest else None}
+            values[scope] = {"grid_import_kwh": round(imported,4), "grid_export_kwh": round(exported,4), "grid_cost": round(cost,4), "export_revenue": round(revenue,4), "effective_import_tariff": round(effective,6), "hour_count": matched, "coverage_complete": bool(matched), "coverage_start": earliest.isoformat() if earliest else None, "coverage_end": latest.isoformat() if latest else None, "evidence_source": evidence_source}
         return values
 
     @staticmethod
@@ -170,8 +170,30 @@ class FinanceEngine:
                 return float(item["import_tariff"]), str(item["name"])
         return 0.0, "Uncovered"
 
+    def _finance_hourly_grid_rows(self) -> tuple[list[dict[str, Any]], str]:
+        """Return best available hourly grid evidence for pricing.
+
+        Canonical energy-statistic change rows remain authoritative.  When those
+        rows do not carry grid import/export evidence (common on smart-meter-only
+        sites using sensor.zeus_import/export), fall back to Recorder hourly mean
+        power integrated by Analytics.  This preserves the no-extra-template-
+        sensor design without inventing a house-consumption dependency.
+        """
+        canonical = list(getattr(self.analytics, "_ha_consumption_hourly", []) or [])
+        has_grid = any(
+            row.get("grid_import_energy_kwh") is not None
+            or row.get("grid_export_energy_kwh") is not None
+            for row in canonical if isinstance(row, dict)
+        )
+        if canonical and has_grid:
+            return canonical, "canonical_energy_statistics"
+        fallback = list(getattr(self.analytics, "_ha_finance_grid_hourly", []) or [])
+        if fallback:
+            return fallback, "recorder_grid_power_hourly_fallback"
+        return [], "no_hourly_grid_evidence"
+
     def _tou_hourly_values(self, periods: list[dict[str, Any]], export_rate: float) -> dict[str, Any]:
-        rows = list(getattr(self.analytics, "_ha_consumption_hourly", []) or [])
+        rows, evidence_source = self._finance_hourly_grid_rows()
         now = dt_util.now()
         today = now.date()
         week_start = today - timedelta(days=today.weekday())
@@ -218,6 +240,7 @@ class FinanceEngine:
                 "coverage_complete": coverage_complete,
                 "coverage_start": earliest.isoformat() if earliest else None,
                 "coverage_end": latest.isoformat() if latest else None,
+                "evidence_source": evidence_source,
                 "breakdown": {k: {"energy_kwh": round(v["energy_kwh"], 4), "cost": round(v["cost"], 4)} for k, v in breakdown.items()},
             }
         return values

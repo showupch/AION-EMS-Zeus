@@ -39,6 +39,13 @@ class HistoricalAnalyticsEngine:
         # Raw hourly rows stay internal and are never exposed as sensor attributes.
         self._ha_consumption_hourly: list[dict[str, Any]] = []
         self._ha_consumption_hourly_status: dict[str, Any] = {"status": "Not loaded"}
+        # Finance-only fallback for smart-meter-only installations.  This is kept
+        # separate from household-consumption timing evidence because a site can
+        # legitimately have Grid + Solar + Battery without a mapped house-energy
+        # statistic.  Recorder hourly mean power is integrated to kWh only when
+        # canonical hourly energy-change statistics are unavailable.
+        self._ha_finance_grid_hourly: list[dict[str, Any]] = []
+        self._ha_finance_grid_hourly_status: dict[str, Any] = {"status": "Not loaded"}
 
     async def async_refresh_ha_energy_battery(self) -> None:
         """Load mapped energy meters from Home Assistant long-term statistics.
@@ -135,6 +142,10 @@ class HistoricalAnalyticsEngine:
             self._ha_battery_status = dict(self._ha_energy_status)
             self._ha_consumption_hourly = []
             self._ha_consumption_hourly_status = dict(self._ha_energy_status)
+            self._ha_finance_grid_hourly = []
+            self._ha_finance_grid_hourly_status = dict(self._ha_energy_status)
+            self._ha_finance_grid_hourly = []
+            self._ha_finance_grid_hourly_status = dict(self._ha_energy_status)
             return
         try:
             now = dt_util.now()
@@ -337,6 +348,112 @@ class HistoricalAnalyticsEngine:
                 "completed_day_count": len(completed_hour_days),
                 "refreshed_at": now.isoformat(),
             }
+
+            # v16.0.22: Finance fallback for the exact topology Zeus supports:
+            # one signed smart meter, with Zeus-derived import/export power and no
+            # separate house-consumption energy sensor.  TOU Finance previously
+            # depended exclusively on energy-statistic `change` rows, which left
+            # these installations with valid kWh totals but zero priced hours.
+            #
+            # Prefer explicit import/export power mappings (including
+            # sensor.zeus_import / sensor.zeus_export).  If they are not mapped,
+            # use the signed grid-power sensor and its configured sign convention.
+            # Only completed Recorder hours are integrated, so a partial current
+            # hour is never extrapolated to a full hour.
+            self._ha_finance_grid_hourly = []
+            self._ha_finance_grid_hourly_status = {"status": "Not available"}
+            grid_import_power_entity = str(mappings.get("grid_import_power") or "").strip()
+            grid_export_power_entity = str(mappings.get("grid_export_power") or "").strip()
+            grid_power_entity = str(mappings.get("grid_power") or "").strip()
+            power_ids = [x for x in (grid_import_power_entity, grid_export_power_entity, grid_power_entity) if x]
+            power_ids = list(dict.fromkeys(power_ids))
+            if power_ids:
+                try:
+                    finance_start = dt_util.start_of_local_day(now - timedelta(days=401))
+                    completed_hour_end = now.replace(minute=0, second=0, microsecond=0)
+                    power_response = await self.hass.services.async_call(
+                        "recorder", "get_statistics",
+                        {
+                            "statistic_ids": power_ids,
+                            "start_time": finance_start,
+                            "end_time": completed_hour_end,
+                            "period": "hour",
+                            "types": ["mean"],
+                            "units": {"power": "W"},
+                        },
+                        blocking=True, return_response=True,
+                    )
+                    raw_power = (power_response or {}).get("statistics", power_response or {})
+                    finance_by_start: dict[str, dict[str, Any]] = {}
+
+                    def _add_power_rows(entity_id: str, role: str) -> None:
+                        if not entity_id:
+                            return
+                        for prow in list((raw_power or {}).get(entity_id) or []):
+                            if not isinstance(prow, dict):
+                                continue
+                            watts = self._ha_stat_number(prow.get("mean"))
+                            stamp = self._ha_stat_datetime(prow.get("start"))
+                            if watts is None or stamp is None:
+                                continue
+                            local_stamp = dt_util.as_local(stamp)
+                            bucket = local_stamp.replace(minute=0, second=0, microsecond=0)
+                            if bucket >= completed_hour_end:
+                                continue
+                            key = bucket.isoformat()
+                            target = finance_by_start.setdefault(key, {"start": key})
+                            if role == "import":
+                                target["grid_import_energy_kwh"] = round(
+                                    target.get("grid_import_energy_kwh", 0.0) + max(float(watts), 0.0) / 1000.0, 6
+                                )
+                            elif role == "export":
+                                target["grid_export_energy_kwh"] = round(
+                                    target.get("grid_export_energy_kwh", 0.0) + max(float(watts), 0.0) / 1000.0, 6
+                                )
+                            else:
+                                options = dict((getattr(self.registry, "data", {}) or {}).get("mapping_options", {}) or {})
+                                sign = str(options.get("grid_power_sign") or "positive_import")
+                                normalized = float(watts) if sign == "positive_import" else -float(watts)
+                                target["grid_import_energy_kwh"] = round(max(normalized, 0.0) / 1000.0, 6)
+                                target["grid_export_energy_kwh"] = round(max(-normalized, 0.0) / 1000.0, 6)
+
+                    if grid_import_power_entity or grid_export_power_entity:
+                        _add_power_rows(grid_import_power_entity, "import")
+                        _add_power_rows(grid_export_power_entity, "export")
+                        finance_source = "Recorder hourly mean · separate grid import/export power"
+                        finance_entities = {
+                            "grid_import_power": grid_import_power_entity or None,
+                            "grid_export_power": grid_export_power_entity or None,
+                        }
+                    elif grid_power_entity:
+                        _add_power_rows(grid_power_entity, "signed")
+                        finance_source = "Recorder hourly mean · signed smart-meter power split by Zeus"
+                        finance_entities = {"grid_power": grid_power_entity}
+                    else:
+                        finance_source = "Unavailable"
+                        finance_entities = {}
+
+                    self._ha_finance_grid_hourly = [
+                        row for _, row in sorted(finance_by_start.items())
+                        if (
+                            row.get("grid_import_energy_kwh") is not None
+                            or row.get("grid_export_energy_kwh") is not None
+                        )
+                    ]
+                    self._ha_finance_grid_hourly_status = {
+                        "status": "Ready" if self._ha_finance_grid_hourly else "No completed grid-power hours",
+                        "source": finance_source,
+                        "entities": finance_entities,
+                        "hour_count": len(self._ha_finance_grid_hourly),
+                        "refreshed_at": now.isoformat(),
+                    }
+                except Exception as err:
+                    self._ha_finance_grid_hourly = []
+                    self._ha_finance_grid_hourly_status = {
+                        "status": "Unavailable",
+                        "error": str(err)[:180],
+                        "refreshed_at": now.isoformat(),
+                    }
 
             display_entities = {
                 key: (values[0] if len(values) == 1 else " + ".join(values))
