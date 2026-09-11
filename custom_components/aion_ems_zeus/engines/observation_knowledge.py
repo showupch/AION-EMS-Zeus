@@ -200,6 +200,60 @@ class ObservationKnowledgeEngine:
                     # consumption from the Heat Pump circuit.
                     active = bool(active or compressor_active)
             result[device_id] = {"name": name, "type": dtype, "active": bool(active), "power_w": max(power_w, 0.0), "activity": activity, "inverter_like": inverter_like}
+
+        # v16.0.34: Switch Hub devices are first-class Timeline loads.
+        # Use the physical switch state as the authority so this works for all
+        # control methods: Observe only, direct Zeus Control, and HA Automation.
+        # Optional power feedback enriches the event, but is never required.
+        switch_hub = list((getattr(self.registry, "data", {}) or {}).get("switch_hub", []) or [])
+        for row in switch_hub:
+            if not isinstance(row, dict):
+                continue
+            switch_entity = str(row.get("switch_entity") or "").strip()
+            hub_id = str(row.get("id") or "").strip()
+            if not switch_entity or not hub_id:
+                continue
+            timeline_id = f"switch_hub:{hub_id}"
+            state = self.hass.states.get(switch_entity)
+            if state is None:
+                # Preserve the previously confirmed Timeline state during a
+                # transient HA lookup gap instead of inventing an OFF event.
+                previous_item = (self.data.get("previous_devices") or {}).get(timeline_id) or {}
+                if previous_item:
+                    result[timeline_id] = dict(previous_item)
+                continue
+            raw_state = str(state.state or "").strip().lower()
+            if raw_state in {"unknown", "unavailable", "none", ""}:
+                previous_item = (self.data.get("previous_devices") or {}).get(timeline_id) or {}
+                if previous_item:
+                    result[timeline_id] = dict(previous_item)
+                continue
+
+            active = raw_state == "on"
+            power_w = 0.0
+            power_entity = str(row.get("power_entity") or "").strip()
+            if power_entity:
+                power_state = self.hass.states.get(power_entity)
+                if power_state is not None:
+                    try:
+                        raw_power = float(power_state.state)
+                        unit = str(power_state.attributes.get("unit_of_measurement") or "W").strip().lower()
+                        power_w = raw_power * 1000.0 if unit == "kw" else raw_power
+                    except (TypeError, ValueError):
+                        power_w = 0.0
+
+            result[timeline_id] = {
+                "name": str(row.get("name") or state.attributes.get("friendly_name") or hub_id).strip(),
+                "type": "switch_hub",
+                "active": active,
+                "power_w": max(power_w, 0.0),
+                "activity": raw_state,
+                "inverter_like": False,
+                "switch_hub": True,
+                "switch_hub_id": hub_id,
+                "control_mode": str(row.get("control_mode") or ("zeus" if row.get("control_enabled") is True else "observe")),
+                "switch_entity": switch_entity,
+            }
         return result
 
     def _observe_registered_devices(self) -> None:
@@ -246,6 +300,10 @@ class ObservationKnowledgeEngine:
                 return 0
             if dtype == "water_heater":
                 return 5 if candidate_active else 30
+            if dtype == "switch_hub":
+                # Physical switch state is already discrete evidence, so no
+                # extra power-based confirmation window is required.
+                return 0
             return 10 if candidate_active else 60
 
         def _parse_iso(value: Any) -> datetime | None:
@@ -307,6 +365,8 @@ class ObservationKnowledgeEngine:
                     title, kind = f"{name} {'started' if candidate_active else 'stopped'}", "water_heater"
                 elif dtype == "ev_charger":
                     title, kind = f"{name} charging {'started' if candidate_active else 'stopped'}", "ev"
+                elif dtype == "switch_hub":
+                    title, kind = f"{name} {'started' if candidate_active else 'stopped'}", "switch_hub"
                 else:
                     title, kind = f"{name} {'started' if candidate_active else 'stopped'}", "device"
                 detail = (
@@ -321,6 +381,9 @@ class ObservationKnowledgeEngine:
                         "power_w": round(power_w, 1),
                         "confirmed_seconds": required_seconds,
                         "session_aware": dtype == "ev_charger",
+                        "switch_hub": dtype == "switch_hub",
+                        "control_mode": item.get("control_mode") if dtype == "switch_hub" else None,
+                        "switch_entity": item.get("switch_entity") if dtype == "switch_hub" else None,
                     },
                     100,
                 )
@@ -340,6 +403,8 @@ class ObservationKnowledgeEngine:
                     title, kind = f"{name} {mode.lower()} active", "heat_pump"
                 elif dtype == "water_heater":
                     title, kind = f"{name} active", "water_heater"
+                elif dtype == "switch_hub":
+                    title, kind = f"{name} active", "switch_hub"
                 else:
                     title, kind = f"{name} active", "device"
                 self._add_observation(kind, title, f"Active at Timeline baseline · measured power {power_w:.0f} W.", {"device_id": device_id, "power_w": round(power_w, 1), "baseline": True}, 100)

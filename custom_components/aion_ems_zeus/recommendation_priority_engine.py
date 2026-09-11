@@ -198,14 +198,42 @@ class RecommendationPriorityEngine:
                 page="system_health",
             ))
 
-        mapping_issues = int(self._number(quality.get("invalid_mapping_count")))
-        if isinstance(quality.get("issues"), list):
-            mapping_issues += len(quality["issues"])
+        # v16.0.30: classify Data Quality findings before turning them into
+        # Recommendation Priority actions. A valid slowly-changing source (for
+        # example Battery SOC staying at the same percentage for 15 minutes)
+        # may be marked "delayed" by Data Quality, but that is not a mapping
+        # failure and should not create an Important "correct mappings" card.
+        quality_issues = list(quality.get("issues") or []) if isinstance(quality.get("issues"), list) else []
+        invalid_mapping_count = int(self._number(quality.get("invalid_mapping_count")))
+        actionable_quality_issues = []
+        delayed_quality_issues = []
+        for issue in quality_issues:
+            if not isinstance(issue, dict):
+                actionable_quality_issues.append(issue)
+                continue
+            code = str(issue.get("code") or "").strip().lower()
+            severity_name = str(issue.get("severity") or "").strip().lower()
+            current_state = str(issue.get("current_state") or "").strip().lower()
+            # Delayed-but-valid telemetry is informational evidence, not a
+            # broken mapping. Error-severity delayed findings, or delayed
+            # findings whose state is actually unavailable/unknown, remain
+            # actionable.
+            delayed_valid = (
+                code == "delayed"
+                and severity_name != "error"
+                and current_state not in {"", "unknown", "unavailable", "none", "null"}
+            )
+            if delayed_valid:
+                delayed_quality_issues.append(issue)
+            else:
+                actionable_quality_issues.append(issue)
+
+        mapping_issues = invalid_mapping_count + len(actionable_quality_issues)
         if mapping_issues:
             recommendations.append(self._make(
                 title="Correct data-quality and mapping issues",
-                message=f"Zeus identified {mapping_issues} mapping or evidence issue(s).",
-                action="Review Energy Sources and System Health to correct stale or unavailable mappings.",
+                message=f"Zeus identified {mapping_issues} actionable mapping or evidence issue(s).",
+                action="Review Energy Sources and System Health to correct invalid, stale, or unavailable mappings.",
                 severity=62,
                 confidence=92,
                 energy=55,
@@ -213,6 +241,19 @@ class RecommendationPriorityEngine:
                 urgency=52,
                 source="Data Quality",
                 page="sources",
+            ))
+        elif len(delayed_quality_issues) >= 3:
+            recommendations.append(self._make(
+                title="Monitor delayed telemetry",
+                message=f"{len(delayed_quality_issues)} valid source(s) are updating more slowly than their learned cadence.",
+                action="No mapping change is required. Check the source integrations only if updates stop or values become unavailable.",
+                severity=22,
+                confidence=88,
+                energy=18,
+                finance=10,
+                urgency=12,
+                source="Data Quality",
+                page="system_health",
             ))
 
         forecast_confidence = int(self._number(forecast.get("confidence_percent", forecast.get("confidence")), 0))

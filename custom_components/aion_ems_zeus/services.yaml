@@ -538,10 +538,22 @@ save_switch_hub_device:
         entity:
           domain: sensor
     control_enabled:
-      name: Zeus Control
+      name: Zeus Control (legacy)
+      description: Backward-compatible field. New setups should use Control method.
       required: false
       default: false
       selector: {boolean: null}
+    control_mode:
+      name: Control method
+      description: Observe only, direct Zeus Control, or publish staged decisions for a Home Assistant automation.
+      required: false
+      default: observe
+      selector:
+        select:
+          options:
+            - observe
+            - zeus
+            - home_assistant
     trigger_mode:
       name: Trigger
       required: false

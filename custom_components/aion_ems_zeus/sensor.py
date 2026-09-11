@@ -37,6 +37,7 @@ RECORDER_GUARD_FREQUENT_BUDGET_BYTES_PER_HOUR = 5_000_000
 # only the HA entity state publication cadence is reduced. The rich Energy Flow
 # summary remains the fast live authority for the Zeus frontend.
 ENERGY_FLOW_ENTITY_PUBLISH_INTERVAL_SECONDS = 5.0
+ENERGY_FLOW_ENTITY_KEEPALIVE_SECONDS = 300.0
 
 # Internal/diagnostic entities are intentionally live in Home Assistant for the
 # Zeus frontend, but their rapidly changing nested attributes have no useful
@@ -2192,23 +2193,51 @@ class EnergyFlowValueSensor(CoordinatorEntity, SensorEntity):
         if key == "known_major_loads_power":
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
         self._zeus_last_entity_publish_monotonic = 0.0
+        self._zeus_last_entity_published_value = object()
+        self._zeus_entity_publish_initialized = False
 
     def _handle_coordinator_update(self) -> None:
-        """Publish high-frequency numeric states to HA at a Recorder-safe cadence.
+        """Publish numeric Energy Flow states only when meaningful to HA/Recorder.
 
-        The Energy Flow engine itself still refreshes at full coordinator speed.
-        Attribution, control, diagnostics and the fast Energy Flow summary are
-        therefore unchanged. Only these convenience numeric entity state changes
-        are sampled to reduce Recorder state-row volume.
+        Zeus core, attribution, control, Live and Kiosk continue refreshing at the
+        normal fast coordinator rate. These convenience numeric HA entities use
+        two independent protections:
+
+        1. A 5-second minimum publish interval prevents bursts.
+        2. After that interval, an unchanged numeric value is not republished.
+
+        A 5-minute keepalive is retained so Home Assistant still receives an
+        occasional fresh entity write even when a value remains perfectly stable.
+        No deadband is applied in this test build: any exact numeric change is
+        eligible for publication.
         """
         now = monotonic()
-        if (
-            self._zeus_last_entity_publish_monotonic
-            and now - self._zeus_last_entity_publish_monotonic
-            < ENERGY_FLOW_ENTITY_PUBLISH_INTERVAL_SECONDS
-        ):
+        elapsed = (
+            now - self._zeus_last_entity_publish_monotonic
+            if self._zeus_last_entity_publish_monotonic
+            else None
+        )
+
+        # Never exceed the existing 5-second maximum publication cadence.
+        if elapsed is not None and elapsed < ENERGY_FLOW_ENTITY_PUBLISH_INTERVAL_SECONDS:
             return
+
+        current_value = self.native_value
+        changed = (
+            not self._zeus_entity_publish_initialized
+            or current_value != self._zeus_last_entity_published_value
+        )
+        keepalive_due = (
+            elapsed is not None
+            and elapsed >= ENERGY_FLOW_ENTITY_KEEPALIVE_SECONDS
+        )
+
+        if not changed and not keepalive_due:
+            return
+
         self._zeus_last_entity_publish_monotonic = now
+        self._zeus_last_entity_published_value = current_value
+        self._zeus_entity_publish_initialized = True
         self.async_write_ha_state()
 
     @property

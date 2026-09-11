@@ -27,7 +27,7 @@ class SwitchHubEngine:
             "device_count": 0,
             "enabled_count": 0,
             "devices": [],
-            "safety": "Only explicitly enabled Switch Hub devices may be controlled.",
+            "safety": "Zeus only actuates devices in Zeus Control mode. Home Assistant Automation mode publishes staged desired-state decisions without operating the switch.",
         }
 
     @staticmethod
@@ -114,7 +114,12 @@ class SwitchHubEngine:
         for index, cfg in enumerate(configs):
             switch_entity = str(cfg.get("switch_entity") or "").strip()
             key = str(cfg.get("id") or switch_entity or f"switch_{index}")
-            enabled = cfg.get("control_enabled") is True
+            legacy_enabled = cfg.get("control_enabled") is True
+            control_mode = str(cfg.get("control_mode") or ("zeus" if legacy_enabled else "observe")).strip().lower()
+            if control_mode not in {"observe", "zeus", "home_assistant"}:
+                control_mode = "zeus" if legacy_enabled else "observe"
+            decision_enabled = control_mode in {"zeus", "home_assistant"}
+            zeus_actuation_enabled = control_mode == "zeus"
             trigger = str(cfg.get("trigger_mode") or "surplus")
             power_entity = str(cfg.get("power_entity") or "").strip() or None
             actual_on = self._state_on(switch_entity) if switch_entity else False
@@ -134,7 +139,7 @@ class SwitchHubEngine:
                 required_w = 1000.0
 
             feedback_w = measured_power if measured_power is not None and measured_power > 5 else required_w
-            if enabled and trigger == "surplus" and actual_on:
+            if decision_enabled and trigger == "surplus" and actual_on:
                 controlled_solar_on_w += feedback_w
 
             prepared.append({
@@ -142,7 +147,9 @@ class SwitchHubEngine:
                 "index": index,
                 "key": key,
                 "switch_entity": switch_entity,
-                "enabled": enabled,
+                "enabled": decision_enabled,
+                "zeus_actuation_enabled": zeus_actuation_enabled,
+                "control_mode": control_mode,
                 "trigger": trigger,
                 "actual_on": actual_on,
                 "measured_power": measured_power,
@@ -182,6 +189,8 @@ class SwitchHubEngine:
             key = item["key"]
             switch_entity = item["switch_entity"]
             enabled = item["enabled"]
+            zeus_actuation_enabled = item["zeus_actuation_enabled"]
+            control_mode = item["control_mode"]
             trigger = item["trigger"]
             actual_on = item["actual_on"]
             measured_power = item["measured_power"]
@@ -189,7 +198,7 @@ class SwitchHubEngine:
             required_w = item["required_w"]
 
             desired_on = actual_on
-            reason = "Zeus Control disabled."
+            reason = "Observe only."
             available_for_device_w = remaining_pool_w
             stage_position = item["index"] + 1
 
@@ -256,20 +265,30 @@ class SwitchHubEngine:
                                 f"the {required_w:.0f} W minimum surplus."
                             )
 
-                if desired_on != actual_on and self._cooldown_ready(key, now_utc):
-                    service = "turn_on" if desired_on else "turn_off"
-                    try:
-                        await self.hass.services.async_call(
-                            "switch", service, {"entity_id": switch_entity}, blocking=True
+                if desired_on != actual_on:
+                    if zeus_actuation_enabled and self._cooldown_ready(key, now_utc):
+                        service = "turn_on" if desired_on else "turn_off"
+                        try:
+                            await self.hass.services.async_call(
+                                "switch", service, {"entity_id": switch_entity}, blocking=True
+                            )
+                            self._last_action_at[key] = now_utc
+                            actual_on = desired_on
+                        except Exception as err:
+                            reason = f"Switch command failed: {err}"
+                            desired_on = actual_on
+                    elif control_mode == "home_assistant":
+                        reason = (
+                            f"{reason} Home Assistant Automation mode: Zeus publishes the desired "
+                            f"{'ON' if desired_on else 'OFF'} decision but does not operate the switch."
                         )
-                        self._last_action_at[key] = now_utc
-                        actual_on = desired_on
-                    except Exception as err:
-                        reason = f"Switch command failed: {err}"
-                        desired_on = actual_on
 
             result_rows.append({
                 **cfg,
+                "control_mode": control_mode,
+                "control_enabled": zeus_actuation_enabled,
+                "decision_enabled": enabled,
+                "automation_ready": control_mode == "home_assistant",
                 "actual_state": "on" if actual_on else "off",
                 "desired_state": "on" if desired_on else "off",
                 "power_w": measured_power,
@@ -287,7 +306,9 @@ class SwitchHubEngine:
         self.last = {
             "status": "Ready",
             "device_count": len(result_rows),
-            "enabled_count": sum(1 for row in result_rows if row.get("control_enabled") is True),
+            "enabled_count": sum(1 for row in result_rows if row.get("decision_enabled") is True),
+            "zeus_control_count": sum(1 for row in result_rows if row.get("control_mode") == "zeus"),
+            "ha_automation_count": sum(1 for row in result_rows if row.get("control_mode") == "home_assistant"),
             "grid_export_w": round(export_w, 1),
             "grid_import_w": round(import_w, 1),
             "controlled_solar_on_w": round(controlled_solar_on_w, 1),

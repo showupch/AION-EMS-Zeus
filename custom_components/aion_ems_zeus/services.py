@@ -1660,12 +1660,16 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         core = _core(hass)
         rows = list(core.registry.data.get("switch_hub") or [])
         device_id = str(call.data["device_id"]).strip()
+        requested_mode = str(call.data.get("control_mode") or "").strip().lower()
+        legacy_control_enabled = bool(call.data.get("control_enabled", False))
+        control_mode = requested_mode if requested_mode in {"observe", "zeus", "home_assistant"} else ("zeus" if legacy_control_enabled else "observe")
         row = {
             "id": device_id,
             "name": str(call.data.get("name") or device_id).strip()[:120],
             "switch_entity": str(call.data["switch_entity"]).strip(),
             "power_entity": str(call.data.get("power_entity") or "").strip(),
-            "control_enabled": bool(call.data.get("control_enabled", False)),
+            "control_mode": control_mode,
+            "control_enabled": control_mode == "zeus",
             "trigger_mode": str(call.data.get("trigger_mode") or "surplus"),
             "solar_surplus_w": max(1, int(call.data.get("solar_surplus_w", 1000))),
             "on_time": str(call.data.get("on_time") or "22:00"),
@@ -1701,6 +1705,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Required("switch_entity"): cv.entity_id,
         vol.Optional("power_entity", default=""): vol.Any("", cv.entity_id),
         vol.Optional("control_enabled", default=False): cv.boolean,
+        vol.Optional("control_mode", default=""): vol.In(["", "observe", "zeus", "home_assistant"]),
         vol.Optional("trigger_mode", default="surplus"): vol.In(["surplus", "time"]),
         vol.Optional("solar_surplus_w", default=1000): vol.All(vol.Coerce(int), vol.Range(min=1, max=50000)),
         vol.Optional("on_time", default="22:00"): cv.string,

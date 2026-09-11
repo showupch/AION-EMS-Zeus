@@ -91,6 +91,31 @@ class KnowledgeTimelineEngine:
                     "category": "Knowledge",
                     "severity": item.get("severity", "Information"),
                 })
+
+        # v16.0.34: include canonical ObservationKnowledge device transitions.
+        # This makes all registered loads and every Switch Hub device visible in
+        # the user-facing Timeline while preserving the existing energy events.
+        observation = getattr(self.core, "observation_knowledge", None)
+        if observation is not None:
+            for item in list(observation.summary().get("observations", []) or [])[:40]:
+                if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("type") or "device").strip().lower()
+                evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+                is_switch_hub = bool(evidence.get("switch_hub")) or kind == "switch_hub"
+                category = "Loads" if kind in {"device", "heat_pump", "water_heater", "ev", "switch_hub"} else "Knowledge"
+                events.append({
+                    "timestamp": item.get("time"),
+                    "title": item.get("title", "Device activity"),
+                    "detail": item.get("detail", "A measured device state changed."),
+                    "type": "switch_hub" if is_switch_hub else kind,
+                    "category": category,
+                    "severity": "Information",
+                    "icon": "mdi:electric-switch" if is_switch_hub else None,
+                    "device_id": evidence.get("device_id"),
+                    "switch_entity": evidence.get("switch_entity"),
+                    "control_mode": evidence.get("control_mode"),
+                })
         unique = {}
         for item in events:
             unique[(item.get("timestamp"), item.get("title"))] = item
