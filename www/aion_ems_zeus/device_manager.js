@@ -1872,13 +1872,13 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const switchOptions=(selected='')=>`<option value="">Select switch…</option>${switches.map(([id,st])=>option(id,st,selected)).join('')}`;
     const powerOptions=(selected='')=>`<option value="">Optional · no power sensor</option>${powerSensors.map(([id,st])=>option(id,st,selected)).join('')}`;
     const deviceCard=(d)=>{
-      const mode=String(d.trigger_mode||'surplus'),enabled=d.control_enabled===true,solarW=Math.max(1,Number(d.solar_surplus_w||d.learned_power_w||1000));
+      const mode=String(d.trigger_mode||'surplus'),controlMode=String(d.control_mode||(d.control_enabled===true?'zeus':'observe')),enabled=controlMode!=='observe',solarW=Math.max(1,Number(d.solar_surplus_w||d.learned_power_w||1000));
       const actual=String(d.actual_state||'off').toUpperCase();
       const power=Number(d.power_w);
       return `<article class="panel spaced switch-hub-device" data-switch-hub-id="${this.esc(d.id||'')}">
         <div class="section-title"><div><span>${mode==='time'?'TIME':'SOLAR'}</span><h2>${this.esc(d.name||d.switch_entity||'Switch')}</h2><small>${this.esc(d.switch_entity||'')}</small></div><b class="${actual==='ON'?'good':'muted'}">${actual}</b></div>
         <div class="today-grid">
-          <div><span>Zeus Control</span><b>${enabled?'ON':'OFF'}</b><small>${enabled?'Zeus may operate this switch':'Zeus will not touch this switch'}</small></div>
+          <div><span>Control method</span><b>${controlMode==='zeus'?'ZEUS':controlMode==='home_assistant'?'HA AUTOMATION':'OBSERVE'}</b><small>${controlMode==='zeus'?'Zeus may operate this switch':controlMode==='home_assistant'?'Zeus publishes the staged ON/OFF decision; HA performs the action':'No automatic control'}</small></div>
           <div><span>Trigger</span><b>${mode==='time'?'Time':'Solar'}</b><small>${mode==='time'?`${this.esc(d.on_time||'22:00')} → ${this.esc(d.off_time||'06:00')}`:`Stage ${this.esc(d.stage_priority||'—')} · requires ${this.watts(solarW)}`}</small></div>
           <div><span>Power feedback</span><b>${Number.isFinite(power)?this.watts(power):'Optional'}</b><small>${this.esc(d.power_entity||'No power sensor selected')}</small></div>
           <div><span>Decision</span><b>${String(d.desired_state||d.actual_state||'off').toUpperCase()}</b><small>${this.esc(d.reason||'Waiting for evaluation')}</small></div>
@@ -1891,8 +1891,8 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
           <label class="sh-solar-field" style="${mode==='surplus'?'':'display:none'}">Required surplus (W)<input data-sh-solar-w type="number" min="1" max="50000" step="1" value="${this.esc(solarW)}"></label>
           <label class="sh-time-field" style="${mode==='time'?'':'display:none'}">ON time<input data-sh-on type="time" value="${this.esc(d.on_time||'22:00')}"></label>
           <label class="sh-time-field" style="${mode==='time'?'':'display:none'}">OFF time<input data-sh-off type="time" value="${this.esc(d.off_time||'06:00')}"></label>
-          <label class="switch-hub-toggle"><input data-sh-enabled type="checkbox" ${enabled?'checked':''}><span>Zeus Control</span></label>
-        </div><div class="button-row"><button type="button" class="primary-button" data-sh-save="${this.esc(d.id||'')}">Save</button><button type="button" data-sh-remove="${this.esc(d.id||'')}">Remove</button></div></details>
+          <label>Control method<select data-sh-control-mode><option value="observe" ${controlMode==='observe'?'selected':''}>Observe only</option><option value="zeus" ${controlMode==='zeus'?'selected':''}>Zeus Control</option><option value="home_assistant" ${controlMode==='home_assistant'?'selected':''}>Home Assistant Automation</option></select></label>
+        </div><div class="button-row"><button type="button" class="primary-button" data-sh-save="${this.esc(d.id||'')}">Save</button>${controlMode==='home_assistant'?`<button type="button" data-sh-copy-automation="${this.esc(d.id||'')}">Copy HA automation</button>`:''}<button type="button" data-sh-remove="${this.esc(d.id||'')}">Remove</button></div>${controlMode==='home_assistant'?`<small class="safety-note">The generated automation follows Zeus Switch Hub's staged desired state. Zeus itself does not operate the switch in this mode.</small>`:''}</details>
       </article>`;
     };
     return `<section class="page switch-hub-page"><style>
@@ -1909,9 +1909,9 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
           <label class="sh-solar-field">Required surplus (W)<input id="sh-new-solar-w" type="number" min="1" max="50000" step="1" value="1000"></label>
           <label class="sh-time-field" style="display:none">ON time<input id="sh-new-on" type="time" value="22:00"></label>
           <label class="sh-time-field" style="display:none">OFF time<input id="sh-new-off" type="time" value="06:00"></label>
-          <label class="switch-hub-toggle"><input id="sh-new-enabled" type="checkbox"><span>Zeus Control</span></label>
+          <label>Control method<select id="sh-new-control-mode"><option value="observe">Observe only</option><option value="zeus">Zeus Control</option><option value="home_assistant">Home Assistant Automation</option></select></label>
         </div><div class="button-row"><button id="sh-add" type="button" class="primary-button"><ha-icon icon="mdi:plus"></ha-icon> Add switch</button></div>
-        <small class="safety-note">Zeus never controls a Switch Hub device unless Zeus Control is explicitly enabled. A 30-second internal anti-chatter guard prevents rapid relay switching.</small>
+        <small class="safety-note">Choose Observe only, Zeus Control, or Home Assistant Automation. In HA Automation mode Zeus calculates the same staged decision but never operates the switch directly. A 30-second anti-chatter guard remains active for direct Zeus Control.</small>
       </article>
       ${devices.length?devices.map(deviceCard).join(''):'<article class="panel spaced"><div class="empty">No Switch Hub devices configured yet.</div></article>'}
     </section>`;
@@ -2116,7 +2116,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       const source=Array.isArray(t.events)?t.events:Array.isArray(t.timeline)?t.timeline:Array.isArray(t.items)?t.items:[];
       const events=source.length?source.slice(-30).reverse():[{time:'Now',title:'Timeline is ready',description:'Zeus is waiting for the next significant energy event.',category:'Knowledge',severity:'Information',icon:'mdi:timeline-clock-outline'}];
       const formatTime=value=>{if(!value)return 'Recent';const d=new Date(value);if(!Number.isNaN(d.getTime()))return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});const m=String(value).match(/(?:T|^)(\d{1,2}):(\d{2})/);return m?`${m[1].padStart(2,'0')}:${m[2]}`:String(value);};
-      const rows=events.map((x,i)=>`<article class="timeline-event"><div class="timeline-marker"><ha-icon icon="${this.esc(x.icon||({'solar':'mdi:white-balance-sunny','battery':'mdi:battery-high','grid':'mdi:transmission-tower','finance':'mdi:cash-multiple','opportunity':'mdi:lightbulb-on-outline'}[String(x.category||x.type||'').toLowerCase()]||'mdi:circle-medium'))}"></ha-icon></div><div class="timeline-copy"><div><span class="timeline-time">${this.esc(formatTime(x.time||x.timestamp||x.when))}</span><b class="timeline-category">${this.esc(x.category||x.type||'Energy')}</b></div><h3>${this.esc(x.title||x.event||x.label||`Energy event ${i+1}`)}</h3><p>${this.esc(x.description||x.detail||x.reason||'A significant event was recorded by Zeus.')}</p></div><span class="timeline-severity ${this.slug(x.severity||'information')}">${this.esc(x.severity||'Information')}</span></article>`).join('');
+      const rows=events.map((x,i)=>`<article class="timeline-event"><div class="timeline-marker"><ha-icon icon="${this.esc(x.icon||({'solar':'mdi:white-balance-sunny','battery':'mdi:battery-high','grid':'mdi:transmission-tower','finance':'mdi:cash-multiple','opportunity':'mdi:lightbulb-on-outline','loads':'mdi:power-plug','switch_hub':'mdi:electric-switch'}[String(x.category||x.type||'').toLowerCase()]||'mdi:circle-medium'))}"></ha-icon></div><div class="timeline-copy"><div><span class="timeline-time">${this.esc(formatTime(x.time||x.timestamp||x.when))}</span><b class="timeline-category">${this.esc(x.category||x.type||'Energy')}</b></div><h3>${this.esc(x.title||x.event||x.label||`Energy event ${i+1}`)}</h3><p>${this.esc(x.description||x.detail||x.reason||'A significant event was recorded by Zeus.')}</p></div><span class="timeline-severity ${this.slug(x.severity||'information')}">${this.esc(x.severity||'Information')}</span></article>`).join('');
       return `<section class="page mission-control-page"><div class="page-head"><div><span>OPTIMIZER</span><h1><ha-icon icon="mdi:timeline-clock-outline"></ha-icon> Timeline</h1><p>The chronological story of your home's meaningful energy events.</p></div><div class="live-badge"><i></i> READ ONLY</div></div><article class="panel spaced mission-timeline-summary"><div><span>TODAY'S STORY</span><h2>${this.esc(t.summary||t.headline||'Zeus is building today’s energy story.')}</h2><p>${this.esc(t.description||'Solar, battery, grid, opportunities and learning events appear here when they become significant.')}</p></div><ha-icon icon="mdi:book-clock-outline"></ha-icon></article><div class="mission-filter-row"><span>All</span><span>Solar</span><span>Battery</span><span>Grid</span><span>Loads</span><span>Finance</span><span>Knowledge</span></div><div class="timeline-stream">${rows}</div></section>`;
     }
 
@@ -13005,12 +13005,75 @@ pre,code,.entity-id,.mono{overflow-wrap:anywhere;word-break:break-word}
     this.querySelectorAll('[data-close-device-detail]').forEach(button=>button.addEventListener('click',()=>{this._selectedDeviceId='';this.render();}));
     this.querySelectorAll('[data-device-manage]').forEach(button=>button.addEventListener('click',()=>{const id=button.dataset.deviceManage||'';this._selectedDeviceId='';this.rememberMobilePage('device_manager');this._page='device_manager';try{localStorage.setItem('aion_zeus_page','device_manager');localStorage.setItem('aion_zeus_manage_device',id);}catch(_e){}this.render();}));
     this.querySelectorAll('[data-device-remove]').forEach(button=>button.addEventListener('click',async()=>{const id=button.dataset.deviceRemove;if(!id||!confirm(`Remove ${id} from the Zeus Registry?`))return;try{await this._hass.callService('aion_ems_zeus','device_manager_remove_device',{device_id:id});await this._hass.callService('homeassistant','update_entity',{entity_id:['sensor.aion_ems_zeus_registry_summary','sensor.aion_ems_zeus_device_manager','sensor.aion_ems_zeus_energy_flow','sensor.aion_ems_zeus_device_analytics']});this._selectedDeviceId='';this.render();}catch(error){alert(error.message||String(error));}}));
-    const saveSwitchHub=async(root,id='')=>{const sw=root.querySelector('[data-sh-switch],#sh-new-switch')?.value||'',name=root.querySelector('[data-sh-name],#sh-new-name')?.value?.trim()||'',power=root.querySelector('[data-sh-power],#sh-new-power')?.value||'',trigger=root.querySelector('[data-sh-trigger],#sh-new-trigger')?.value||'surplus',solarW=Math.max(1,Math.round(Number(root.querySelector('[data-sh-solar-w],#sh-new-solar-w')?.value||1000))),onTime=root.querySelector('[data-sh-on],#sh-new-on')?.value||'22:00',offTime=root.querySelector('[data-sh-off],#sh-new-off')?.value||'06:00',enabled=!!root.querySelector('[data-sh-enabled],#sh-new-enabled')?.checked;if(!sw){alert('Select a Home Assistant switch.');return;}const deviceId=id||('switch_hub_'+sw.replaceAll('.','_').replace(/[^a-zA-Z0-9_]/g,'_'));await this._hass.callService('aion_ems_zeus','save_switch_hub_device',{device_id:deviceId,name:name||this._hass.states?.[sw]?.attributes?.friendly_name||sw,switch_entity:sw,power_entity:power,control_enabled:enabled,trigger_mode:trigger,solar_surplus_w:solarW,on_time:onTime,off_time:offTime});await this._hass.callService('homeassistant','update_entity',{entity_id:'sensor.aion_ems_zeus_switch_hub'});this._lastSignatureByPage?.clear();this.render();};
+    const saveSwitchHub=async(root,id='')=>{const sw=root.querySelector('[data-sh-switch],#sh-new-switch')?.value||'',name=root.querySelector('[data-sh-name],#sh-new-name')?.value?.trim()||'',power=root.querySelector('[data-sh-power],#sh-new-power')?.value||'',trigger=root.querySelector('[data-sh-trigger],#sh-new-trigger')?.value||'surplus',solarW=Math.max(1,Math.round(Number(root.querySelector('[data-sh-solar-w],#sh-new-solar-w')?.value||1000))),onTime=root.querySelector('[data-sh-on],#sh-new-on')?.value||'22:00',offTime=root.querySelector('[data-sh-off],#sh-new-off')?.value||'06:00',controlMode=root.querySelector('[data-sh-control-mode],#sh-new-control-mode')?.value||'observe';if(!sw){alert('Select a Home Assistant switch.');return;}const deviceId=id||('switch_hub_'+sw.replaceAll('.','_').replace(/[^a-zA-Z0-9_]/g,'_'));await this._hass.callService('aion_ems_zeus','save_switch_hub_device',{device_id:deviceId,name:name||this._hass.states?.[sw]?.attributes?.friendly_name||sw,switch_entity:sw,power_entity:power,control_enabled:controlMode==='zeus',control_mode:controlMode,trigger_mode:trigger,solar_surplus_w:solarW,on_time:onTime,off_time:offTime});await this._hass.callService('homeassistant','update_entity',{entity_id:'sensor.aion_ems_zeus_switch_hub'});this._lastSignatureByPage?.clear();this.render();};
+    const switchHubAutomationYaml=(deviceId)=>{
+      const hub=this.s('sensor.aion_ems_zeus_switch_hub')?.attributes||{},devices=Array.isArray(hub.devices)?hub.devices:[],d=devices.find(x=>String(x.id||'')===String(deviceId||''));
+      if(!d)return '';
+      const alias=`Zeus Switch Hub - ${String(d.name||d.switch_entity||deviceId)}`,sw=String(d.switch_entity||''),escYaml=v=>String(v??'').replaceAll("'","''");
+      return `alias: '${escYaml(alias)}'
+description: 'Generated by AION EMS Zeus Switch Hub. Zeus decides the staged desired state; Home Assistant operates the switch.'
+mode: restart
+triggers:
+  - trigger: state
+    entity_id: sensor.aion_ems_zeus_switch_hub
+  - trigger: time_pattern
+    seconds: "/10"
+conditions:
+  - condition: template
+    value_template: >-
+      {{ (state_attr('sensor.aion_ems_zeus_switch_hub', 'devices') or [])
+         | selectattr('id', 'eq', '${escYaml(deviceId)}') | list | count > 0 }}
+actions:
+  - variables:
+      zeus_device: >-
+        {{ ((state_attr('sensor.aion_ems_zeus_switch_hub', 'devices') or [])
+           | selectattr('id', 'eq', '${escYaml(deviceId)}') | list | first) | default({}) }}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ zeus_device.get('desired_state', 'off') == 'on' }}"
+        sequence:
+          - action: switch.turn_on
+            target:
+              entity_id: ${sw}
+    default:
+      - action: switch.turn_off
+        target:
+          entity_id: ${sw}
+`;
+    };
+
     const syncSwitchHubTriggerFields=(root)=>{if(!root)return;const trigger=root.querySelector('[data-sh-trigger],#sh-new-trigger')?.value||'surplus';root.querySelectorAll('.sh-time-field').forEach(el=>{el.style.display=trigger==='time'?'grid':'none';});root.querySelectorAll('.sh-solar-field').forEach(el=>{el.style.display=trigger==='surplus'?'grid':'none';});};
     this.querySelectorAll('[data-sh-trigger],#sh-new-trigger').forEach(select=>select.addEventListener('change',()=>syncSwitchHubTriggerFields(select.closest('[data-switch-hub-id],.switch-hub-intro'))));
     this.querySelectorAll('[data-switch-hub-id],.switch-hub-intro').forEach(syncSwitchHubTriggerFields);
     this.querySelector('#sh-add')?.addEventListener('click',async()=>{try{await saveSwitchHub(this.querySelector('.switch-hub-intro'));}catch(e){alert(e.message||String(e));}});
     this.querySelectorAll('[data-sh-save]').forEach(button=>button.addEventListener('click',async()=>{try{const card=button.closest('[data-switch-hub-id]');await saveSwitchHub(card,button.dataset.shSave||'');}catch(e){alert(e.message||String(e));}}));
+    this.querySelectorAll('[data-sh-copy-automation]').forEach(button=>button.addEventListener('click',()=>{
+      const id=button.dataset.shCopyAutomation||'',yaml=switchHubAutomationYaml(id);
+      if(!yaml){alert('Zeus could not build the automation YAML for this Switch Hub device. Save the device once and try again.');return;}
+      const existing=this.querySelector('[data-sh-yaml-panel]');
+      if(existing)existing.remove();
+      const panel=document.createElement('div');
+      panel.setAttribute('data-sh-yaml-panel','');
+      panel.style.margin='14px 0';
+      panel.innerHTML=`<div class="safety-note" style="padding:12px">
+        <b>Home Assistant automation YAML</b>
+        <div style="margin:8px 0 10px">Select the YAML below, copy it with Ctrl+C / Cmd+C, then paste it into a new Home Assistant automation using Edit in YAML.</div>
+        <textarea data-sh-yaml-text readonly style="width:100%;min-height:420px;font-family:monospace;white-space:pre;resize:vertical"></textarea>
+        <div class="button-row" style="margin-top:10px">
+          <button type="button" data-sh-select-yaml>Select all YAML</button>
+          <button type="button" data-sh-close-yaml>Close</button>
+        </div>
+      </div>`;
+      const card=button.closest('details')||button.parentElement;
+      card.appendChild(panel);
+      const ta=panel.querySelector('[data-sh-yaml-text]');
+      ta.value=yaml;
+      ta.focus();
+      ta.select();
+      panel.querySelector('[data-sh-select-yaml]')?.addEventListener('click',()=>{ta.focus();ta.select();});
+      panel.querySelector('[data-sh-close-yaml]')?.addEventListener('click',()=>panel.remove());
+    }));
     this.querySelectorAll('[data-sh-remove]').forEach(button=>button.addEventListener('click',async()=>{const id=button.dataset.shRemove||'';if(!id||!confirm('Remove this switch from Switch Hub?'))return;try{await this._hass.callService('aion_ems_zeus','remove_switch_hub_device',{device_id:id});await this._hass.callService('homeassistant','update_entity',{entity_id:'sensor.aion_ems_zeus_switch_hub'});this._lastSignatureByPage?.clear();this.render();}catch(e){alert(e.message||String(e));}}));
     const saveZeusHistory=(q)=>{try{let h=JSON.parse(localStorage.getItem('aion_zeus_question_history')||'[]');if(!Array.isArray(h))h=[];const ev=this.copilotAnswerEvidence(q);h=[{question:q.question,context_query:q.context_query||q.question,answer:q.answer,source:q.source||'Zeus',confidence:q.confidence??'—',evidence_type:ev.type,mode:ev.mode,time:new Date().toLocaleString()},...h.filter(x=>x.question!==q.question)].slice(0,20);localStorage.setItem('aion_zeus_question_history',JSON.stringify(h));}catch(_e){}};
     const displayZeusAnswer=(q,save=true)=>{const box=this.querySelector('#zeus-answer'),title=this.querySelector('#zeus-answer-title');if(!q||!box)return;if(title)title.textContent=q.question;box.innerHTML=this.copilotAnswerMarkup(q);
