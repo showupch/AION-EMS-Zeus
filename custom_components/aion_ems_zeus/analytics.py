@@ -771,6 +771,63 @@ class HistoricalAnalyticsEngine:
             today_row["hybrid_true_pv_entity"] = hybrid_true_pv_entity
             today_row["solar_true_pv_integrated_kwh"] = round(true_pv_today, 4)
             today_row["solar_energy_kwh"] = round(canonical_today, 4)
+
+        # v16.0.29: smart-meter-only current-day Home Energy reconstruction.
+        #
+        # A supported Zeus topology can have Solar + Battery + one signed smart
+        # meter without a dedicated house-consumption energy meter. Completed HA
+        # Recorder days already reconstruct Home from conservation of energy, but
+        # Today could remain at the DataLake default/incomplete 0.0 kWh. That made
+        # Whole Home Intelligence report 0 kWh home / solar / battery even while
+        # Finance correctly saw grid import/export and live Energy Flow showed a
+        # battery-powered house.
+        #
+        # When no authoritative house-energy mapping/statistic exists for Today,
+        # reconstruct the site boundary:
+        #
+        #   Home = PV + Grid Import + Battery Discharge
+        #          - Grid Export - Battery Charge
+        #
+        # Do not apply this when other generation (wind/generator) is configured,
+        # because the five-term balance would then be incomplete.
+        entity_mappings = dict((getattr(self.registry, "data", {}) or {}).get("entity_mappings", {}) or {})
+        explicit_house_energy = bool(
+            str(entity_mappings.get("house_energy_today") or "").strip()
+            or str(entity_mappings.get("house_energy_total") or "").strip()
+        )
+        recorder_house_today = bool(today_key in (self._ha_energy_days.get("house_energy_kwh", {}) or {}))
+        mappings_now = dict(self.energy_mapping.mappings or {})
+        other_generation_configured = any(
+            str(mappings_now.get(field) or "").strip()
+            for field in ("wind_power", "generator_power")
+        )
+        boundary_keys = (
+            "solar_energy_kwh",
+            "grid_import_energy_kwh",
+            "grid_export_energy_kwh",
+            "battery_charge_energy_kwh",
+            "battery_discharge_energy_kwh",
+        )
+        if (
+            not explicit_house_energy
+            and not recorder_house_today
+            and not other_generation_configured
+            and all(today_row.get(key) is not None for key in boundary_keys)
+        ):
+            boundary_house = max(
+                0.0,
+                float(today_row.get("solar_energy_kwh", 0.0) or 0.0)
+                + float(today_row.get("grid_import_energy_kwh", 0.0) or 0.0)
+                + float(today_row.get("battery_discharge_energy_kwh", 0.0) or 0.0)
+                - float(today_row.get("grid_export_energy_kwh", 0.0) or 0.0)
+                - float(today_row.get("battery_charge_energy_kwh", 0.0) or 0.0),
+            )
+            today_row["house_energy_kwh"] = round(boundary_house, 4)
+            today_row["house_energy_kwh_method"] = "current_day_energy_flow_balance"
+            today_row["house_energy_kwh_source"] = "Solar + Grid + Battery conservation"
+            today_row["house_energy_boundary_reconstructed"] = True
+            daily[today_key] = today_row
+
         # Match Home Assistant Energy calendar periods. A Week is the current
         # local ISO week (Monday through today), not a rolling seven-day window.
         # Rolling windows are still exposed separately for comparisons/averages.
