@@ -2921,6 +2921,9 @@ class ForecastEngine:
             "provisional_failed_gates": [],
             "reusable_learning_ready": False,
             "provisional_learning_ready": False,
+            "contextual_patterns": {},
+            "contextual_learning_ready": False,
+            "contextual_guardrail_percent": 12.5,
             "recommendation_only": True,
             "automatic_correction_applied": False,
         }
@@ -2942,6 +2945,43 @@ class ForecastEngine:
         bias_raw = learning.get("average_bias_percent")
         avg_bias = self._number(bias_raw, 0.0) if bias_raw is not None else None
         recommended = max(-15.0, min(15.0, self._number(learning.get("recommended_forecast_correction_percent"), 0.0))) if reusable else 0.0
+
+        # Context-specific forecast calibration.
+        # Planning already stores completed pre-day forecast-vs-actual evidence.
+        # Forecast now consumes mature Sunny/Cloudy patterns so a system can
+        # learn that its installation behaves differently under clear and
+        # cloud-dominated conditions instead of using one correction for all days.
+        contextual_patterns: dict[str, dict[str, Any]] = {}
+        for pattern in list(learning.get("patterns") or []):
+            if not isinstance(pattern, dict):
+                continue
+            label = str(pattern.get("label") or "").strip()
+            if label not in {"Sunny", "Cloudy"}:
+                continue
+            pattern_count = int(self._number(pattern.get("comparison_count"), 0))
+            pattern_effective = max(0.0, self._number(pattern.get("effective_evidence"), 0.0))
+            bias_raw = pattern.get("average_bias_percent")
+            pattern_bias = self._number(bias_raw, 0.0) if bias_raw is not None else None
+            qualified_pattern = bool(
+                pattern_bias is not None
+                and pattern_count >= 5
+                and pattern_effective >= 3.0
+                and abs(pattern_bias) >= 5.0
+            )
+            contextual_correction = 0.0
+            if qualified_pattern:
+                contextual_correction = (-1.0 if pattern_bias > 0 else 1.0) * min(12.5, abs(pattern_bias))
+            contextual_patterns[label] = {
+                "status": "Ready" if qualified_pattern else "Collecting",
+                "comparison_count": pattern_count,
+                "effective_evidence": round(pattern_effective, 2),
+                "average_accuracy_percent": pattern.get("average_accuracy_percent"),
+                "average_bias_percent": round(pattern_bias, 1) if pattern_bias is not None else None,
+                "bias_direction": pattern.get("bias_direction"),
+                "correction_percent": round(contextual_correction, 1),
+                "correction_factor": round(1.0 + contextual_correction / 100.0, 4),
+                "qualified": qualified_pattern,
+            }
 
         provisional_gate_status = [
             {
@@ -3009,6 +3049,10 @@ class ForecastEngine:
             "provisional_learning_ready": provisional,
             "provisional_gate_status": provisional_gate_status,
             "provisional_failed_gates": failed_gates,
+            "contextual_patterns": contextual_patterns,
+            "contextual_learning_ready": any(
+                bool(item.get("qualified")) for item in contextual_patterns.values()
+            ),
         })
 
         try:
@@ -3145,6 +3189,32 @@ class ForecastEngine:
 
         adaptive = self._adaptive_solar_correction()
         correction_factor = self._number(adaptive.get("correction_factor"), 1.0) or 1.0
+        contextual_patterns = adaptive.get("contextual_patterns") if isinstance(adaptive.get("contextual_patterns"), dict) else {}
+
+        def forecast_weather_group(condition):
+            value = str(condition or "").strip().lower()
+            if any(token in value for token in ("sun", "clear", "fair")):
+                return "Sunny"
+            if any(token in value for token in ("cloud", "overcast", "rain", "shower", "storm", "snow", "fog")):
+                return "Cloudy"
+            return "Other"
+
+        def contextual_factor(condition):
+            group = forecast_weather_group(condition)
+            pattern = contextual_patterns.get(group) if group in {"Sunny", "Cloudy"} else None
+            if isinstance(pattern, dict) and pattern.get("qualified") is True:
+                return (
+                    self._number(pattern.get("correction_factor"), 1.0) or 1.0,
+                    group,
+                    self._number(pattern.get("correction_percent"), 0.0),
+                    "weather_context",
+                )
+            return (
+                correction_factor,
+                group,
+                self._number(adaptive.get("applied_correction_percent"), 0.0),
+                "global",
+            )
 
         # Forecast fallback must consume the same canonical daily energy table
         # that powers Zeus Statistics. Raw DataLake summaries can pre-date source
@@ -3210,7 +3280,8 @@ class ForecastEngine:
             baseline_grid_export = average(grid_export_values)
             factor, condition, cloud, weather_forecast_applied = weather_for(dt)
             raw_solar = round(max((baseline_solar or 0) * factor, 0), 1) if baseline_solar is not None else None
-            adjusted_solar = round(max((raw_solar or 0) * correction_factor, 0), 1) if raw_solar is not None else None
+            learned_factor, calibration_context, contextual_correction_percent, calibration_source = contextual_factor(condition)
+            adjusted_solar = round(max((raw_solar or 0) * learned_factor, 0), 1) if raw_solar is not None else None
             net_w = (adjusted_solar or 0) - (house or 0)
             charge_w = max(net_w, 0)
             discharge_w = max(-net_w, 0)
@@ -3224,17 +3295,31 @@ class ForecastEngine:
             battery_available_w = 0
             if projected_soc is not None and projected_soc > reserve_percent + 0.5:
                 battery_available_w = min(discharge_w, max_discharge_power_w)
+
+            # Distinguish gross solar surplus from the energy that the
+            # battery is expected to absorb. Flexible-load planning must rank only
+            # the surplus that remains after house demand and expected charging.
+            expected_battery_charge_w = 0.0
+            if charge_w > 0 and projected_soc is not None and projected_soc < 99.5:
+                expected_battery_charge_w = min(charge_w, max_charge_power_w)
+            flexible_surplus_w = max(charge_w - expected_battery_charge_w, 0.0)
+
             grid_import = max(discharge_w - battery_available_w, 0)
-            grid_export = max(charge_w - (0 if projected_soc is None or projected_soc >= 99.5 else min(charge_w, max_charge_power_w)), 0)
+            grid_export = flexible_surplus_w
             hourly.append({
                 "time": dt.replace(minute=0, second=0, microsecond=0).isoformat(),
                 "hour": dt.hour,
                 "baseline_solar_power_w": baseline_solar,
                 "raw_solar_power_w": raw_solar,
                 "solar_power_w": adjusted_solar,
-                "adaptive_correction_percent": adaptive.get("applied_correction_percent", 0.0),
+                "adaptive_correction_percent": round(contextual_correction_percent, 1),
+                "calibration_context": calibration_context,
+                "calibration_source": calibration_source,
+                "global_adaptive_correction_percent": adaptive.get("applied_correction_percent", 0.0),
                 "house_power_w": house,
                 "surplus_power_w": round(max(net_w, 0), 1) if adjusted_solar is not None and house is not None else None,
+                "expected_battery_charge_power_w": round(expected_battery_charge_w, 1),
+                "flexible_surplus_power_w": round(flexible_surplus_w, 1) if adjusted_solar is not None and house is not None else None,
                 "grid_import_power_w": round(grid_import, 1),
                 "grid_export_power_w": round(grid_export, 1),
                 "historical_grid_import_power_w": baseline_grid_import,
@@ -3492,12 +3577,20 @@ class ForecastEngine:
             def avg_key(key):
                 vals = [float(r.get(key) or 0.0) for r in chunk]
                 return round(sum(vals) / max(1, len(vals)), 1)
+            soc_values = [
+                float(r.get("projected_battery_soc_percent"))
+                for r in chunk if r.get("projected_battery_soc_percent") is not None
+            ]
             forecast_curve_24h.append({
                 "time": start_time.isoformat(),
                 "solar_power_w": avg_key("solar_power_w"),
                 "house_power_w": avg_key("house_power_w"),
                 "surplus_power_w": avg_key("surplus_power_w"),
+                "expected_battery_charge_power_w": avg_key("expected_battery_charge_power_w"),
+                "flexible_surplus_power_w": avg_key("flexible_surplus_power_w"),
                 "grid_import_power_w": avg_key("grid_import_power_w"),
+                "grid_export_power_w": avg_key("grid_export_power_w"),
+                "projected_battery_soc_percent": round(soc_values[-1], 1) if soc_values else None,
                 "weather_coverage_percent": round(100.0 * sum(1 for r in chunk if r.get("weather_forecast_applied")) / len(chunk), 1),
             })
 
@@ -3511,14 +3604,18 @@ class ForecastEngine:
             start_time = row_local_time(pair[0])
             if start_time is None:
                 continue
-            avg_surplus = sum(float(r.get("surplus_power_w") or 0.0) for r in pair) / 2.0
-            energy_kwh = sum(float(r.get("surplus_power_w") or 0.0) for r in pair) / 1000.0
+            avg_surplus = sum(float(r.get("flexible_surplus_power_w") or 0.0) for r in pair) / 2.0
+            energy_kwh = sum(float(r.get("flexible_surplus_power_w") or 0.0) for r in pair) / 1000.0
+            gross_avg_surplus = sum(float(r.get("surplus_power_w") or 0.0) for r in pair) / 2.0
+            battery_avg = sum(float(r.get("expected_battery_charge_power_w") or 0.0) for r in pair) / 2.0
             candidate_windows.append({
                 "start": start_time.isoformat(),
                 "end": (start_time + timedelta(hours=2)).isoformat(),
                 "label": f"{start_time:%H:%M}–{(start_time + timedelta(hours=2)):%H:%M}",
                 "expected_surplus_power_w": round(avg_surplus, 1),
                 "expected_surplus_energy_kwh": round(energy_kwh, 2),
+                "gross_solar_surplus_power_w": round(gross_avg_surplus, 1),
+                "expected_battery_charge_power_w": round(battery_avg, 1),
             })
         candidate_windows.sort(key=lambda x: x["expected_surplus_power_w"], reverse=True)
         surplus_windows = []
@@ -3531,6 +3628,161 @@ class ForecastEngine:
             occupied.append(start_time)
             if len(surplus_windows) >= 3:
                 break
+
+        # Turn the existing hourly forecast into a compact energy plan.
+        # This is recommendation-only evidence: it does not
+        # schedule or control any device.
+        next24_solar_surplus_kwh = energy_between(now, rolling_24_end, "surplus_power_w")
+        next24_battery_charge_demand_kwh = energy_between(now, rolling_24_end, "expected_battery_charge_power_w")
+        next24_flexible_surplus_kwh = energy_between(now, rolling_24_end, "flexible_surplus_power_w")
+        peak_surplus_row = max(
+            future_window_rows,
+            key=lambda row: float(row.get("flexible_surplus_power_w") or 0.0),
+            default=None,
+        )
+
+        soc_rows = [
+            row for row in next24_rows
+            if row.get("projected_battery_soc_percent") is not None
+        ]
+        soc_values = [float(row.get("projected_battery_soc_percent")) for row in soc_rows]
+        battery_peak_row = max(
+            soc_rows,
+            key=lambda row: float(row.get("projected_battery_soc_percent") or 0.0),
+            default=None,
+        )
+
+        def first_soc_time(threshold):
+            for row in soc_rows:
+                if float(row.get("projected_battery_soc_percent") or 0.0) >= threshold:
+                    local = row_local_time(row)
+                    return local.isoformat() if local is not None else row.get("time")
+            return None
+
+        battery_plan = {
+            "available": bool(soc_rows),
+            "start_soc_percent": round(soc, 1) if 0 <= soc <= 100 else None,
+            "end_24h_soc_percent": round(soc_values[-1], 1) if soc_values else None,
+            "minimum_24h_soc_percent": round(min(soc_values), 1) if soc_values else None,
+            "maximum_24h_soc_percent": round(max(soc_values), 1) if soc_values else None,
+            "peak_time": (
+                row_local_time(battery_peak_row).isoformat()
+                if battery_peak_row and row_local_time(battery_peak_row) is not None
+                else None
+            ),
+            "reaches_80_at": first_soc_time(80.0),
+            "reaches_90_at": first_soc_time(90.0),
+            "reaches_100_at": first_soc_time(99.5),
+            "reserve_percent": round(reserve_percent, 1),
+            "capacity_kwh": round(battery_capacity_kwh, 2),
+            "method": "hourly solar minus learned house demand with configured/default battery constraints",
+        }
+
+        # Fit flexible loads into the same hourly surplus forecast.  Registered
+        # device metadata remains authoritative when available; Switch Hub
+        # thresholds are also useful evidence even when a device has no rated
+        # power metadata.
+        flexible_types = {
+            "ev_charger", "water_heater", "heat_pump", "dishwasher",
+            "washing_machine", "dryer", "pool_pump", "smart_plug", "custom",
+        }
+        load_candidates = []
+        registry_data = getattr(self.core.registry, "data", {}) if self.core is not None and getattr(self.core, "registry", None) is not None else {}
+        for device in list(registry_data.get("devices", []) or []):
+            if not isinstance(device, dict) or device.get("enabled", True) is False:
+                continue
+            dtype = str(device.get("type") or "custom").strip().lower()
+            if dtype not in flexible_types:
+                continue
+            required = self._number(device.get("rated_power_w"), 0.0)
+            runtime_minutes = max(15.0, self._number(device.get("runtime_minutes"), 60.0))
+            if required <= 0:
+                continue
+            load_candidates.append({
+                "id": str(device.get("id") or ""),
+                "name": str(device.get("name") or device.get("id") or "Flexible load"),
+                "required_power_w": round(required, 1),
+                "runtime_minutes": round(runtime_minutes),
+                "source": "registered_device",
+            })
+
+        existing_ids = {item["id"] for item in load_candidates}
+        for hub in list(registry_data.get("switch_hub", []) or []):
+            if not isinstance(hub, dict):
+                continue
+            hub_id = str(hub.get("id") or "")
+            if hub_id in existing_ids:
+                continue
+            required = max(0.0, self._number(hub.get("solar_surplus_w"), 0.0))
+            if required <= 0:
+                continue
+            load_candidates.append({
+                "id": hub_id,
+                "name": str(hub.get("name") or hub_id or "Switch Hub load"),
+                "required_power_w": round(required, 1),
+                "runtime_minutes": 60,
+                "source": "switch_hub",
+            })
+
+        flexible_load_windows = []
+        for load in load_candidates[:20]:
+            required = float(load["required_power_w"])
+            runtime_h = max(0.25, float(load["runtime_minutes"]) / 60.0)
+            required_energy_kwh = required * runtime_h / 1000.0
+            best_fit = None
+            for window in candidate_windows:
+                available_energy = float(window.get("expected_surplus_energy_kwh") or 0.0)
+                avg_surplus = float(window.get("expected_surplus_power_w") or 0.0)
+                coverage = min(
+                    avg_surplus / max(required, 1.0),
+                    available_energy / max(required_energy_kwh, 0.001),
+                )
+                fit_score = max(0.0, min(1.5, coverage))
+                if best_fit is None or fit_score > best_fit["fit_score"]:
+                    best_fit = {
+                        **window,
+                        "fit_score": fit_score,
+                        "required_energy_kwh": required_energy_kwh,
+                    }
+            if best_fit is None:
+                continue
+            fit_percent = round(min(100.0, best_fit["fit_score"] * 100.0))
+            status = "Good fit" if fit_percent >= 90 else "Partial fit" if fit_percent >= 50 else "Wait"
+            flexible_load_windows.append({
+                **load,
+                "window": best_fit.get("label"),
+                "window_start": best_fit.get("start"),
+                "window_end": best_fit.get("end"),
+                "expected_surplus_power_w": best_fit.get("expected_surplus_power_w"),
+                "expected_surplus_energy_kwh": best_fit.get("expected_surplus_energy_kwh"),
+                "required_energy_kwh": round(best_fit["required_energy_kwh"], 2),
+                "fit_percent": fit_percent,
+                "status": status,
+            })
+        flexible_load_windows.sort(
+            key=lambda row: (row.get("fit_percent", 0), row.get("expected_surplus_power_w", 0)),
+            reverse=True,
+        )
+
+        energy_plan = {
+            "status": "Ready" if future_window_rows else "Collecting",
+            "expected_surplus_next_24h_kwh": round(next24_solar_surplus_kwh, 2),
+            "solar_surplus_next_24h_kwh": round(next24_solar_surplus_kwh, 2),
+            "battery_charging_demand_next_24h_kwh": round(next24_battery_charge_demand_kwh, 2),
+            "flexible_surplus_next_24h_kwh": round(next24_flexible_surplus_kwh, 2),
+            "peak_surplus_power_w": round(float((peak_surplus_row or {}).get("flexible_surplus_power_w") or 0.0), 1),
+            "peak_flexible_surplus_power_w": round(float((peak_surplus_row or {}).get("flexible_surplus_power_w") or 0.0), 1),
+            "peak_surplus_time": (
+                row_local_time(peak_surplus_row).isoformat()
+                if peak_surplus_row and row_local_time(peak_surplus_row) is not None
+                else None
+            ),
+            "best_surplus_window": dict(surplus_windows[0]) if surplus_windows else None,
+            "battery": battery_plan,
+            "flexible_load_windows": flexible_load_windows[:8],
+            "recommendation_only": True,
+            "method": "Hourly calibrated solar forecast minus learned house demand, then expected battery charging; flexible-load windows use only the remaining surplus.",
+        }
 
         risk_flags = []
         if weather_coverage_24 < 25:
@@ -3590,7 +3842,25 @@ class ForecastEngine:
             recommendations.append({"action": "No schedule change", "window": "Current plan", "reason": "No strong forecast-driven opportunity is detected yet.", "confidence": confidence})
 
         rolling_timeline_rows = rows_overlapping(now, rolling_24_end)
-        timeline = [{k: row.get(k) for k in ("time", "raw_solar_power_w", "solar_power_w", "adaptive_correction_percent", "house_power_w", "grid_import_power_w", "grid_export_power_w", "projected_battery_soc_percent", "condition")} for row in rolling_timeline_rows]
+        timeline = [{k: row.get(k) for k in ("time", "raw_solar_power_w", "solar_power_w", "adaptive_correction_percent", "calibration_context", "calibration_source", "house_power_w", "surplus_power_w", "expected_battery_charge_power_w", "flexible_surplus_power_w", "grid_import_power_w", "grid_export_power_w", "projected_battery_soc_percent", "condition")} for row in rolling_timeline_rows]
+
+        context_counts: dict[str, int] = {}
+        context_corrected_hours = 0
+        for row in rolling_timeline_rows:
+            context = str(row.get("calibration_context") or "Other")
+            context_counts[context] = context_counts.get(context, 0) + 1
+            if row.get("calibration_source") == "weather_context":
+                context_corrected_hours += 1
+        contextual_calibration = {
+            "status": "Active" if context_corrected_hours else "Collecting" if not adaptive.get("contextual_learning_ready") else "Ready · no matching weather hours",
+            "active_next_24h_hours": context_corrected_hours,
+            "next_24h_context_hours": context_counts,
+            "patterns": contextual_patterns,
+            "fallback": "global adaptive correction",
+            "method": "Weather-group calibration uses completed pre-day forecast-vs-actual evidence only.",
+            "guardrail_percent": 12.5,
+        }
+
         self.last = {
             "status": "Ready" if valid else "Waiting",
             "method": method,
@@ -3602,6 +3872,7 @@ class ForecastEngine:
             "solar_range_following_24h": solar_range_following_24h,
             "forecast_curve_24h": forecast_curve_24h,
             "surplus_windows": surplus_windows,
+            "energy_plan": energy_plan,
             "risk_flags": risk_flags,
             "calendar_aligned": True,
             "weather_forecast_hours_48h": forecast_weather_hours,
@@ -3615,6 +3886,7 @@ class ForecastEngine:
             "expected_solar_next_24h_kwh": today_solar,
             "expected_solar_following_24h_kwh": tomorrow_solar,
             "adaptive_correction": adaptive,
+            "contextual_calibration": contextual_calibration,
             "expected_consumption_next_24h_kwh": today_load,
             "expected_consumption_following_24h_kwh": tomorrow_load,
             "expected_grid_import_next_24h_kwh": today_import,
@@ -3636,8 +3908,13 @@ class ForecastEngine:
             "timeline_24h": timeline,
             "best_surplus_window": best_window,
             "recommendations": recommendations[:3],
-            "summary": (f"Next 24 hours: {today_solar:.1f} kWh solar, {today_load:.1f} kWh consumption, {today_import:.1f} kWh import and {today_export:.1f} kWh export." if valid else "More historical samples are needed for a forecast."),
-            "limitations": "Rolling 24-hour headline forecast with calendar-aligned 7-day local statistical outlook. Future weather adjustment is applied only when timestamped Home Assistant forecast rows are available; otherwise Zeus preserves the learned historical solar profile and lowers confidence. Planning learning may expose a bounded ±15% advisory solar correction only after its reusable-evidence thresholds are met; Recommendation Only mode does not apply that correction automatically and raw forecast values remain authoritative. Battery projection uses conservative generic efficiency and capacity assumptions until battery metadata is available.",
+            "summary": (
+                f"Next 24 hours: {today_solar:.1f} kWh solar, {today_load:.1f} kWh consumption, "
+                f"{next24_flexible_surplus_kwh:.1f} kWh flexible surplus after expected battery charging, {today_import:.1f} kWh import and "
+                f"{today_export:.1f} kWh export."
+                if valid else "More historical samples are needed for a forecast."
+            ),
+            "limitations": "Rolling 24-hour headline forecast with calendar-aligned 7-day local statistical outlook. Future weather adjustment is applied only when timestamped Home Assistant forecast rows are available; otherwise Zeus preserves the learned historical solar profile and lowers confidence. Mature completed pre-day comparisons can apply a bounded global correction (±15%) or, when enough matching evidence exists, a stricter Sunny/Cloudy contextual correction (±12.5%). Raw forecast values remain exposed for audit. Battery projection uses conservative generic efficiency and capacity assumptions until battery metadata is available.",
             "safety": "Forecast and recommendations only. No device control.",
             "recorder_safe": True,
         }

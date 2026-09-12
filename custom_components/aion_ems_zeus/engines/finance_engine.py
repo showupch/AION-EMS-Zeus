@@ -333,6 +333,101 @@ class FinanceEngine:
                 "energy_source": device.get("method", "unknown"),
             })
         confidence = self.data_quality.summary().get("confidence_score")
+
+        # Evidence-driven simple payback based on Zeus's canonical measured
+        # Finance history. Grid purchases are not subtracted
+        # from the benefit because the economic value of the energy system is
+        # avoided import + export income. Standing charges likewise exist with or
+        # without the energy system and are excluded from payback benefit.
+        payback_cfg = dict(self.registry.data.get("sources", {}).get("payback", {}) or {})
+        payback_enabled = bool(payback_cfg.get("enabled"))
+        gross_investment = self._num(payback_cfg.get("gross_investment"))
+        subsidy = max(0.0, self._num(payback_cfg.get("subsidy")))
+        annual_maintenance = max(0.0, self._num(payback_cfg.get("annual_maintenance")))
+        net_investment = max(0.0, gross_investment - subsidy)
+
+        analytics_periods = (self.analytics.summary().get("periods") or {})
+        year_evidence = dict(analytics_periods.get("year") or {})
+        evidence_days = max(0, int(self._num(year_evidence.get("day_count"))))
+        year_direct_solar = max(0.0, self._num(year_evidence.get("direct_solar_consumption_kwh")))
+        year_battery_support = max(0.0, self._num(year_evidence.get("battery_support_to_home_kwh")))
+        year_export = max(0.0, self._num(year_evidence.get("grid_export_energy_kwh")))
+
+        year_priced = dict(period_values.get("year") or {})
+        if year_priced and year_priced.get("effective_import_tariff") is not None:
+            payback_import_rate = max(0.0, self._num(year_priced.get("effective_import_tariff")))
+        else:
+            payback_import_rate = max(0.0, self._num(cfg.get("import_tariff")))
+        if year_priced and year_priced.get("export_revenue") is not None:
+            measured_export_value = max(0.0, self._num(year_priced.get("export_revenue")))
+        else:
+            measured_export_value = year_export * max(0.0, export_rate)
+
+        measured_avoided_import_value = (year_direct_solar + year_battery_support) * payback_import_rate
+        measured_energy_value = measured_avoided_import_value + measured_export_value
+        daily_value = measured_energy_value / evidence_days if evidence_days > 0 else 0.0
+        annualized_gross_benefit = daily_value * 365.0 if evidence_days > 0 else 0.0
+        annualized_net_benefit = max(0.0, annualized_gross_benefit - annual_maintenance)
+
+        simple_payback_years = (
+            net_investment / annualized_net_benefit
+            if payback_enabled and net_investment > 0 and annualized_net_benefit > 0
+            else None
+        )
+
+        commissioning_date = str(payback_cfg.get("commissioning_date") or "").strip() or None
+        estimated_break_even_date = None
+        estimated_recovered_value = None
+        estimated_recovered_percent = None
+        elapsed_days = None
+        if commissioning_date:
+            try:
+                commissioned = datetime.fromisoformat(commissioning_date).date()
+                elapsed_days = max(0, (dt_util.now().date() - commissioned).days)
+                if annualized_net_benefit > 0:
+                    estimated_recovered_value = min(
+                        net_investment,
+                        annualized_net_benefit * elapsed_days / 365.0,
+                    )
+                    estimated_recovered_percent = (
+                        estimated_recovered_value / net_investment * 100.0
+                        if net_investment > 0 else 100.0
+                    )
+                if simple_payback_years is not None:
+                    estimated_break_even_date = (
+                        commissioned + timedelta(days=round(simple_payback_years * 365.0))
+                    ).isoformat()
+            except ValueError:
+                commissioning_date = None
+
+        evidence_confidence = (
+            "High" if evidence_days >= 180
+            else "Medium" if evidence_days >= 60
+            else "Learning"
+        )
+        system_payback = {
+            "configured": payback_enabled and gross_investment > 0,
+            "gross_investment": round(gross_investment, 2) if payback_enabled else None,
+            "subsidy": round(subsidy, 2) if payback_enabled else None,
+            "net_investment": round(net_investment, 2) if payback_enabled else None,
+            "annual_maintenance": round(annual_maintenance, 2) if payback_enabled else None,
+            "commissioning_date": commissioning_date,
+            "evidence_days": evidence_days,
+            "measured_energy_value": round(measured_energy_value, 2) if evidence_days else None,
+            "measured_avoided_import_value": round(measured_avoided_import_value, 2) if evidence_days else None,
+            "measured_export_value": round(measured_export_value, 2) if evidence_days else None,
+            "annualized_gross_benefit": round(annualized_gross_benefit, 2) if evidence_days else None,
+            "annualized_net_benefit": round(annualized_net_benefit, 2) if evidence_days else None,
+            "simple_payback_years": round(simple_payback_years, 2) if simple_payback_years is not None else None,
+            "estimated_break_even_date": estimated_break_even_date,
+            "estimated_recovered_value": round(estimated_recovered_value, 2) if estimated_recovered_value is not None else None,
+            "estimated_recovered_percent": round(min(100.0, estimated_recovered_percent), 1) if estimated_recovered_percent is not None else None,
+            "elapsed_days_since_commissioning": elapsed_days,
+            "confidence_label": evidence_confidence,
+            "method": "Measured year-to-date direct-solar savings + measured battery support savings + export income, annualized from available evidence; annual maintenance is deducted.",
+            "boundary": "Simple payback estimate. Financing costs, tax effects, degradation, tariff inflation and replacement costs are not modeled.",
+        }
+
         self.last = {
             "status": "Ready" if enabled else "Not configured",
             "configured": enabled, "currency": currency, "tariff_mode": tariff_mode,
@@ -369,6 +464,7 @@ class FinanceEngine:
             "battery_support_value_today": round(battery_support_value, 4) if enabled else None,
             "avoided_import_value_today": round(avoided_import_value, 4) if enabled else None,
             "net_benefit_today": round(net_benefit, 4) if enabled else None,
+            "system_payback": system_payback,
             "device_costs": devices, "data_confidence": confidence,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "solar_period_complete": solar_period_complete,

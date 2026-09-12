@@ -2,7 +2,7 @@
 
 DOMAIN = "aion_ems_zeus"
 NAME = "AION EMS"
-VERSION = "16.0.35"
+VERSION = "16.0.41"
 
 PLATFORMS = ["sensor"]
 
@@ -92,6 +92,8 @@ SERVICE_CLEAR_LOCAL_WEATHER_STATION = "clear_local_weather_station"
 
 SERVICE_SAVE_TARIFF_SETTINGS = "save_tariff_settings"
 SERVICE_CLEAR_TARIFF_SETTINGS = "clear_tariff_settings"
+SERVICE_SAVE_PAYBACK_SETTINGS = "save_payback_settings"
+SERVICE_CLEAR_PAYBACK_SETTINGS = "clear_payback_settings"
 SERVICE_SET_ENERGY_PRICES = "set_energy_prices"
 SERVICE_CLEAR_DYNAMIC_TARIFF = "clear_dynamic_tariff"
 SERVICE_SAVE_BATTERY_CAPACITY = "save_battery_capacity"

@@ -60,6 +60,8 @@ from .const import (
     SERVICE_CLEAR_LOCAL_WEATHER_STATION,
     SERVICE_SAVE_TARIFF_SETTINGS,
     SERVICE_CLEAR_TARIFF_SETTINGS,
+    SERVICE_SAVE_PAYBACK_SETTINGS,
+    SERVICE_CLEAR_PAYBACK_SETTINGS,
     SERVICE_SET_ENERGY_PRICES,
     SERVICE_CLEAR_DYNAMIC_TARIFF,
     SERVICE_SAVE_BATTERY_CAPACITY,
@@ -1107,6 +1109,55 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         core.refresh_pipeline()
         await _refresh_aion_entities(hass)
 
+    async def save_payback_settings(call: ServiceCall) -> None:
+        """Persist Finance system-investment assumptions used by Payback."""
+        from datetime import date
+
+        core = _core(hass)
+        gross = float(call.data["gross_investment"])
+        subsidy = float(call.data.get("subsidy", 0.0))
+        maintenance = float(call.data.get("annual_maintenance", 0.0))
+        commissioning_date = str(call.data.get("commissioning_date") or "").strip() or None
+        if gross <= 0:
+            raise vol.Invalid("gross_investment must be greater than zero")
+        if subsidy < 0 or maintenance < 0:
+            raise vol.Invalid("subsidy and annual_maintenance cannot be negative")
+        if subsidy > gross:
+            raise vol.Invalid("subsidy cannot exceed gross investment")
+        if commissioning_date:
+            try:
+                parsed = date.fromisoformat(commissioning_date)
+            except ValueError as err:
+                raise vol.Invalid("commissioning_date must use YYYY-MM-DD") from err
+            if parsed > date.today():
+                raise vol.Invalid("commissioning_date cannot be in the future")
+        core.registry.data.setdefault("sources", {})["payback"] = {
+            "enabled": True,
+            "gross_investment": round(gross, 2),
+            "subsidy": round(subsidy, 2),
+            "annual_maintenance": round(maintenance, 2),
+            "commissioning_date": commissioning_date,
+            "saved_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        }
+        core.registry.data.setdefault("audit", []).append({"action": "save_payback_settings"})
+        await core.registry.async_save()
+        core.refresh_pipeline()
+        await _refresh_aion_entities(hass)
+
+    async def clear_payback_settings(call: ServiceCall) -> None:
+        core = _core(hass)
+        core.registry.data.setdefault("sources", {})["payback"] = {
+            "enabled": False,
+            "gross_investment": None,
+            "subsidy": 0.0,
+            "annual_maintenance": 0.0,
+            "commissioning_date": None,
+        }
+        core.registry.data.setdefault("audit", []).append({"action": "clear_payback_settings"})
+        await core.registry.async_save()
+        core.refresh_pipeline()
+        await _refresh_aion_entities(hass)
+
     async def set_energy_prices(call: ServiceCall) -> None:
         """Import an absolute dynamic import-price schedule from a HA automation."""
         from datetime import datetime, timezone
@@ -1500,6 +1551,18 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     SERVICE_SAVE_BATTERY_CAPACITY,
     SERVICE_SAVE_HOME_PROFILE,
     SERVICE_CLEAR_BATTERY_CAPACITY, clear_tariff_settings)
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SAVE_PAYBACK_SETTINGS,
+        save_payback_settings,
+        schema=vol.Schema({
+            vol.Required("gross_investment"): vol.Coerce(float),
+            vol.Optional("subsidy", default=0.0): vol.Coerce(float),
+            vol.Optional("annual_maintenance", default=0.0): vol.Coerce(float),
+            vol.Optional("commissioning_date", default=""): cv.string,
+        }),
+    )
+    hass.services.async_register(DOMAIN, SERVICE_CLEAR_PAYBACK_SETTINGS, clear_payback_settings)
     dynamic_price_schema = vol.Schema({
         vol.Required("prices"): vol.All(cv.ensure_list, [vol.Schema({
             vol.Required("start"): cv.string,

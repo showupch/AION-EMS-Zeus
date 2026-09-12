@@ -95,21 +95,68 @@ class QADiagnosticsCenter:
         source_usage={}
         for d in devices:
             name=d.get('name') or d.get('device_id') or 'Unnamed device'
+            dtype = str(d.get('type') or d.get('device_type') or '').strip().lower()
             elwa_direct = (
-                str(d.get('type') or '') == 'water_heater'
+                dtype == 'water_heater'
                 and str(d.get('device_profile') or '') == 'my_pv_elwa'
                 and bool(str(d.get('control_elwa_ip') or '').strip())
             )
+
+            # Heat Pumps can intentionally leave the generic whole-unit
+            # power_entity / energy_entity empty when the user enables separate
+            # Heating + DHW circuit measurements. In that mode, complete
+            # classified electrical circuit mappings are equivalent source
+            # evidence for Registry QA and must not be reported as missing.
+            separate_heat_dhw = (
+                dtype == 'heat_pump'
+                and bool(d.get('separate_heating_dhw_measurements'))
+            )
+            classified_alternatives = {
+                'power_entity': (
+                    'heating_electrical_power_entity',
+                    'dhw_electrical_power_entity',
+                ),
+                'energy_entity': (
+                    'heating_electrical_energy_entity',
+                    'dhw_electrical_energy_entity',
+                ),
+            }
+
             for key in ('power_entity','energy_entity'):
                 eid=d.get(key)
-                if not eid:
+                accepted_sources=[]
+                if eid:
+                    accepted_sources=[eid]
+                elif separate_heat_dhw:
+                    fields=classified_alternatives[key]
+                    circuit_sources=[
+                        str(d.get(field) or '').strip()
+                        for field in fields
+                    ]
+                    # Both Heating and DHW electrical mappings are required to
+                    # replace the missing whole-unit field. Partial circuit
+                    # evidence remains visible as a QA configuration issue.
+                    if all(circuit_sources):
+                        accepted_sources=circuit_sources
+
+                if not accepted_sources:
                     if not elwa_direct:
-                        missing_fields.append(f"{name}: {key}")
-                elif not self.hass.states.get(eid): unavailable.append(eid)
-                if eid: source_usage.setdefault(eid,[]).append(str(name))
+                        if separate_heat_dhw:
+                            kind='power' if key == 'power_entity' else 'energy'
+                            missing_fields.append(
+                                f"{name}: {key} (or complete Heating/DHW electrical {kind} mappings)"
+                            )
+                        else:
+                            missing_fields.append(f"{name}: {key}")
+                    continue
+
+                for source_eid in accepted_sources:
+                    if not self.hass.states.get(source_eid):
+                        unavailable.append(source_eid)
+                    source_usage.setdefault(source_eid,[]).append(str(name))
         duplicate_sources={k:v for k,v in source_usage.items() if len(v)>1}
         state='error' if missing_fields else 'warning' if unavailable else 'ok'
-        checks.append(self._check("device_sources","Registry","Registered device sources",state,(f"Missing fields: {', '.join(missing_fields[:6])}. " if missing_fields else "")+(f"Unavailable entities: {', '.join(sorted(set(unavailable))[:6])}." if unavailable else "All required device source entities are available."),"Open Devices and correct missing or unavailable mappings." if state!='ok' else ""))
+        checks.append(self._check("device_sources","Registry","Registered device sources",state,(f"Missing fields: {', '.join(missing_fields[:6])}. " if missing_fields else "")+(f"Unavailable entities: {', '.join(sorted(set(unavailable))[:6])}." if unavailable else "All required device source entities are available, including valid classified Heat Pump circuit sources."),"Open Devices and correct missing or unavailable mappings." if state!='ok' else ""))
         checks.append(self._check("duplicate_sources","Registry","Duplicate device mappings","warning" if duplicate_sources else "ok",f"Shared entities: {', '.join(list(duplicate_sources)[:6])}" if duplicate_sources else "No duplicate device power/energy mappings detected.","Confirm whether shared entities are intentional." if duplicate_sources else ""))
 
         # Multi-inverter topology and aggregation consistency.

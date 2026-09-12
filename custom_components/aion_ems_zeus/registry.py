@@ -48,7 +48,7 @@ class RegistryEngine:
             "sites": [{"id": "home", "name": "Home", "enabled": True, "icon": "mdi:home-lightning-bolt"}],
             "topology_settings": {"default_site_id": "home", "balance_tolerance_percent": 10},
             "home_settings": {"battery_capacity_kwh": None, "owner_name": "", "home_name": "Home", "use_owner_name": True, "story_style": "friendly", "briefing_length": "normal", "data_epoch": None},
-            "sources": {"weather": {"entity_id": None, "enabled": False}, "local_weather_station": {"enabled": False, "name": "", "entities": {}}, "tariffs": {"enabled": False, "currency": "CHF", "import_tariff": None, "export_tariff": None, "standing_charge": 0.0, "vat_included": True}},
+            "sources": {"weather": {"entity_id": None, "enabled": False}, "local_weather_station": {"enabled": False, "name": "", "entities": {}}, "tariffs": {"enabled": False, "currency": "CHF", "import_tariff": None, "export_tariff": None, "standing_charge": 0.0, "vat_included": True}, "payback": {"enabled": False, "gross_investment": None, "subsidy": 0.0, "annual_maintenance": 0.0, "commissioning_date": None}},
             "switch_hub": [],
         }
 
@@ -77,6 +77,7 @@ class RegistryEngine:
             self.data.setdefault("sources", {"weather": {"entity_id": None, "enabled": False}})
             self.data["sources"].setdefault("local_weather_station", {"enabled": False, "name": "", "entities": {}})
             self.data["sources"].setdefault("tariffs", {"enabled": False, "currency": "CHF", "import_tariff": None, "export_tariff": None, "standing_charge": 0.0, "vat_included": True})
+            self.data["sources"].setdefault("payback", {"enabled": False, "gross_investment": None, "subsidy": 0.0, "annual_maintenance": 0.0, "commissioning_date": None})
             self.data.setdefault("switch_hub", [])
         self.data["schema_version"] = 4
         # v9 migration: classify every existing energy entity without deleting data.

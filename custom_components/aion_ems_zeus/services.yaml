@@ -267,6 +267,45 @@ clear_tariff_settings:
   name: Clear tariff settings
   description: Disable Finance calculations and clear active fixed tariffs.
 
+save_payback_settings:
+  name: Save system payback settings
+  description: Save system investment, subsidy, annual maintenance and commissioning date for Finance payback calculations.
+  fields:
+    gross_investment:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 10000000
+          step: 1
+          mode: box
+    subsidy:
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 10000000
+          step: 1
+          mode: box
+    annual_maintenance:
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 1000000
+          step: 1
+          mode: box
+    commissioning_date:
+      required: false
+      example: "2025-06-01"
+      selector:
+        text:
+
+clear_payback_settings:
+  name: Clear system payback settings
+  description: Disable and clear the Finance system-payback assumptions.
 
 save_battery_capacity:
   name: Save battery capacity
