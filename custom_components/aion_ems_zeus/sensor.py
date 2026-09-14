@@ -1449,8 +1449,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         """Return compact Zeus execution activity for the Performance page."""
         update = core.update_engine.summary() or {}
         perf = dict(core.performance or {})
+        startup_steps = dict(perf.get("startup_steps") or {})
+        slowest_name = None
+        slowest_ms = None
+        if startup_steps:
+            slowest_name, slowest = max(
+                startup_steps.items(),
+                key=lambda item: float((item[1] or {}).get("duration_ms") or 0.0),
+            )
+            slowest_ms = (slowest or {}).get("duration_ms")
+        startup_failed = sum(1 for result in startup_steps.values() if not (result or {}).get("ok"))
         return {
             "mode": perf.get("mode", "low_cpu_event_driven"),
+            "startup_phase": perf.get("startup_phase"),
+            "startup_essential_ms": perf.get("startup_essential_ms"),
+            "startup_warmup_ms": perf.get("startup_warmup_ms"),
+            "startup_background_ready": bool(perf.get("background_ready", False)),
+            "startup_failed_steps": startup_failed,
+            "startup_slowest_step": slowest_name,
+            "startup_slowest_step_ms": slowest_ms,
             "tracked_entity_count": update.get("tracked_entity_count", 0),
             "listener_count": len(getattr(core.update_engine, "_listeners", []) or []),
             "source_events": update.get("source_events", 0),

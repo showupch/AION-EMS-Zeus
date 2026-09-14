@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import inspect
+import logging
+from time import perf_counter
 
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
@@ -80,6 +83,9 @@ from .knowledge_v2 import (
     AdaptiveAdvisorEngine,
     IntelligenceFusionEngine,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class AionCore:
@@ -246,52 +252,135 @@ class AionCore:
             "decision_refreshes": 0,
             "last_live_duration_ms": None,
             "last_decision_duration_ms": None,
+            "startup_phase": "constructed",
+            "startup_essential_ms": None,
+            "startup_warmup_ms": None,
+            "startup_steps": {},
+            "background_ready": False,
         }
 
     async def async_setup(self) -> None:
+        """Perform only the essential setup required before HA can load Zeus.
+
+        Slow Recorder/history, weather/network and deeper intelligence warm-up is
+        deliberately deferred to ``async_finish_setup``.  This keeps Zeus from
+        holding Home Assistant's config-entry setup path open on large systems.
+        """
+        started = perf_counter()
+        self.performance["startup_phase"] = "essential"
+
+        # Persistent configuration and the data lake are required before entity
+        # platforms, services and the frontend are exposed.  Keep these awaited.
         await self.registry.async_load()
         configure_data_epoch((self.registry.data.get("home_settings") or {}).get("data_epoch"))
         await self.data_lake.async_load()
-        await self.weather_history.async_load()
-        await self.device_analytics.async_refresh_recorder_energy()
-        self.device_analytics.refresh()
-        await self.device_energy_attribution.async_refresh()
-        await self.analytics.async_refresh_ha_energy_battery()
-        await self.observation_knowledge.async_load()
-        await self.intelligence_memory.async_load()
-        await self.decision_engine.async_load()
-        await self.opportunity_learning.async_load()
-        await self.planning_engine.async_load()
-        await self.integration_hub.async_discover_ha_mounts()
-        # Modern HA weather forecasts are action responses, not entity attributes.
-        # Fetch them before the first forecast/decision refresh so Zeus starts with
-        # tomorrow/day-N weather evidence already available.
-        self.weather.refresh()
+
+        # Build a lightweight live snapshot from already-available HA state.
+        # No Recorder, network, mount or forecast I/O belongs in this phase.
+        self.discovery.refresh()
+        self.energy_engine.refresh()
+        self.integration_hub.refresh()
+        self.data_bus.refresh()
+        self.data_lake.refresh_mapped_energy_today()
+        self.diagnostics.refresh()
+        self.data_lake.refresh_summary()
+
+        elapsed_ms = round((perf_counter() - started) * 1000.0, 1)
+        self.performance["startup_essential_ms"] = elapsed_ms
+        self.performance["startup_phase"] = "essential_ready"
+        _LOGGER.info("AION EMS Zeus essential startup ready in %.1f ms", elapsed_ms)
+
+    async def _async_startup_step(self, name: str, callback) -> bool:
+        """Run one deferred startup step without allowing it to abort Zeus."""
+        started = perf_counter()
+        ok = True
+        error = None
+        try:
+            result = callback()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as err:  # noqa: BLE001 - startup resilience boundary
+            ok = False
+            error = f"{type(err).__name__}: {err}"
+            _LOGGER.exception("AION EMS Zeus deferred startup step '%s' failed", name)
+        duration_ms = round((perf_counter() - started) * 1000.0, 1)
+        steps = self.performance.setdefault("startup_steps", {})
+        steps[name] = {"ok": ok, "duration_ms": duration_ms, "error": error}
+        if ok:
+            _LOGGER.debug("AION EMS Zeus startup step %s completed in %.1f ms", name, duration_ms)
+        return ok
+
+    async def async_finish_setup(self) -> None:
+        """Warm up non-essential Zeus subsystems in the background."""
+        started = perf_counter()
+        self.performance["startup_phase"] = "background_warmup"
+
+        await self._async_startup_step("weather_history_load", self.weather_history.async_load)
+        await self._async_startup_step("recorder_energy", self.device_analytics.async_refresh_recorder_energy)
+        await self._async_startup_step("device_analytics", self.device_analytics.refresh)
+        await self._async_startup_step("device_energy_attribution", self.device_energy_attribution.async_refresh)
+        await self._async_startup_step("battery_history", self.analytics.async_refresh_ha_energy_battery)
+        await self._async_startup_step("observation_knowledge_load", self.observation_knowledge.async_load)
+        await self._async_startup_step("intelligence_memory_load", self.intelligence_memory.async_load)
+        await self._async_startup_step("decision_engine_load", self.decision_engine.async_load)
+        await self._async_startup_step("opportunity_learning_load", self.opportunity_learning.async_load)
+        await self._async_startup_step("planning_engine_load", self.planning_engine.async_load)
+        await self._async_startup_step("ha_mount_discovery", self.integration_hub.async_discover_ha_mounts)
+
+        await self._async_startup_step("weather_state", self.weather.refresh)
         if hasattr(self.weather, "async_refresh_forecast"):
-            await self.weather.async_refresh_forecast()
-        self.refresh_pipeline()
-        await self.weather_history.async_capture_today()
-        # weather_history refreshes the provider forecast as part of capture;
-        # refresh forecast-dependent engines once more so the newest rows are live.
-        self._refresh_decision_and_api_engines()
-        await self.update_engine.async_start()
-        # Supervised ELWA execution is evaluated on every tracked evidence change
-        # and on a low-cost 5 s scheduler. The scheduler only writes when the
-        # configured keepalive is due or the safe request changes.
-        self._unsub_smart_control_listener = self.update_engine.add_listener(self.smart_control.async_evaluate_execution)
-        async def _smart_control_tick(_now=None):
-            await self.smart_control.async_evaluate_execution()
-        self._unsub_smart_control_keepalive = async_track_time_interval(self.hass, _smart_control_tick, timedelta(seconds=5))
+            await self._async_startup_step("weather_forecast", self.weather.async_refresh_forecast)
+
+        await self._async_startup_step("full_pipeline", self.refresh_pipeline)
+        await self._async_startup_step("weather_capture", self.weather_history.async_capture_today)
+        await self._async_startup_step("decision_refresh", self._refresh_decision_and_api_engines)
+
+        # Start event-driven/control schedulers only after their persistent state
+        # and initial evidence have had a chance to load.  This preserves control
+        # safety while removing the warm-up from HA's blocking setup path.
+        update_ok = await self._async_startup_step("update_engine", self.update_engine.async_start)
+        if update_ok:
+            self._unsub_smart_control_listener = self.update_engine.add_listener(self.smart_control.async_evaluate_execution)
+
+            async def _smart_control_tick(_now=None):
+                await self.smart_control.async_evaluate_execution()
+
+            self._unsub_smart_control_keepalive = async_track_time_interval(
+                self.hass, _smart_control_tick, timedelta(seconds=5)
+            )
+
         async def _switch_hub_tick(_now=None):
             await self.switch_hub.async_evaluate()
-        await self.switch_hub.async_evaluate()
-        self._unsub_switch_hub_tick = async_track_time_interval(self.hass, _switch_hub_tick, timedelta(seconds=10))
+
+        await self._async_startup_step("switch_hub_initial", self.switch_hub.async_evaluate)
+        self._unsub_switch_hub_tick = async_track_time_interval(
+            self.hass, _switch_hub_tick, timedelta(seconds=10)
+        )
+
         self._schedule_startup_mapping_restore()
         self._schedule_startup_engine_recovery()
         self.start_auto_capture()
+
         async def _capture_plan(_now=None):
             await self.planning_engine.async_capture_upcoming()
-        self._unsub_planning_capture = async_track_time_interval(self.hass, _capture_plan, timedelta(minutes=30))
+
+        self._unsub_planning_capture = async_track_time_interval(
+            self.hass, _capture_plan, timedelta(minutes=30)
+        )
+
+        elapsed_ms = round((perf_counter() - started) * 1000.0, 1)
+        self.performance["startup_warmup_ms"] = elapsed_ms
+        self.performance["startup_phase"] = "ready"
+        self.performance["background_ready"] = True
+        failed = [
+            name for name, result in (self.performance.get("startup_steps") or {}).items()
+            if not result.get("ok")
+        ]
+        _LOGGER.info(
+            "AION EMS Zeus background warm-up completed in %.1f ms%s",
+            elapsed_ms,
+            f"; failed steps: {', '.join(failed)}" if failed else "",
+        )
         self.event_bus.publish(
             "CoreStarted",
             "AionCore",
@@ -299,6 +388,9 @@ class AionCore:
                 "version": self.version,
                 "architecture": "zeus-12-5-executive-intelligence",
                 "engines": self.engine_names(),
+                "essential_startup_ms": self.performance.get("startup_essential_ms"),
+                "background_warmup_ms": elapsed_ms,
+                "background_failed_steps": failed,
             },
         )
 

@@ -225,6 +225,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Heavy Recorder/history, weather/network and intelligence warm-up must not
+    # hold Home Assistant's config-entry startup open.  ConfigEntry background
+    # tasks are excluded from HA startup blocking and are cancelled on unload.
+    entry.async_create_background_task(
+        hass,
+        core.async_finish_setup(),
+        f"{DOMAIN} background warm-up",
+        eager_start=False,
+    )
     return True
 
 
