@@ -185,13 +185,22 @@ class QADiagnosticsCenter:
             inv_message='No registered inverter devices and no available canonical solar source mapping were found.'
             inv_recommendation='Map the Solar source, or register individual inverters if per-inverter diagnostics are required.'
         checks.append(self._check('multi_inverter','Topology','Multi-inverter mappings',inv_status,inv_message,inv_recommendation))
-        balance=topology.get('balance',{}) or {}
-        balance_state='warning' if balance.get('status')=='Review' else 'ok'
+        raw_balance=topology.get('balance',{}) or {}
+        # v16.0.48: use the dedicated 30-second rolling comparison for QA only.
+        # Raw topology/live Solar remains untouched and is intentionally not used
+        # to trigger this QA warning.
+        balance=topology.get('qa_balance',{}) or raw_balance
+        balance_status=balance.get('status')
+        balance_state='warning' if balance_status=='Review' else 'ok'
         if not inverter_count and mapped_solar_ok:
             balance_message=f"Canonical solar source {mapped_solar_entity} is available at {balance.get('mapped_total_solar_w','—')} W; dedicated inverter aggregation is optional in source-first mode."
+        elif balance_status == 'Sampling':
+            balance_message=(f"30-second QA window collecting evidence: inverter average {balance.get('inverter_sum_w',0)} W; "
+                             f"mapped solar average {balance.get('mapped_total_solar_w','—')} W. No warning until a full window confirms the mismatch.")
         else:
-            balance_message=f"Inverter sum: {balance.get('inverter_sum_w',0)} W; mapped total: {balance.get('mapped_total_solar_w','—')} W; status: {balance.get('status','Not available')}."
-        checks.append(self._check('solar_aggregation','Topology','Solar aggregation balance',balance_state,balance_message,'Review sensor update timing and mappings.' if balance_state=='warning' else ''))
+            balance_message=(f"30-second QA average: inverter sum {balance.get('inverter_sum_w',0)} W; "
+                             f"mapped total {balance.get('mapped_total_solar_w','—')} W; status: {balance_status or 'Not available'}.")
+        checks.append(self._check('solar_aggregation','Topology','Solar aggregation balance',balance_state,balance_message,'Review mappings if the mismatch remains sustained after the 30-second QA averaging window.' if balance_state=='warning' else ''))
 
         # Main energy mappings.
         map_entities=[]

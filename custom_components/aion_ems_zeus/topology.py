@@ -6,6 +6,7 @@ only. It never calls inverter, battery, device, or automation control services.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from collections import deque
 from typing import Any
 
 from homeassistant.helpers import device_registry as dr
@@ -27,6 +28,11 @@ class MultiInverterTopologyEngine:
         self.event_bus = event_bus
         self.registry = registry
         self.energy_flow = energy_flow
+        # QA-only 30-second aggregation evidence. This never feeds live Solar,
+        # Forecast, Recorder, Kiosk, or control logic. The topology refresh cadence
+        # is 30 seconds, so retaining the previous sample provides a rolling
+        # comparison across one full refresh window.
+        self._qa_solar_aggregation_samples = deque(maxlen=3)
         self.last: dict[str, Any] = {
             "status": "Not generated",
             "inverter_count": 0,
@@ -280,6 +286,61 @@ class MultiInverterTopologyEngine:
             mismatch_percent = round(abs(mismatch_w) / denominator * 100, 1)
             balance_status = "Balanced" if mismatch_percent <= tolerance else "Review"
 
+        # QA-only rolling aggregation comparison. Keep the raw/live balance above
+        # exactly as before, and build separate evidence used only by QADiagnostics.
+        # This prevents asynchronous inverter/total-solar sensor updates during
+        # passing clouds from creating an immediate false QA warning. A mismatch
+        # that persists across the full 30-second topology window still warns.
+        qa_balance_status = balance_status
+        qa_inverter_sum_w = round(total_power, 2)
+        qa_mapped_total_solar_w = mapped_solar
+        qa_difference_w = mismatch_w
+        qa_difference_percent = mismatch_percent
+        qa_sample_count = 0
+        qa_window_seconds = 30
+        now_utc = datetime.now(timezone.utc)
+
+        if mapped_solar is not None and rows:
+            current_sample = {
+                "timestamp": now_utc,
+                "inverter_sum_w": float(total_power),
+                "mapped_total_solar_w": float(mapped_solar),
+            }
+            self._qa_solar_aggregation_samples.append(current_sample)
+
+            # Topology normally refreshes every 30 s. Allow a small scheduling
+            # grace so the immediately preceding sample is not discarded because
+            # Home Assistant ran the callback a fraction late.
+            max_age_seconds = qa_window_seconds + 5
+            while self._qa_solar_aggregation_samples and (
+                now_utc - self._qa_solar_aggregation_samples[0]["timestamp"]
+            ).total_seconds() > max_age_seconds:
+                self._qa_solar_aggregation_samples.popleft()
+
+            samples = list(self._qa_solar_aggregation_samples)
+            qa_sample_count = len(samples)
+            if samples:
+                avg_inverter = sum(x["inverter_sum_w"] for x in samples) / len(samples)
+                avg_mapped = sum(x["mapped_total_solar_w"] for x in samples) / len(samples)
+                qa_inverter_sum_w = round(avg_inverter, 2)
+                qa_mapped_total_solar_w = round(avg_mapped, 2)
+                qa_difference_w = round(avg_inverter - avg_mapped, 2)
+                qa_denominator = max(abs(avg_mapped), abs(avg_inverter), 1.0)
+                qa_difference_percent = round(abs(qa_difference_w) / qa_denominator * 100, 1)
+
+                oldest_age = (now_utc - samples[0]["timestamp"]).total_seconds()
+                has_full_window = len(samples) >= 2 and oldest_age >= qa_window_seconds - 5
+                if qa_difference_percent <= tolerance:
+                    qa_balance_status = "Balanced"
+                elif has_full_window:
+                    qa_balance_status = "Review"
+                else:
+                    # Do not warn on the first asynchronous sample. QA reports
+                    # that it is collecting a complete 30-second window instead.
+                    qa_balance_status = "Sampling"
+        else:
+            self._qa_solar_aggregation_samples.clear()
+
         nodes = [{"id": site_id, "type": "site", "name": next((s.get("name") for s in self.registry.data.get("sites", []) if s.get("id") == site_id), "Home")}]
         links = []
         for row in rows:
@@ -324,6 +385,14 @@ class MultiInverterTopologyEngine:
                 "explanation": ("Short-lived differences can be caused by different sensor update intervals." if mismatch_percent is not None
                     else "Canonical solar is supplied directly by the mapped source; dedicated inverter aggregation is optional in source-first mode." if mapped_solar is not None
                     else "Map total solar power to enable canonical solar diagnostics.")},
+            "qa_balance": {"status": qa_balance_status, "mapped_total_solar_w": qa_mapped_total_solar_w,
+                "inverter_sum_w": qa_inverter_sum_w, "difference_w": qa_difference_w,
+                "difference_percent": qa_difference_percent, "tolerance_percent": tolerance,
+                "window_seconds": qa_window_seconds, "sample_count": qa_sample_count,
+                "explanation": ("QA-only 30-second rolling comparison; live Solar and raw topology values are unchanged."
+                    if mapped_solar is not None and rows else
+                    "Canonical solar is supplied directly by the mapped source; dedicated inverter aggregation is optional in source-first mode."
+                    if mapped_solar is not None else "Map total solar power to enable canonical solar diagnostics.")},
             "topology": {"nodes": nodes[:20], "links": links[:24]},
             "aggregation_mode": "registry_inverters_with_system_context_read_only",
             "summary": f"{len(rows)} inverter(s) · {system_mode} · {round(system['pv_w']/1000, 2)} kW PV" if rows else "Add inverter devices from Integration Hub to build the topology.",
