@@ -2595,10 +2595,19 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const forecastWindowReason=bestWindowLabel?`${bestWindowKwh>0?`${this.kwh(bestWindowKwh)} predicted surplus. `:''}Use this window for flexible loads when convenient; Zeus remains recommendation-only.`:'';
     const recommendationTitle=r.title&&r.title!=='Collecting data'?r.title:(forecastWindowTitle||'No urgent energy action');
     const recommendationReason=r.reason||r.benefit||forecastWindowReason||'Current conditions do not justify an urgent device action. Zeus will keep watching measured flows and forecast evidence.';
+    const welcomeToday=this.today()||{};
+    const welcomeFinite=v=>{const n=Number(v);return Number.isFinite(n)?n:null;};
+    const welcomeFmtEnergy=v=>{const n=welcomeFinite(v);return n==null?'Unavailable':this.kwh(Math.max(0,n));};
+    const welcomeTotals=[
+      ['Solar Today','solar_energy_kwh','mdi:white-balance-sunny','Generated','solar'],
+      ['Export Today','grid_export_energy_kwh','mdi:transmission-tower-export','To grid','export'],
+      ['Import Today','grid_import_energy_kwh','mdi:transmission-tower-import','From grid','import'],
+      ['House Today','house_energy_kwh','mdi:home-lightning-bolt-outline','Total consumption','house']
+    ];
     const live=(label,value,detail,icon,kind)=>`<article class="zw-live ${kind}"><ha-icon icon="${icon}"></ha-icon><div><span>${this.esc(label)}</span><strong>${this.watts(value)}</strong><small>${this.esc(detail)}</small></div></article>`;
     const stat=(label,value,detail,icon,kind='')=>`<article class="zw-stat ${kind}"><ha-icon icon="${icon}"></ha-icon><div><span>${this.esc(label)}</span><strong>${this.esc(value)}</strong><small>${this.esc(detail)}</small></div></article>`;
     const link=(page,label,detail,icon)=>`<button type="button" class="zw-link" data-page="${page}"><ha-icon icon="${icon}"></ha-icon><span><b>${this.esc(label)}</b><small>${this.esc(detail)}</small></span><ha-icon icon="mdi:chevron-right"></ha-icon></button>`;
-    return `<style>.zw-today-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.zw-today-grid .zw-stat{min-height:116px}.zw-context-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}.zw-today-so-far{margin-top:-2px}@media(max-width:980px){.zw-today-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.zw-today-grid{grid-template-columns:1fr}}</style><section class="page welcome-page zw-page">
+    return `<style>.zw-today-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.zw-today-grid .zw-stat{min-height:116px}.zw-context-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}.zw-today-so-far{margin-top:-2px}.zw-welcome-totals{margin-top:14px;margin-bottom:6px}.zw-welcome-totals .live-totals-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}.zw-welcome-totals .live-total-card{display:grid;grid-template-columns:34px 1fr;gap:4px 10px;align-items:center;padding:15px;border:1px solid var(--line);border-radius:14px;background:var(--surface2)}.zw-welcome-totals .live-total-card ha-icon{grid-row:1/4;--mdc-icon-size:28px;color:var(--live-total-color,var(--accent2))}.zw-welcome-totals .live-total-card.solar{--live-total-color:var(--solar)}.zw-welcome-totals .live-total-card.export,.zw-welcome-totals .live-total-card.import{--live-total-color:#4aa3ff}.zw-welcome-totals .live-total-card.house{--live-total-color:#ff5a67}.zw-welcome-totals .live-total-card span,.zw-welcome-totals .live-total-card small{color:var(--muted)}.zw-welcome-totals .live-total-card strong{font-size:22px}.zw-welcome-totals .live-evidence-note{margin-top:10px;color:var(--muted);font-size:10px}@media(max-width:980px){.zw-today-grid,.zw-welcome-totals .live-totals-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.zw-today-grid,.zw-welcome-totals .live-totals-grid{grid-template-columns:1fr}}</style><section class="page welcome-page zw-page">
       <header class="zw-hero">
         <div class="zw-hero-copy"><span>WELCOME TO AION EMS ZEUS</span><h1>${this.esc(greeting)}.</h1><p>Zeus combines measured flows, forecasts and system intelligence.</p><div class="zw-hero-badges"><b>${this.esc(systemLabel)} system</b><span>${this.esc(posture)}</span><span>${confidence.toFixed(0)}% model confidence</span><span>Recommendation only</span></div></div>
         <div class="zw-system-score" style="--zw-score:${systemScore.toFixed(0)}" aria-label="System score ${systemScore.toFixed(0)} out of 100"><small>SYSTEM HEALTH</small><strong>${systemScore.toFixed(0)}</strong><span>/100</span></div>
@@ -2610,6 +2619,8 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
         ${live('Battery',liveBattery,batteryState,'mdi:battery-high','battery')}
         ${live('Grid',liveGrid,gridState,'mdi:transmission-tower','grid')}
       </div></section>
+
+      <article class="panel zw-welcome-totals"><div class="section-title"><div><span>TODAY'S ENERGY TOTALS</span><h2>Measured energy for the current day</h2><small>Uses Zeus canonical current-day authority. Missing evidence remains unavailable.</small></div><ha-icon icon="mdi:chart-bar"></ha-icon></div><div class="live-totals-grid">${welcomeTotals.map(([label,key,icon,note,kind])=>`<div class="live-total-card ${kind}"><ha-icon icon="${icon}"></ha-icon><span>${this.esc(label)}</span><strong>${this.esc(welcomeFmtEnergy(welcomeToday[key]))}</strong><small>${this.esc(note)}</small></div>`).join('')}</div><div class="live-evidence-note">Grid power sign: positive = import, negative = export. Battery power: positive = charging, negative = discharging.</div></article>
 
       <div class="zw-main-grid">
         <div class="zw-main-stack">
@@ -7451,7 +7462,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
 
     <article class="panel spaced zf-week"><div class="section-title"><div><span>7-DAY OUTLOOK</span><h2>Production, demand and grid direction</h2></div><small>Calendar-aligned local days</small></div><div class="zf-days">${dayHtml}</div></article>
 
-    <details class="zi-advanced">
+    <details class="zi-advanced" ${this._forecastAdvancedOpen?'open':''}>
       <summary>Advanced forecast evidence and learning</summary>
       <div class="zi-advanced-body">
         ${localWeatherPanel}
@@ -13173,6 +13184,7 @@ actions:
     this.querySelector('#reset-planning-draft')?.addEventListener('click',()=>{this._planningDraft={reserve_percent:30,priority:'balanced',notes:''};try{localStorage.removeItem('aion_zeus_planning_draft');}catch(_e){}this.render();});
     this.querySelectorAll('button[data-grid-period]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-grid-period');if(!next)return;this._gridPeriod=next;try{localStorage.setItem('aion_zeus_grid_period',next);}catch(_e){}this.render();};});
     this.querySelectorAll('button[data-analytics-period]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-analytics-period');if(!next)return;this._analyticsPeriod=next;try{localStorage.setItem('aion_zeus_analytics_period',next);}catch(_e){}this.render();};});
+    this.querySelector('details.zi-advanced')?.addEventListener('toggle',event=>{this._forecastAdvancedOpen=!!event.currentTarget.open;});
     this.querySelectorAll('button[data-forecast-explorer-mode]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-forecast-explorer-mode');if(!['day','week','month'].includes(next))return;this._forecastExplorerMode=next;try{localStorage.setItem('aion_zeus_forecast_explorer_mode',next);}catch(_e){}this.render();};});
     this.querySelectorAll('button[data-forecast-explorer-step]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const step=Number(el.getAttribute('data-forecast-explorer-step')||0),raw=this._forecastExplorerDate||new Date().toISOString().slice(0,10),d=new Date(`${raw}T12:00:00`);if(this._forecastExplorerMode==='month')d.setMonth(d.getMonth()+step);else d.setDate(d.getDate()+step*(this._forecastExplorerMode==='week'?7:1));const pad=n=>String(n).padStart(2,'0');this._forecastExplorerDate=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;try{localStorage.setItem('aion_zeus_forecast_explorer_date',this._forecastExplorerDate);}catch(_e){}this.render();};});
     this.querySelector('#forecast-explorer-date')?.addEventListener('change',event=>{const next=String(event.target?.value||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(next))return;this._forecastExplorerDate=next;try{localStorage.setItem('aion_zeus_forecast_explorer_date',next);}catch(_e){}this.render();});
