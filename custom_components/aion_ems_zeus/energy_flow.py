@@ -401,8 +401,39 @@ class EnergyFlowEngine:
                     "last_changed": item.get("last_changed"),
                     "last_updated": item.get("last_updated"),
                 }
+        # Diagnostic freshness skew should represent sources that are currently
+        # participating in the live flow. With separate directional sensors,
+        # Home Assistant may leave the inactive zero side unchanged for hours
+        # (for example battery_charge=0 while battery_discharge>0). Including
+        # that legitimate idle channel makes a healthy snapshot look stale.
+        # Only the diagnostic timestamp set is filtered here; flow values and
+        # energy-balance calculations above remain untouched.
+        ignored_skew_fields: set[str] = set()
+
+        def _snapshot_number(field: str) -> float | None:
+            item = source_snapshot.get(field) or {}
+            try:
+                value = float(item.get("value"))
+            except (TypeError, ValueError):
+                return None
+            return value
+
+        for left, right in (
+            ("grid_import_power", "grid_export_power"),
+            ("battery_charge_power", "battery_discharge_power"),
+        ):
+            left_value = _snapshot_number(left)
+            right_value = _snapshot_number(right)
+            if left_value is not None and right_value is not None:
+                if abs(left_value) < 0.5 and abs(right_value) >= 0.5:
+                    ignored_skew_fields.add(left)
+                elif abs(right_value) < 0.5 and abs(left_value) >= 0.5:
+                    ignored_skew_fields.add(right)
+
         source_times = []
-        for item in source_snapshot.values():
+        for field, item in source_snapshot.items():
+            if field in ignored_skew_fields:
+                continue
             raw = item.get("last_updated") or item.get("last_changed")
             if raw:
                 try:

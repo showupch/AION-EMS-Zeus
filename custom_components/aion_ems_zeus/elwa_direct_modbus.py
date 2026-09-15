@@ -67,13 +67,18 @@ class ElwaDirectModbusClient:
             request = struct.pack(">HHHB", transaction_id, 0, len(pdu) + 1, unit) + pdu
             writer = None
             try:
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(self.target.host, int(self.target.port)),
-                    timeout=float(self.target.timeout_s),
-                )
+                # Await the socket coroutine directly inside the timeout scope.
+                # This avoids leaving an open_connection coroutine un-awaited if
+                # the connection setup exits through an exceptional/cancel path.
+                async with asyncio.timeout(float(self.target.timeout_s)):
+                    reader, writer = await asyncio.open_connection(
+                        self.target.host, int(self.target.port)
+                    )
                 writer.write(request)
-                await asyncio.wait_for(writer.drain(), timeout=float(self.target.timeout_s))
-                header = await asyncio.wait_for(reader.readexactly(7), timeout=float(self.target.timeout_s))
+                async with asyncio.timeout(float(self.target.timeout_s)):
+                    await writer.drain()
+                async with asyncio.timeout(float(self.target.timeout_s)):
+                    header = await reader.readexactly(7)
                 rx_transaction, protocol_id, length, rx_unit = struct.unpack(">HHHB", header)
                 if rx_transaction != transaction_id:
                     raise ElwaModbusError("ELWA Modbus transaction id mismatch")
@@ -83,9 +88,8 @@ class ElwaDirectModbusClient:
                     raise ElwaModbusError("ELWA Modbus unit id mismatch")
                 if length < 2 or length > 260:
                     raise ElwaModbusError("ELWA Modbus response length is invalid")
-                response_pdu = await asyncio.wait_for(
-                    reader.readexactly(length - 1), timeout=float(self.target.timeout_s)
-                )
+                async with asyncio.timeout(float(self.target.timeout_s)):
+                    response_pdu = await reader.readexactly(length - 1)
             except ConnectionRefusedError as err:
                 raise ElwaModbusError(
                     f"ELWA Modbus TCP connection refused by {self.target.host}:{self.target.port}"
