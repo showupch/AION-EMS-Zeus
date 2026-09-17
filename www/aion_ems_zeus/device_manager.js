@@ -1198,7 +1198,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       daily_report:{label:'Welcome',icon:'mdi:home-heart',section:'welcome',renderer:'briefingPage',note:'Daily briefing and intelligence landing page'},
       dashboard:{alias:'executive_overview'},
       briefing:{label:'Briefing',icon:'mdi:radar',section:'welcome',renderer:'intelligenceBriefingPage',note:'Cross-domain Zeus intelligence briefing'},
-      live:{label:'Live',icon:'mdi:chart-areaspline',section:'welcome',renderer:'livePowerPage',note:'Real-time Zeus power gauges and today energy totals'},
+      live:{label:'Live',icon:'mdi:chart-areaspline',section:'day_status',renderer:'livePowerPage',note:'Real-time Zeus power gauges and today energy totals'},
       energy_status:{label:'Status',icon:'mdi:gauge',section:'energy',renderer:'energyStatusPage',note:'Solar, battery and grid status in one view'},
       energy_plan:{label:'Plan',icon:'mdi:calendar-check-outline',section:'energy',renderer:'energyPlanPage',note:'Today plan and recommendation-only scenarios in one view'},
       solar:{alias:'energy_status'},
@@ -1207,6 +1207,9 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       grid_statistics:{label:'Grid',icon:'mdi:transmission-tower',section:'domain_statistics',renderer:'gridDomainStatisticsPage',note:'Measured grid import/export, history and performance'},
       battery_statistics:{label:'Battery',icon:'mdi:battery-heart-variant',section:'domain_statistics',renderer:'batteryStatisticsPage',note:'Battery state, measured charge/discharge history and performance'},
       heat_pump_statistics:{label:'Heat Pump',icon:'mdi:heat-pump-outline',section:'domain_statistics',renderer:'heatPumpDomainStatisticsPage',note:'Heat Pump electrical, thermal, COP, runtime and cycle statistics'},
+      heat_pump_day_status:{label:'Heatpump',icon:'mdi:heat-pump-outline',section:'day_status',renderer:'heatPumpDayStatusPage',note:'Today-only Heat Pump operation and measured performance'},
+      solar_day_status:{label:'Solar',icon:'mdi:solar-power-variant-outline',section:'day_status',renderer:'solarDayStatusPage',note:'Today-only Solar production and measured performance'},
+      grid_day_status:{label:'Grid',icon:'mdi:transmission-tower',section:'day_status',renderer:'gridDayStatusPage',note:'Today-only Grid import, export and measured performance'},
       dhw_statistics:{label:'DHW',icon:'mdi:water-boiler',section:'domain_statistics',renderer:'dhwDomainStatisticsPage',note:'Domestic hot-water energy, temperature and source statistics'},
       grid:{alias:'energy_status'},
       finance:{label:'Analytics',icon:'mdi:cash-multiple',section:'finance',renderer:'financeUnifiedPage',note:'Whole-home value, battery savings and device finance in one place'},
@@ -1288,6 +1291,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
   }
 
   navigationSections(){return [
+    {id:'day_status',label:'Day Status',icon:'mdi:calendar-today-outline',pages:['live','heat_pump_day_status','solar_day_status','grid_day_status']},
     {id:'energy',label:'ENERGY',icon:'mdi:lightning-bolt-outline',pages:['energy_flow_intelligence','energy_status','energy_plan']},
     {id:'finance',label:'FINANCE',icon:'mdi:cash-multiple',pages:['finance','dynamic_tariffs','tariffs']},
     {id:'domain_statistics',label:'STATISTICS',icon:'mdi:chart-box-outline',pages:['solar_statistics','grid_statistics','battery_statistics','heat_pump_statistics','dhw_statistics']},
@@ -1299,7 +1303,8 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
   uiMode(){try{return localStorage.getItem('aion_zeus_ui_mode')==='advanced'?'advanced':'standard';}catch(_e){return 'standard';}}
   isAdvancedUi(){return this.uiMode()==='advanced';}
   standardNavigationSections(){return [
-    {id:'energy',label:'ENERGY',icon:'mdi:lightning-bolt-outline',pages:['live','energy_plan','intelligence_center']},
+    {id:'day_status',label:'DAY STATUS',icon:'mdi:calendar-today-outline',pages:['live','heat_pump_day_status']},
+    {id:'energy',label:'ENERGY',icon:'mdi:lightning-bolt-outline',pages:['energy_plan','intelligence_center']},
     {id:'finance',label:'FINANCE',icon:'mdi:cash-multiple',pages:['finance']},
     {id:'devices',label:'DEVICES',icon:'mdi:devices-outline',pages:['switch_hub']},
     {id:'system',label:'SYSTEM',icon:'mdi:cog-outline',pages:['health','settings']}
@@ -1575,7 +1580,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const sections=advanced?this.navigationSections():this.standardNavigationSections();
     const showKioskLauncher=!this.isHomeAssistantCompanionApp();
     const button=(id,child=true)=>{const d=registry[id];if(!d||d.conditional==='battery'&&!this.hasBattery())return '';const active=canonical===id;return `<button type="button" data-page="${id}" aria-label="Open ${this.esc(d.label)}" ${active?'aria-current="page"':''} class="${active?'active':''} ${child?'nav-child':''}"><ha-icon icon="${d.icon}"></ha-icon><span>${this.esc(d.label)}</span></button>`;};
-    const welcomeIds=advanced?['daily_report','executive_overview','briefing','live','copilot']:['daily_report'];
+    const welcomeIds=advanced?['daily_report','executive_overview','briefing','copilot']:['daily_report'];
     const visibleIds=[...welcomeIds,...sections.flatMap(s=>s.pages)].filter((id,index,array)=>array.indexOf(id)===index);
     const pageEntries=visibleIds.map(id=>{const d=registry[id];return [id,d.icon,d.label,d.note||''];});
     if(showKioskLauncher)pageEntries.push(['command_center','mdi:monitor-dashboard','Kiosk','Open the dedicated local Command Center kiosk']);
@@ -1584,9 +1589,9 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const activeSection=sections.find(section=>section.pages.includes(canonical))?.id||'';
     if(!this._mobileNavSection||!sections.some(section=>section.id===this._mobileNavSection))this._mobileNavSection=activeSection||sections[0]?.id||'';
     const group=section=>{const expanded=this._mobileNavSection===section.id;return `<div class="nav-group world-group ${section.id}-world ${expanded?'expanded':'collapsed'}" data-nav-group="${section.id}"><button type="button" class="nav-group-title" data-nav-section="${section.id}" aria-expanded="${expanded?'true':'false'}"><ha-icon icon="${section.icon}"></ha-icon><span>${section.label}</span><ha-icon class="nav-group-chevron" icon="mdi:chevron-down"></ha-icon></button><div class="nav-group-children">${section.pages.map(id=>button(id,true)).join('')}</div></div>`;};
-    const kioskLauncher=showKioskLauncher?`<button type="button" data-open-command-center class="nav-child nav-kiosk-launch" aria-label="Open Kiosk"><ha-icon icon="mdi:monitor-dashboard"></ha-icon><span>Kiosk</span></button>`:'';
-    const modeControl=`<div class="zeus-ui-mode" role="group" aria-label="Zeus interface mode"><span>INTERFACE</span><div><button type="button" data-zeus-ui-mode="standard" class="${advanced?'':'active'}" aria-pressed="${advanced?'false':'true'}"><ha-icon icon="mdi:home-outline"></ha-icon><span>Standard</span></button><button type="button" data-zeus-ui-mode="advanced" class="${advanced?'active':''}" aria-pressed="${advanced?'true':'false'}"><ha-icon icon="mdi:tools"></ha-icon><span>Advanced</span></button></div></div>`;
-    return `<nav aria-label="Zeus navigation"><div class="mobile-nav-search"><ha-icon icon="mdi:magnify"></ha-icon><input type="search" id="mobile-nav-search-input" placeholder="Go to page..." value="${this.esc(this._mobileNavQuery||'')}" aria-label="Search Zeus pages"></div><div class="nav-section welcome-section">${welcomeIds.map(id=>button(id,true)).join('')}${kioskLauncher}</div><div class="nav-section">${sections.map(group).join('')}</div>${modeControl}<div class="sidebar-exit-wrap"><button type="button" class="sidebar-exit-button" data-exit-zeus aria-label="Exit Zeus and return to Home Assistant"><ha-icon icon="mdi:exit-to-app"></ha-icon><span>Exit to Home Assistant</span></button></div></nav>`;
+    const kioskLauncher=showKioskLauncher?`<button type="button" data-open-command-center class="zeus-interface-kiosk" aria-label="Open Kiosk"><ha-icon icon="mdi:monitor-dashboard"></ha-icon><span>Kiosk</span></button>`:'';
+    const modeControl=`<div class="zeus-ui-mode zeus-ui-mode-vertical" role="group" aria-label="Zeus interface mode"><span>INTERFACE</span><div><button type="button" data-zeus-ui-mode="standard" class="${advanced?'':'active'}" aria-pressed="${advanced?'false':'true'}"><ha-icon icon="mdi:home-outline"></ha-icon><span>Standard</span></button><button type="button" data-zeus-ui-mode="advanced" class="${advanced?'active':''}" aria-pressed="${advanced?'true':'false'}"><ha-icon icon="mdi:tools"></ha-icon><span>Advanced</span></button>${kioskLauncher}</div></div>`;
+    return `<nav aria-label="Zeus navigation"><div class="mobile-nav-search"><ha-icon icon="mdi:magnify"></ha-icon><input type="search" id="mobile-nav-search-input" placeholder="Go to page..." value="${this.esc(this._mobileNavQuery||'')}" aria-label="Search Zeus pages"></div><div class="nav-section welcome-section">${welcomeIds.map(id=>button(id,true)).join('')}</div><div class="nav-section">${sections.map(group).join('')}</div>${modeControl}<div class="sidebar-exit-wrap"><button type="button" class="sidebar-exit-button" data-exit-zeus aria-label="Exit Zeus and return to Home Assistant"><ha-icon icon="mdi:exit-to-app"></ha-icon><span>Exit to Home Assistant</span></button></div></nav>`;
   }
   zeusSearchPanel(){const results=this._navSearchResults||'';return `<div class="zeus-global-search ask-zeus-search"><ha-icon icon="mdi:magnify"></ha-icon><input id="zeus-global-search" type="search" autocomplete="off" placeholder="Find a page, device or setting…" aria-label="Find pages, devices and settings"><button type="button" id="clear-global-search" aria-label="Clear search"><ha-icon icon="mdi:close"></ha-icon></button><div class="zeus-search-results" id="zeus-search-results">${results}</div></div>`;}
   livePowerPage(){
@@ -5373,6 +5378,153 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
 
   gridDomainStatisticsPage(){
     return this.smartMeterPage();
+  }
+
+  async ensureHeatPumpDayHistory(){
+    if(this._hpDayHistoryLoading||this._hpDayHistoryLoaded||!this._hass?.callWS)return;
+    this._hpDayHistoryLoading=true;
+    try{this._hpDayHistory=await this._hass.callWS({type:'aion_ems_zeus/heat_pump_day_history'});this._hpDayHistoryError='';}
+    catch(e){this._hpDayHistory={series:[]};this._hpDayHistoryError=e?.message||String(e);}
+    finally{this._hpDayHistoryLoading=false;this._hpDayHistoryLoaded=true;if(this.isConnected&&this._page==='heat_pump_day_status'){this._lastSignatureByPage?.delete('heat_pump_day_status');this.render();}}
+  }
+
+  async ensureGridDayHistory(){
+    if(this._gridDayLoading||this._gridDayLoaded||!this._hass?.callWS)return;
+    this._gridDayLoading=true;
+    try{this._gridDayHistory=await this._hass.callWS({type:'aion_ems_zeus/grid_day_history'});this._gridDayError='';}
+    catch(e){this._gridDayHistory={series:[]};this._gridDayError=e?.message||String(e);}
+    finally{this._gridDayLoading=false;this._gridDayLoaded=true;if(this.isConnected&&this._page==='grid_day_status'){this._lastSignatureByPage?.delete('grid_day_status');this.render();}}
+  }
+
+  gridDayStatusPage(){
+    if(!this._gridDayLoaded&&!this._gridDayLoading)queueMicrotask(()=>this.ensureGridDayHistory());
+    const flow=this.s('sensor.aion_ems_zeus_energy_flow')?.attributes||{},today=this.periodData('today')||{};
+    const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
+    const impNow=num(this.value('sensor.aion_ems_zeus_grid_import_power')),expNow=num(this.value('sensor.aion_ems_zeus_grid_export_power'));
+    const netNow=(impNow||0)-(expNow||0),importK=num(today.grid_import_energy_kwh),exportK=num(today.grid_export_energy_kwh),houseK=num(today.house_energy_kwh);
+    const raw=Array.isArray(this._gridDayHistory?.series)?this._gridDayHistory.series:[],maps=this._gridDayHistory?.mappings||{},opts=this._gridDayHistory?.options||{};
+    const sign=String(opts.grid_power_sign||'positive_import');
+    const buckets=new Map();
+    for(const r of raw){const d=new Date(r.at);if(Number.isNaN(d.getTime()))continue;const minute=d.getHours()*60+d.getMinutes(),b=Math.floor(minute/5)*5,key=String(b),cur=buckets.get(key)||{h:b/60,imp:[],exp:[]},v=Number(r.value_w)||0,eid=String(r.entity_id||'');if(eid===maps.import)cur.imp.push(Math.max(0,v));else if(eid===maps.export)cur.exp.push(Math.max(0,v));else if(eid===maps.grid){const n=sign==='positive_export'?-v:v;cur.imp.push(Math.max(0,n));cur.exp.push(Math.max(0,-n));}buckets.set(key,cur);}
+    const points=[...buckets.values()].sort((a,b)=>a.h-b.h).map(p=>({h:p.h,imp:p.imp.length?p.imp.reduce((a,b)=>a+b,0)/p.imp.length:0,exp:p.exp.length?p.exp.reduce((a,b)=>a+b,0)/p.exp.length:0}));
+    const now=new Date(),currentH=now.getHours()+now.getMinutes()/60;if(!points.length||currentH-points[points.length-1].h>.03)points.push({h:currentH,imp:Math.max(0,impNow||0),exp:Math.max(0,expNow||0)});else points[points.length-1]={...points[points.length-1],imp:Math.max(0,impNow||0),exp:Math.max(0,expNow||0)};
+    const peakImport=points.reduce((a,p)=>!a||p.imp>a.imp?p:a,null),peakExport=points.reduce((a,p)=>!a||p.exp>a.exp?p:a,null),max=Math.max(1000,...points.flatMap(p=>[p.imp,p.exp])),maxKw=Math.max(1,Math.ceil(max/1000)),x=h=>h/24*100,y=v=>100-Math.max(0,Math.min(100,v/max*100));
+    const line=k=>points.length>1?`<polyline class="${k}" points="${points.map(p=>`${x(p.h).toFixed(2)},${y(p[k]).toFixed(2)}`).join(' ')}"/>`:'';
+    const time=p=>p?`${String(Math.floor(p.h)).padStart(2,'0')}:${String(Math.round((p.h%1)*60)).padStart(2,'0')}`:'Unavailable';
+    const netK=importK!=null&&exportK!=null?importK-exportK:null,dependency=houseK!=null&&houseK>0&&importK!=null?Math.max(0,Math.min(100,importK/houseK*100)):null;
+    const metric=(l,v,note,ic)=>`<article class="grid-day-card"><ha-icon icon="${ic}"></ha-icon><div><span>${this.esc(l)}</span><b>${this.esc(v)}</b><small>${this.esc(note)}</small></div></article>`;
+    return `<section class="page grid-day"><style>.grid-day-grid,.grid-day-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.grid-day-summary{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:14px}.grid-day-card{display:grid;grid-template-columns:38px 1fr;gap:10px;align-items:center;padding:16px;border:1px solid var(--line);border-radius:15px;background:var(--surface2);min-height:96px;box-sizing:border-box}.grid-day-card ha-icon{--mdc-icon-size:30px;color:var(--accent2)}.grid-day-card span,.grid-day-card small{display:block;color:var(--muted)}.grid-day-card b{display:block;font-size:23px;margin:4px 0}.grid-chart{height:280px;position:relative;margin-top:10px}.grid-chart svg{position:absolute;left:42px;right:4px;top:8px;bottom:26px;width:calc(100% - 46px);height:calc(100% - 34px)}.grid-chart polyline{fill:none;stroke-width:2;vector-effect:non-scaling-stroke}.grid-chart .imp{stroke:#4ba3ff}.grid-chart .exp{stroke:#a35cff}.grid-y{position:absolute;left:0;top:8px;bottom:26px;width:38px;display:flex;flex-direction:column;justify-content:space-between;text-align:right;color:var(--muted);font-size:12px}.grid-y b{color:var(--text)}.grid-x{position:absolute;left:42px;right:4px;bottom:0;display:flex;justify-content:space-between;color:var(--muted);font-size:12px}.grid-legend{display:flex;justify-content:center;gap:22px;color:var(--muted);font-size:12px}.grid-legend span:before{content:'';display:inline-block;width:18px;height:3px;margin-right:6px;vertical-align:middle}.grid-legend .i:before{background:#4ba3ff}.grid-legend .e:before{background:#a35cff}@media(max-width:900px){.grid-day-grid{grid-template-columns:repeat(2,1fr)}.grid-day-summary{grid-template-columns:1fr}}@media(max-width:560px){.grid-day-grid{grid-template-columns:1fr}}</style><div class="page-head"><div><span>DAY STATUS</span><h1>Grid</h1><p>Today's Grid exchange and measured performance.</p></div><div class="page-head-actions"><span class="chip">Today</span></div></div><div class="grid-day-grid">${metric('Grid Now',netNow>0?this.watts(netNow)+' import':netNow<0?this.watts(-netNow)+' export':'0 W','Current canonical Grid flow','mdi:transmission-tower')}${metric('Import Today',importK==null?'Unavailable':this.kwh(importK),'Energy from grid','mdi:transmission-tower-import')}${metric('Export Today',exportK==null?'Unavailable':this.kwh(exportK),'Energy to grid','mdi:transmission-tower-export')}${metric('Peak Import',peakImport?this.watts(peakImport.imp):'Unavailable',peakImport?`Measured ${time(peakImport)}`:'Recorder evidence unavailable','mdi:chart-bell-curve')}</div><article class="panel" style="margin-top:14px"><div class="section-title"><div><span>TODAY · GRID</span><h2>Grid import and export through the day</h2></div><small>${this._gridDayLoading?'Loading Recorder…':this._gridDayError?'Recorder unavailable':points.length?'Measured Recorder history':'No Grid Recorder history yet'}</small></div><div class="grid-chart"><div class="grid-y"><b>${maxKw} kW</b><span>${(maxKw/2).toFixed(maxKw%2?1:0)}</span><span>0</span></div><svg viewBox="0 0 100 100" preserveAspectRatio="none">${line('imp')}${line('exp')}</svg><div class="grid-x"><span>00</span><span>04</span><span>08</span><span>12</span><span>16</span><span>20</span><span>24</span></div></div><div class="grid-legend"><span class="i">Import</span><span class="e">Export</span></div></article><div class="grid-day-summary">${metric('Net Grid Energy',netK==null?'Unavailable':`${netK>=0?'+':''}${netK.toFixed(2)} kWh`,netK>=0?'Net import today':'Net export today','mdi:swap-vertical')}${metric('Grid Dependency',dependency==null?'Unavailable':`${dependency.toFixed(1)}%`,'Grid import as share of house energy today','mdi:home-lightning-bolt-outline')}${metric('Peak Export Time',time(peakExport),peakExport?`Measured peak ${this.watts(peakExport.exp)}`:'Recorder evidence unavailable','mdi:clock-outline')}</div></section>`;
+  }
+
+  async ensureSolarDayHistory(){
+    if(this._solarDayLoading||this._solarDayLoaded||!this._hass?.callWS)return;
+    this._solarDayLoading=true;
+    try{this._solarDayHistory=await this._hass.callWS({type:'aion_ems_zeus/solar_day_history'});this._solarDayError='';}
+    catch(e){this._solarDayHistory={series:[]};this._solarDayError=e?.message||String(e);}
+    finally{this._solarDayLoading=false;this._solarDayLoaded=true;if(this.isConnected&&this._page==='solar_day_status'){this._lastSignatureByPage?.delete('solar_day_status');this.render();}}
+  }
+
+  solarDayStatusPage(){
+    if(!this._solarDayLoaded&&!this._solarDayLoading)queueMicrotask(()=>this.ensureSolarDayHistory());
+    const flow=this.s('sensor.aion_ems_zeus_energy_flow')?.attributes||this.s('sensor.aion_ems_zeus_dashboard_api')?.attributes?.energy_flow||{};
+    const today=this.periodData('today')||{},forecast=this.s('sensor.aion_ems_zeus_forecast_intelligence')?.attributes||{};
+    const flowSolar=(flow.solar_power&&typeof flow.solar_power==='object')?(flow.solar_power.w??flow.solar_power.value):flow.solar_power;
+    const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
+    const live=num(this.value('sensor.aion_ems_zeus_solar_power')??flow.solar_power_w??flow.solar_w??flowSolar);
+    const produced=num(today.solar_energy_kwh),exported=num(today.grid_export_energy_kwh),house=num(today.house_energy_kwh);
+    const peak=num(today.solar_peak_power_w??today.peak_solar_power_w??forecast.solar_peak_power_w);
+    const expected=num(forecast.corrected_solar_forecast_kwh??forecast.solar_forecast_kwh??forecast.forecast_solar_kwh);
+    const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    const rawSolar=Array.isArray(this._solarDayHistory?.series)?this._solarDayHistory.series:[];
+    const bucket=new Map();
+    for(const r of rawSolar){const d=new Date(r.at);if(Number.isNaN(d.getTime()))continue;const minute=d.getHours()*60+d.getMinutes(),b=Math.floor(minute/5)*5,v=Math.max(0,Number(r.value_w)||0),cur=bucket.get(b)||{sum:0,count:0};cur.sum+=v;cur.count+=1;bucket.set(b,cur);}
+    const points=[...bucket.entries()].map(([k,v])=>({h:Number(k)/60,v:v.count?v.sum/v.count:0})).sort((a,b)=>a.h-b.h);
+    if(live!=null){const currentH=now.getHours()+now.getMinutes()/60;if(!points.length||currentH-points[points.length-1].h>0.03)points.push({h:currentH,v:Math.max(0,live)});else points[points.length-1]={...points[points.length-1],v:Math.max(0,live)};}
+    const max=Math.max(1000,...points.map(p=>p.v),live||0,peak||0),x=h=>h/24*100,y=v=>100-Math.max(0,Math.min(100,v/max*100));
+    const peakPoint=points.reduce((best,p)=>!best||p.v>best.v?p:best,null),peakMinutes=peakPoint?Math.round(peakPoint.h*60):null,peakTime=peakMinutes==null?'Unavailable':`${String(Math.floor(peakMinutes/60)).padStart(2,'0')}:${String(peakMinutes%60).padStart(2,'0')}`;
+    const displayPeak=peak!=null?peak:(peakPoint?peakPoint.v:null);
+    const selfConsumed=produced!=null&&exported!=null?Math.max(0,produced-exported):null;
+    const selfConsumptionPct=produced!=null&&produced>0&&selfConsumed!=null?Math.max(0,Math.min(100,selfConsumed/produced*100)):null;
+    const line=points.length>1?`<polyline class="solar-line" points="${points.map(p=>`${x(p.h).toFixed(2)},${y(p.v).toFixed(2)}`).join(' ')}"/>`:'';
+    const maxKw=Math.max(1,Math.ceil(max/1000)),midKw=maxKw/2,solarYAxis=`<div class="solar-day-y"><b>${maxKw} kW</b><span>${midKw.toFixed(midKw%1?1:0)}</span><span>0</span></div>`;
+    const metric=(l,v,note,ic)=>`<article class="solar-day-card"><ha-icon icon="${ic}"></ha-icon><div><span>${this.esc(l)}</span><b>${this.esc(v)}</b><small>${this.esc(note)}</small></div></article>`;
+    return `<section class="page solar-day"><style>
+      .solar-day-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.solar-day-card{display:grid;grid-template-columns:38px 1fr;gap:10px;align-items:center;padding:16px;border:1px solid var(--line);border-radius:15px;background:var(--surface2);min-height:92px}.solar-day-card ha-icon{--mdc-icon-size:30px;color:var(--accent2)}.solar-day-card span,.solar-day-card small{display:block;color:var(--muted)}.solar-day-card b{display:block;font-size:23px;margin:4px 0}.solar-day-chart{height:260px;position:relative;margin-top:10px;border-radius:10px;background:linear-gradient(to bottom,transparent 24%,var(--line) 25%,transparent 26%,transparent 49%,var(--line) 50%,transparent 51%,transparent 74%,var(--line) 75%,transparent 76%)}.solar-day-chart svg{position:absolute;top:8px;left:42px;right:4px;bottom:26px;width:calc(100% - 46px);height:calc(100% - 34px)}.solar-day-y{position:absolute;left:0;top:8px;bottom:26px;width:38px;display:flex;flex-direction:column;justify-content:space-between;text-align:right;color:var(--muted);font-size:12px}.solar-day-y b{color:var(--text);font-size:12px}.solar-day-chart .solar-line{fill:none;stroke:#ffb52e;stroke-width:2;vector-effect:non-scaling-stroke}.solar-day-axis{position:absolute;left:42px;right:4px;bottom:2px;display:flex;justify-content:space-between;color:var(--muted);font-size:12px}.solar-day-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px;align-items:stretch}.solar-day-summary>.solar-day-card{width:100%;height:100%;min-height:108px;box-sizing:border-box}@media(max-width:900px){.solar-day-grid,.solar-day-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.solar-day-grid,.solar-day-summary{grid-template-columns:1fr}}
+    </style><div class="page-head"><div><span>DAY STATUS</span><h1>Solar</h1><p>Today's Solar production and measured performance.</p></div><div class="page-head-actions"><span class="chip">Today</span></div></div>
+      <div class="solar-day-grid">
+        ${metric('Solar Now',live==null?'Unavailable':this.watts(live),live!=null&&live>0?'Producing':'Idle','mdi:white-balance-sunny')}
+        ${metric('Solar Today',produced==null?'Unavailable':this.kwh(produced),'Generated today','mdi:solar-power')}
+        ${metric('Peak Today',displayPeak==null?'Unavailable':this.watts(displayPeak),peak!=null?'Measured/available peak evidence':'Recorder-derived peak today','mdi:chart-bell-curve')}
+        ${metric('Export Today',exported==null?'Unavailable':this.kwh(exported),'Energy sent to grid','mdi:transmission-tower-export')}
+      </div>
+      <article class="panel" style="margin-top:14px"><div class="section-title"><div><span>TODAY · SOLAR</span><h2>Solar production through the day</h2></div><small>${this._solarDayLoading?'Loading Recorder…':this._solarDayError?'Recorder unavailable':points.length?'Measured Recorder history':'No Solar Recorder history yet'}</small></div><div class="solar-day-chart">${solarYAxis}<svg viewBox="0 0 100 100" preserveAspectRatio="none">${line}</svg><div class="solar-day-axis"><span>00</span><span>04</span><span>08</span><span>12</span><span>16</span><span>20</span><span>24</span></div></div></article>
+      <div class="solar-day-summary">
+        ${metric('Self-Consumed Solar',selfConsumed==null?'Unavailable':this.kwh(selfConsumed),'Today · Solar production minus measured export','mdi:home-lightning-bolt-outline')}
+        ${metric('Self-Consumption',selfConsumptionPct==null?'Unavailable':`${selfConsumptionPct.toFixed(1)}%`,'Share of today’s Solar used locally','mdi:percent-circle-outline')}
+        ${metric('Peak Time',peakTime,peakPoint?`Measured peak ${this.watts(peakPoint.v)}`:'Recorder evidence unavailable','mdi:clock-outline')}
+      </div>
+    </section>`;
+  }
+
+  heatPumpDayStatusPage(){
+    if(!this._hpDayHistoryLoaded&&!this._hpDayHistoryLoading)queueMicrotask(()=>this.ensureHeatPumpDayHistory());
+    const hpHist=Array.isArray(this._hpDayHistory?.series)?this._hpDayHistory.series:[];
+    const hpDayStart=new Date();hpDayStart.setHours(0,0,0,0);
+    const hpX=at=>Math.max(0,Math.min(100,(new Date(at)-hpDayStart)/86400000*100));
+    const hpRows=key=>hpHist.filter(r=>r.key===key&&Number.isFinite(Number(r.value)));
+    const hpScale=(r,key)=>{let v=Number(r.value);let u=String(r.unit||'').toLowerCase();if(!u&&key==='thermal'){const id=this._hpDayHistory?.mappings?.thermal,st=id?this.s(id):null;u=String(st?.attributes?.unit_of_measurement||'').toLowerCase();}if(key==='power'||key==='thermal')v*=u==='kw'?1000:u==='mw'?1000000:1;return v;};
+    const hpLine=(rows,max,cls,key)=>{if(!rows.length)return '';const stepped=key==='power'||key==='thermal',gapMs=30*60*1000;const groups=[];if(stepped){groups.push(rows);}else{let group=[];for(const r of rows){if(group.length&&new Date(r.at)-new Date(group[group.length-1].at)>gapMs){groups.push(group);group=[];}group.push(r);}if(group.length)groups.push(group);}const xy=r=>({x:hpX(r.at),y:100-Math.max(0,Math.min(100,hpScale(r,key)/max*100))});return groups.map(g=>{if(g.length===1){const p=xy(g[0]);return `<circle class="${cls}" cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r=".35"/>`;}if(!stepped)return `<polyline class="${cls}" points="${g.map(r=>{const p=xy(r);return `${p.x.toFixed(2)},${p.y.toFixed(2)}`}).join(' ')}"/>`;const pts=[];let prev=xy(g[0]);pts.push(`${prev.x.toFixed(2)},${prev.y.toFixed(2)}`);for(let i=1;i<g.length;i++){const cur=xy(g[i]);pts.push(`${cur.x.toFixed(2)},${prev.y.toFixed(2)}`,`${cur.x.toFixed(2)},${cur.y.toFixed(2)}`);prev=cur;}return `<polyline class="${cls}" points="${pts.join(' ')}"/>`;}).join('');};
+    const hpPowerRows=hpRows('power'),hpThermalRows=hpRows('thermal'),hpCopRowsRaw=hpRows('cop'),hpCopRows=hpCopRowsRaw.filter(r=>{const v=Number(r.value);return Number.isFinite(v)&&v>=0&&v<=12;}),hpDhwRows=hpRows('dhw'),hpFlowRows=hpRows('flow'),hpOutsideRows=hpRows('outside');
+    const hpPowerMax=Math.max(1000,...hpPowerRows.map(r=>hpScale(r,'power')),...hpThermalRows.map(r=>hpScale(r,'thermal')));
+    const hpTempVals=[...hpFlowRows,...hpOutsideRows].map(r=>Number(r.value)),hpTempMin=hpTempVals.length?Math.min(...hpTempVals)-3:0,hpTempMax=hpTempVals.length?Math.max(...hpTempVals)+3:80,hpTempRange=Math.max(1,hpTempMax-hpTempMin);
+    const hpTempLine=(rows,cls)=>rows.length?`<polyline class="${cls}" points="${rows.map(r=>`${hpX(r.at).toFixed(2)},${(100-(Number(r.value)-hpTempMin)/hpTempRange*100).toFixed(2)}`).join(' ')}"/>`:'';
+    const hpCopMax=Math.min(12,Math.max(6,Math.ceil(Math.max(0,...hpCopRows.map(r=>Number(r.value)||0)))));
+    const hpCopMid=hpCopMax/2;
+    const hpCopYAxis=`<div class="hpd-yaxis left cop-axis"><b>${hpCopMax.toFixed(0)} COP</b><span>${hpCopMid.toFixed(hpCopMid%1?1:0)}</span><span>0</span></div>`;
+    const hpAxis='<div class="hpd-axis"><span>00</span><span>04</span><span>08</span><span>12</span><span>16</span><span>20</span><span>24</span></div>';
+    const hpKwMax=Math.max(1,Math.ceil(hpPowerMax/1000)),hpKwMid=hpKwMax/2;
+    const hpLeftAxis=`<div class="hpd-yaxis left"><b>${hpKwMax} kW</b><span>${hpKwMid.toFixed(hpKwMid%1?1:0)}</span><span>0</span></div>`;
+    const hpRightAxis=`<div class="hpd-yaxis right"><b>${hpTempMax.toFixed(0)} °C</b><span>${((hpTempMax+hpTempMin)/2).toFixed(0)}</span><span>${hpTempMin.toFixed(0)}</span></div>`;
+    const hpRoot=this.s('sensor.aion_ems_zeus_heat_pump_intelligence')?.attributes||{};
+    const list=Array.isArray(hpRoot.devices)?hpRoot.devices:[], hp=list[0]||{};
+    const dev=this.deviceData().find(d=>String(d?.type||'')==='heat_pump')||{};
+    if(!list.length&&!dev.id)return `<section class="page hp-day"><div class="page-head"><div><span>HEATPUMP</span><h1>Day Status</h1><p>Today-only Heat Pump operation and measured performance.</p></div></div><article class="panel"><div class="empty">No registered Heat Pump evidence is available.</div></article></section>`;
+    const n=v=>{const x=Number(v);return Number.isFinite(x)?x:null}, fmt=(v,u='',d=1)=>n(v)==null?'Unavailable':`${n(v).toFixed(d)}${u?` ${u}`:''}`;
+    const power=n(hp.electrical_power_w??dev.power_w), thermal=n(hp.thermal_power_w), cop=n(hp.cop??dev.cop??hp.derived_live_cop), avgCop=n(hp.cop_today_average??dev.cop_today_average);
+    const state=String(hp.interpreted_operating_state||hp.operating_mode_normalized||hp.operating_mode||'Unavailable');
+    const compressor=String(hp.compressor_state??'Unavailable');
+    const dhw=fmt(hp.dhw_temperature,hp.dhw_temperature_unit||'°C',1);
+    const flowErr=hp.heating_flow_target_error||{}, flowHistLast=hpFlowRows.length?hpFlowRows[hpFlowRows.length-1]:null, flow=fmt(flowErr.raw_a??flowHistLast?.value,flowErr.unit||flowHistLast?.unit||'°C',1);
+    const weather=this.s('sensor.aion_ems_zeus_weather_context')?.attributes||{}, outdoor=n(weather.temperature??weather.current_temperature??weather.outdoor_temperature??weather.temperature_c);
+    const runtime=n(dev.runtime_today_minutes), starts=n(hp.cycle_starts_today), completed=n(hp.cycle_completed_today);
+    const elec=n(dev.energy_today_kwh), heatIn=n(hp.heating_electrical_energy_today_kwh), heatOut=n(hp.heating_thermal_energy_today_kwh), dhwIn=n(hp.dhw_electrical_energy_today_kwh), dhwOut=n(hp.dhw_thermal_energy_today_kwh);
+    const transitions=Array.isArray(hp.cycle_today_transitions)?hp.cycle_today_transitions:[];
+    const timeline=transitions.length?transitions.map((x,i)=>{const left=hpX(x.at),next=transitions[i+1],right=next?hpX(next.at):Math.max(left,hpX(new Date().toISOString())),on=String(x.state)==='on';return `<i class="${on?'on':'off'}" style="left:${left}%;width:${Math.max(.35,right-left)}%" title="${new Date(x.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} ${String(x.state).toUpperCase()}"></i>`}).join(''):'<span class="none">No timestamped compressor transitions recorded today.</span>';
+    const live=(l,v,s,ic)=>`<article class="hpd-live"><ha-icon icon="${ic}"></ha-icon><div><span>${this.esc(l)}</span><b>${this.esc(v)}</b><small>${this.esc(s)}</small></div></article>`;
+    const item=(l,v,s,ic)=>`<div class="hpd-item"><ha-icon icon="${ic}"></ha-icon><div><span>${this.esc(l)}</span><b>${this.esc(v)}</b><small>${this.esc(s)}</small></div></div>`;
+    return `<section class="page hp-day"><style>
+      .hpd-livegrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.hpd-live{display:grid;grid-template-columns:38px 1fr;gap:10px;align-items:center;padding:16px;border:1px solid var(--line);border-radius:15px;background:var(--surface2);min-height:94px}.hpd-live ha-icon{--mdc-icon-size:30px;color:var(--accent2)}.hpd-live span,.hpd-live small,.hpd-item span,.hpd-item small{display:block;color:var(--muted)}.hpd-live b{display:block;font-size:23px;margin:4px 0}.hpd-row{display:grid;grid-template-columns:1.4fr 1fr;gap:14px;margin-top:14px}.hpd-row.hpd-equal-top{grid-template-columns:1fr 1fr;align-items:stretch}.hpd-row.hpd-equal-top>.panel{height:100%;box-sizing:border-box}.hpd-items{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.hpd-item{display:grid;grid-template-columns:32px 1fr;gap:8px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface2)}.hpd-item ha-icon{color:var(--accent2)}.hpd-item b{display:block;font-size:18px;margin:2px 0}.hpd-timeline{height:48px;position:relative;margin-top:12px;border-radius:8px;background:var(--surface2);overflow:hidden}.hpd-timeline i{position:absolute;top:0;bottom:0}.hpd-timeline .on{background:#39d98a}.hpd-timeline .off{background:#526577}.hpd-timeline .none{display:block;padding:14px;color:var(--muted);font-size:12px}.hpd-graph{height:210px;position:relative;border-radius:10px;background:linear-gradient(to bottom,transparent 24%,var(--line) 25%,transparent 26%,transparent 49%,var(--line) 50%,transparent 51%,transparent 74%,var(--line) 75%,transparent 76%)}.hpd-graph svg{position:absolute;inset:8px 4px 18px;width:calc(100% - 8px);height:calc(100% - 26px)}.hpd-graph polyline{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke}.hpd-graph circle{stroke:none;vector-effect:non-scaling-stroke}.hpd-graph circle.power{fill:#2196f3}.hpd-graph circle.thermal{fill:#38d996}.hpd-graph circle.cop{fill:#36e08b}.hpd-graph .power{stroke:#2196f3}.hpd-graph .thermal{stroke:#38d996}.hpd-graph .dhw{stroke:#ff4055}.hpd-graph .flow{stroke:#ff9d2e}.hpd-graph .outside{stroke:#b8c8d8;stroke-dasharray:4 4}.hpd-graph .cop{stroke:#36e08b}.hpd-axis{position:absolute;left:30px;right:30px;bottom:0;display:flex;justify-content:space-between;color:var(--muted);font-size:12px}.hpd-yaxis{position:absolute;top:8px;bottom:24px;display:flex;flex-direction:column;justify-content:space-between;color:var(--muted);font-size:12px;pointer-events:none}.hpd-yaxis.left{left:0;text-align:right}.hpd-yaxis.right{right:0;text-align:left}.hpd-yaxis b{font-weight:700;color:var(--text);font-size:12px}.hpd-graph.dual svg{left:30px;right:30px;width:calc(100% - 60px)}.hpd-graph.cop-only svg{right:4px;width:calc(100% - 34px)}.hpd-graph.cop-only .hpd-axis{right:4px}.hpd-legend{display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin-top:8px;color:var(--muted);font-size:12px}.hpd-legend span{display:inline-flex;align-items:center;gap:6px}.hpd-legend span::before{content:'';width:18px;height:3px;border-radius:3px;background:var(--legend,var(--muted))}.hpd-legend .power{--legend:#2196f3}.hpd-legend .thermal{--legend:#38d996}.hpd-legend .dhw{--legend:#ff4055}.hpd-legend .flow{--legend:#ff9d2e}.hpd-legend .outside{--legend:#b8c8d8}.hpd-legend .cop{--legend:#36e08b}@media(max-width:1050px){.hpd-livegrid{grid-template-columns:repeat(2,minmax(0,1fr))}.hpd-row{grid-template-columns:1fr}}@media(max-width:580px){.hpd-livegrid,.hpd-items{grid-template-columns:1fr}}
+    </style><div class="page-head"><div><span>HEATPUMP</span><h1>Day Status</h1><p>Today-only overview of ${this.esc(hp.name||dev.name||'Heat Pump')} operation and measured performance.</p></div><div class="page-head-actions"><span class="chip">Today</span></div></div>
+      <div class="hpd-livegrid">
+        ${live('Current Power',power==null?'Unavailable':this.watts(power),state,'mdi:flash-outline')}
+        ${live('Thermal Output',thermal==null?'Unavailable':this.watts(thermal),'Current mapped evidence','mdi:heat-wave')}
+        ${live('DHW Temperature',dhw,hp.dhw_target_temperature!=null?`Target ${fmt(hp.dhw_target_temperature,hp.dhw_target_temperature_unit||'°C',1)}`:'Target unavailable','mdi:water-thermometer-outline')}
+        ${live('Operation State',state,`Compressor: ${compressor}`,'mdi:state-machine')}
+        ${live('Live COP',cop==null?'Unavailable':cop.toFixed(2),avgCop!=null&&avgCop>0?`Ø Today ${avgCop.toFixed(2)}`:'Today average collecting','mdi:gauge')}
+      </div>
+      <article class="panel" style="margin-top:14px"><div class="section-title"><div><span>TODAY · HISTORY</span><h2>Power and temperatures</h2></div><small>${this._hpDayHistoryLoading?'Loading Recorder…':this._hpDayHistoryError?'Recorder unavailable':'Measured Recorder history'}</small></div><div class="hpd-graph dual">${hpLeftAxis}${hpRightAxis}<svg viewBox="0 0 100 100" preserveAspectRatio="none">${hpLine(hpPowerRows,hpPowerMax,'power','power')}${hpLine(hpThermalRows,hpPowerMax,'thermal','thermal')}${hpTempLine(hpFlowRows,'flow')}${hpTempLine(hpOutsideRows,'outside')}</svg>${hpAxis}</div><div class="hpd-legend"><span class="power">Electrical power</span><span class="thermal">Thermal output</span><span class="flow">Flow temperature</span><span class="outside">Outside temperature</span></div></article>
+      <div class="hpd-row hpd-equal-top">
+        <article class="panel"><div class="section-title"><div><span>TODAY · COP</span><h2>COP through the day</h2></div></div><div class="hpd-graph dual cop-only">${hpCopYAxis}<svg viewBox="0 0 100 100" preserveAspectRatio="none">${hpLine(hpCopRows,hpCopMax,'cop','cop')}</svg>${hpAxis}</div><div class="hpd-legend"><span class="cop">Measured COP</span></div></article>
+        <article class="panel"><div class="section-title"><div><span>TODAY · THERMAL ENERGY</span><h2>Heating and DHW</h2></div></div><div class="hpd-items">${item('Heating Input',heatIn==null?'Unavailable':this.kwh(heatIn),'Today','mdi:radiator')}${item('Heating Output',heatOut==null?'Unavailable':this.kwh(heatOut),'Today','mdi:heat-wave')}${item('DHW Input',dhwIn==null?'Unavailable':this.kwh(dhwIn),'Today','mdi:water-boiler')}${item('DHW Output',dhwOut==null?'Unavailable':this.kwh(dhwOut),'Today','mdi:water-check-outline')}</div></article>
+      </div>
+      <div style="margin-top:14px"><article class="panel"><div class="section-title"><div><span>TODAY · OPERATION</span><h2>Runtime & compressor</h2></div><ha-icon icon="mdi:timeline-clock-outline"></ha-icon></div><div class="hpd-items">
+          ${item('Runtime',runtime==null?'Unavailable':this.duration(runtime),'Registered-device runtime today','mdi:timer-outline')}
+          ${item('Starts',starts==null?'Unavailable':String(starts),'Recorder-observed starts today','mdi:restart')}
+          ${item('Completed Cycles',completed==null?'Unavailable':String(completed),'Recorder-observed today','mdi:sync')}
+          ${item('Outside Temperature',outdoor==null?'Unavailable':`${outdoor.toFixed(1)} °C`,'Current Zeus weather context','mdi:thermometer')}
+        </div><div class="section-title" style="margin-top:16px"><div><span>COMPRESSOR TIMELINE</span><h2>Observed transitions today</h2></div></div><div class="hpd-timeline">${timeline}</div></article></div>
+
+          </section>`;
   }
 
   heatPumpDomainStatisticsPage(){
@@ -9784,6 +9936,11 @@ aion-ems-device-manager{display:block!important;width:100%!important;max-width:n
 /* v14.0.0-alpha.8.9 polished persistent mobile accordion navigation */
 .mobile-nav-toggle{display:none}
 /* v14.0.0-alpha.22.15.7.0 Home Assistant exit action */
+
+.zeus-ui-mode-vertical>div{display:flex!important;flex-direction:column!important;gap:6px!important}
+.zeus-ui-mode-vertical>div>button{width:100%!important;justify-content:flex-start!important;box-sizing:border-box}
+.zeus-ui-mode-vertical .zeus-interface-kiosk{border:1px solid var(--line);background:transparent;color:var(--text);border-radius:10px;padding:9px 10px;display:flex;align-items:center;gap:8px;font:inherit;cursor:pointer}
+.zeus-ui-mode-vertical .zeus-interface-kiosk:hover{border-color:var(--accent2)}
 .zeus-ui-mode{margin:12px 0 2px;padding:10px;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--surface2) 90%,transparent)}.zeus-ui-mode>span{display:block;margin:0 0 7px;color:var(--muted);font-size:9px;font-weight:850;letter-spacing:.14em}.zeus-ui-mode>div{display:grid;grid-template-columns:1fr 1fr;gap:6px}.zeus-ui-mode button{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;padding:8px 7px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--muted);font-size:11px;font-weight:750;cursor:pointer}.zeus-ui-mode button ha-icon{--mdc-icon-size:17px}.zeus-ui-mode button.active{border-color:color-mix(in srgb,var(--accent2) 55%,var(--line));background:color-mix(in srgb,var(--accent2) 14%,var(--surface2));color:var(--text);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent2) 14%,transparent)}
 .sidebar-exit-wrap{position:sticky;bottom:0;z-index:4;margin-top:auto;padding:12px 0 2px;background:linear-gradient(180deg,transparent 0,var(--sidebar) 22%,var(--sidebar) 100%)}
 .sidebar nav .sidebar-exit-button{width:100%;min-height:46px;margin:0;padding:11px 13px;border:1px solid color-mix(in srgb,var(--accent2) 35%,var(--line));border-radius:13px;background:color-mix(in srgb,var(--surface) 88%,var(--sidebar));color:var(--text);font:inherit;font-weight:800;display:flex;align-items:center;gap:11px;cursor:pointer}
