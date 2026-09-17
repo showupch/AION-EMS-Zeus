@@ -5476,6 +5476,10 @@ class DeviceAnalyticsEngine:
                     "normalized_state_count": len(normalized),
                     "ignored_state_count": ignored,
                     "transition_count": len(transitions),
+                    "today_transitions": [
+                        {"at": stamp.isoformat(), "state": value}
+                        for stamp, value in transitions if stamp >= today_start_utc
+                    ],
                     "starts_today": starts_today,
                     "stops_today": stops_today,
                     "completed_cycles_today": len(completed_today),
@@ -6514,6 +6518,7 @@ class DeviceAnalyticsEngine:
                     "cycle_evidence_window_days": cycle_evidence.get("window_days"),
                     "cycle_raw_state_count": cycle_evidence.get("raw_state_count"),
                     "cycle_transition_count": cycle_evidence.get("transition_count"),
+                    "cycle_today_transitions": cycle_evidence.get("today_transitions") or [],
                     "cycle_starts_today": cycle_evidence.get("starts_today"),
                     "cycle_stops_today": cycle_evidence.get("stops_today"),
                     "cycle_completed_today": cycle_evidence.get("completed_cycles_today"),

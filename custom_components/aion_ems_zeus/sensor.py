@@ -1334,6 +1334,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "cycle_evidence_window_days": hp.get("cycle_evidence_window_days"),
                 "cycle_raw_state_count": hp.get("cycle_raw_state_count"),
                 "cycle_transition_count": hp.get("cycle_transition_count"),
+                "cycle_today_transitions": hp.get("cycle_today_transitions"),
                 "cycle_starts_today": hp.get("cycle_starts_today"),
                 "cycle_stops_today": hp.get("cycle_stops_today"),
                 "cycle_completed_today": hp.get("cycle_completed_today"),
