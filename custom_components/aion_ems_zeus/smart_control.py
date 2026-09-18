@@ -216,6 +216,27 @@ class SmartControlSafetyEngine:
 
         return None
 
+    def _canonical_battery_discharge_w(self) -> float | None:
+        # Canonical live battery discharge as a positive watt magnitude.
+        data = (getattr(self.registry, "data", {}) or {})
+        mappings = dict(data.get("entity_mappings") or {})
+        options = dict(data.get("mapping_options") or {})
+        entity = str(mappings.get("battery_discharge_power") or "").strip()
+        if entity:
+            value = self._state_number(entity)
+            if value is not None:
+                return max(0.0, float(value))
+        entity = str(mappings.get("battery_power") or "").strip()
+        if entity:
+            value = self._state_number(entity)
+            if value is not None:
+                sign = str(options.get("battery_power_sign") or "positive_discharge")
+                if sign == "unsigned_magnitude":
+                    return None
+                value = float(value) if sign == "positive_discharge" else -float(value)
+                return max(0.0, value)
+        return None
+
 
     def _direct_elwa_ip(self, device: dict[str, Any]) -> str | None:
         value = str(device.get("control_elwa_ip") or "").strip()
@@ -335,8 +356,11 @@ class SmartControlSafetyEngine:
         # the site is importing from grid.
         grid_import_w = self._canonical_grid_import_w()
         feedback_import_w = max(0.0, float(grid_import_w or 0.0))
+        battery_discharge_w = self._canonical_battery_discharge_w()
+        feedback_battery_discharge_w = max(0.0, float(battery_discharge_w or 0.0))
         effective_solar_surplus_w = (
-            max(0.0, surplus_w + measured_elwa_for_solar_w - feedback_import_w)
+            max(0.0, surplus_w + measured_elwa_for_solar_w
+                - feedback_import_w - feedback_battery_discharge_w)
             if surplus_w is not None else None
         )
 
@@ -433,6 +457,7 @@ class SmartControlSafetyEngine:
                     grid_error_w = (
                         float(surplus_w)
                         - feedback_import_w
+                        - feedback_battery_discharge_w
                         - solar_export_reserve_w
                     )
                     dynamic_solar_target_w = (

@@ -37,6 +37,11 @@ class RegistryEngine:
         self.hass = hass
         self.event_bus = event_bus
         self.store = Store(hass, 2, REGISTRY_STORAGE_KEY)
+        # Finance tariff resilience: keep the canonical tariff configuration in
+        # a dedicated HA Store as a recovery copy. Integration upgrades replace
+        # code files, never this HA storage. The registry remains authoritative;
+        # this store is used only when its tariff block is unexpectedly absent.
+        self.tariff_store = Store(hass, 1, f"{REGISTRY_STORAGE_KEY}.tariffs")
         self.data: dict[str, Any] = {
             "schema_version": 4,
             "devices": [],
@@ -154,6 +159,18 @@ class RegistryEngine:
                 # Heat Pump Circuit Mapping v2 semantic migration: legacy generic
                 # circuit-energy mappings stay unclassified. Never guess electrical
                 # vs thermal; explicit v2 fields are authoritative once mapped.
+
+        # Restore only measured/configured tariff settings that Zeus previously
+        # persisted. Never synthesize tariff values. This protects Finance config
+        # from an incomplete registry payload during an integration upgrade/reload.
+        tariff_backup = await self.tariff_store.async_load()
+        sources = self.data.setdefault("sources", {})
+        current_tariffs = sources.get("tariffs")
+        current_ready = isinstance(current_tariffs, dict) and bool(current_tariffs.get("enabled"))
+        backup_ready = isinstance(tariff_backup, dict) and bool(tariff_backup.get("enabled"))
+        if not current_ready and backup_ready:
+            sources["tariffs"] = dict(tariff_backup)
+            self.data.setdefault("audit", []).append({"action": "restore_tariff_settings"})
         await self.async_save()
         self.event_bus.publish("RegistryLoaded", "RegistryEngine", self.summary())
 
@@ -166,6 +183,12 @@ class RegistryEngine:
         if isinstance(audit, list) and len(audit) > MAX_AUDIT_ENTRIES:
             self.data["audit"] = audit[-MAX_AUDIT_ENTRIES:]
         await self.store.async_save(self.data)
+        # Mirror the canonical tariff block to its recovery store. Clearing
+        # tariffs also writes the disabled block, so an intentional Clear can
+        # never be resurrected on the next restart.
+        tariffs = self.data.get("sources", {}).get("tariffs")
+        if isinstance(tariffs, dict):
+            await self.tariff_store.async_save(dict(tariffs))
 
     def build_device(
         self,
