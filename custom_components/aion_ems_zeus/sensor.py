@@ -36,7 +36,7 @@ RECORDER_GUARD_FREQUENT_BUDGET_BYTES_PER_HOUR = 5_000_000
 # Zeus core/attribution continues to refresh at the normal fast coordinator rate;
 # only the HA entity state publication cadence is reduced. The rich Energy Flow
 # summary remains the fast live authority for the Zeus frontend.
-ENERGY_FLOW_ENTITY_PUBLISH_INTERVAL_SECONDS = 5.0
+ENERGY_FLOW_ENTITY_PUBLISH_INTERVAL_SECONDS = 10.0
 ENERGY_FLOW_ENTITY_KEEPALIVE_SECONDS = 300.0
 
 # Internal/diagnostic entities are intentionally live in Home Assistant for the
@@ -50,6 +50,9 @@ RECORDER_STATE_ONLY_KEYS = frozenset({
     "runtime_resilience",
     "update_engine",
     "recorder_guard",
+    "smart_control_safety",
+    "energy_mapping",
+    "switch_hub",
 })
 
 
@@ -1691,7 +1694,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         RecorderStateOnlySimpleSensor(coordinator, core, "Performance Diagnostics", "performance_diagnostics", "mdi:speedometer", lambda c: c.update_engine.summary().get("status", "Running"), _performance_attributes),
         RecorderStateOnlySimpleSensor(coordinator, core, "Recorder Guard", "recorder_guard", "mdi:database-lock-outline", lambda c: _recorder_guard_stats(c).get("status", "Protected"), _recorder_guard_attributes),
         RegistrySummarySensor(coordinator, core, "Registry Summary", "registry_summary", "mdi:database-cog-outline", lambda c: c.registry.summary().get("status"), lambda c: c.registry.summary()),
-        SimpleSensor(
+        RecorderStateOnlySimpleSensor(
             coordinator,
             core,
             "Switch Hub",
@@ -1717,7 +1720,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             "mdi:timeline-clock-outline",
         ),
         SimpleSensor(coordinator, core, "Entity Discovery", "entity_discovery", "mdi:magnify-scan", lambda c: c.discovery.summary().get("status"), lambda c: c.discovery.summary()),
-        SimpleSensor(coordinator, core, "Energy Mapping", "energy_mapping", "mdi:transmission-tower-import", lambda c: c.energy_mapping.public_summary().get("status"), lambda c: c.energy_mapping.public_summary()),
+        RecorderStateOnlySimpleSensor(coordinator, core, "Energy Mapping", "energy_mapping", "mdi:transmission-tower-import", lambda c: c.energy_mapping.public_summary().get("status"), lambda c: c.energy_mapping.public_summary()),
         EnergyFlowSensor(coordinator, core, "Energy Flow", "energy_flow", "mdi:home-lightning-bolt-outline", lambda c: c.energy_flow.summary().get("status"), lambda c: c.energy_flow.summary()),
         SimpleSensor(coordinator, core, "Integration Hub", "integration_hub", "mdi:hubspot", lambda c: c.integration_hub.summary().get("status"), _integration_hub_attributes),
         PluginDiscoverySensor(coordinator, core, "Email Plugin Discovery", "plugin_email", "mdi:email-outline", lambda c: next((x.get("health") for x in c.integration_hub.summary().get("plugins", []) if x.get("id") == "email"), "Waiting"), lambda c: _plugin_attributes(c, "email")),
@@ -1876,16 +1879,64 @@ class SimpleSensor(CoordinatorEntity, SensorEntity):
 
 
 class RecorderStateOnlySimpleSensor(SimpleSensor):
-    """Live Zeus diagnostic sensor whose attributes are never stored by Recorder.
+    """Recorder-efficient internal Zeus diagnostic sensor.
 
-    Home Assistant requires ``_unrecorded_attributes`` to be declared on the
-    entity class (not assigned per instance). MATCH_ALL keeps the complete live
-    attribute payload available to the Zeus frontend while Recorder stores only
-    the compact entity state plus HA's unavoidable standard metadata.
+    These entities exist primarily for the Zeus UI and diagnostics. Their rich
+    attributes are already excluded from Recorder.  In addition, avoid writing
+    an identical state to Home Assistant on every fast coordinator refresh.
+    A changed state is published immediately; otherwise a five-minute keepalive
+    refreshes the live diagnostic snapshot.  Canonical measurement entities are
+    deliberately not affected by this sampling.
     """
 
     _unrecorded_attributes = frozenset({MATCH_ALL})
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _ZEUS_DIAGNOSTIC_KEEPALIVE_SECONDS = 900.0
+
+    def __init__(self, coordinator, core, name, key, icon, value_fn, attrs_fn) -> None:
+        super().__init__(coordinator, core, name, key, icon, value_fn, attrs_fn)
+        self._zeus_last_diag_publish_monotonic = 0.0
+        self._zeus_last_diag_state = object()
+        self._zeus_diag_publish_initialized = False
+        self._zeus_cached_diag_attrs: dict[str, Any] = {}
+        self._attr_force_update = False
+
+    async def async_added_to_hass(self) -> None:
+        # Register our own coordinator listener instead of CoordinatorEntity's
+        # unconditional write path. This makes these internal entities genuinely
+        # event-driven at the Home Assistant state-machine boundary.
+        await SensorEntity.async_added_to_hass(self)
+        self.async_on_remove(self.coordinator.async_add_listener(self._handle_coordinator_update))
+        self._handle_coordinator_update()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        # Critical Recorder rule: do not rebuild rapidly changing diagnostic
+        # attributes every coordinator cycle.  HA emits a state_changed event
+        # when attributes change even if the visible state string is identical;
+        # Recorder then stores another raw states row.  Cache the live snapshot
+        # and refresh it only on the bounded diagnostic publish cadence.
+        return self._zeus_cached_diag_attrs
+
+    def _handle_coordinator_update(self) -> None:
+        now = monotonic()
+        current_state = self.native_value
+        changed = (
+            not self._zeus_diag_publish_initialized
+            or current_state != self._zeus_last_diag_state
+        )
+        keepalive_due = (
+            self._zeus_last_diag_publish_monotonic == 0.0
+            or now - self._zeus_last_diag_publish_monotonic
+            >= self._ZEUS_DIAGNOSTIC_KEEPALIVE_SECONDS
+        )
+        if not changed and not keepalive_due:
+            return
+        self._zeus_cached_diag_attrs = _apply_recorder_guard(self, self.attrs_fn(self.core) or {})
+        self._zeus_last_diag_publish_monotonic = now
+        self._zeus_last_diag_state = current_state
+        self._zeus_diag_publish_initialized = True
+        self.async_write_ha_state()
 
 
 class AnomalyIntelligenceSensor(SimpleSensor):
@@ -1962,7 +2013,7 @@ class ForecastExplorerDataSensor(SimpleSensor):
         )
 
 
-class SmartControlSafetySensor(SimpleSensor):
+class SmartControlSafetySensor(RecorderStateOnlySimpleSensor):
     """Keep Smart Control safety detail live while Recorder stores state only.
 
     The frontend consumes nested device/simulation/go-e detail from this live
@@ -2043,14 +2094,31 @@ class ForecastSensor(SimpleSensor):
 class EnergyFlowSensor(SimpleSensor):
     """Keep the full live atomic flow snapshot out of Recorder.
 
-    Energy Flow contains registered-device detail plus per-source freshness and
-    timestamp metadata used by the Zeus frontend and diagnostics.  The complete
-    payload remains available in Home Assistant's live state machine, while
-    Recorder stores only the sensor state so the nested snapshot cannot exceed
-    Home Assistant's 16 KiB state-attribute ceiling.
+    The rich Energy Flow entity is still a live Zeus frontend authority, so it
+    cannot use the five-minute diagnostic cadence.  It is instead capped at one
+    Home Assistant state publication every five seconds.  Canonical numeric
+    flow entities continue independently and retain their measurement history.
     """
 
     _unrecorded_attributes = frozenset({MATCH_ALL})
+    _ZEUS_FLOW_SUMMARY_PUBLISH_SECONDS = 5.0
+
+    def __init__(self, coordinator, core, name, key, icon, value_fn, attrs_fn) -> None:
+        super().__init__(coordinator, core, name, key, icon, value_fn, attrs_fn)
+        self._zeus_flow_last_publish = 0.0
+        self._zeus_flow_cached_attrs: dict[str, Any] = {}
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._zeus_flow_cached_attrs
+
+    def _handle_coordinator_update(self) -> None:
+        now = monotonic()
+        if self._zeus_flow_last_publish and now - self._zeus_flow_last_publish < self._ZEUS_FLOW_SUMMARY_PUBLISH_SECONDS:
+            return
+        self._zeus_flow_cached_attrs = _apply_recorder_guard(self, self.attrs_fn(self.core) or {})
+        self._zeus_flow_last_publish = now
+        self.async_write_ha_state()
 
 
 class RegistrySummarySensor(SimpleSensor):

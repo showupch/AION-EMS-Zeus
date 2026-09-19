@@ -347,7 +347,32 @@ class PredictionAccuracyEngine:
                 "home_actual_w": self._num(actual.get("home")),
                 "home_error_w": self._num(errors.get("home")),
             }
-        hourly = [hourly_by_target[key] for key in sorted(hourly_by_target)][-72:]
+        # Also expose forecast-only points that were captured before their target
+        # but have not matured yet. This lets Forecast Explorer build the current
+        # calendar day progressively from genuine pre-target snapshots instead of
+        # showing only the rolling forecast that happens to remain at render time.
+        for pending in self._pending:
+            target = str(pending.get("target_time") or "")
+            if not target:
+                continue
+            lead = int(pending.get("lead_hours") or 0)
+            current = hourly_by_target.get(target)
+            if current is not None and int(current.get("lead_hours") or 0) >= lead:
+                continue
+            predicted = pending.get("predicted") or {}
+            hourly_by_target[target] = {
+                "time": target,
+                "forecast_created_at": pending.get("created_at"),
+                "lead_hours": lead,
+                "solar_forecast_w": self._num(predicted.get("solar")),
+                "solar_actual_w": None,
+                "solar_error_w": None,
+                "home_forecast_w": self._num(predicted.get("home")),
+                "home_actual_w": None,
+                "home_error_w": None,
+                "matured": False,
+            }
+        hourly = [hourly_by_target[key] for key in sorted(hourly_by_target)][-96:]
 
         forecast = {}
         try:
