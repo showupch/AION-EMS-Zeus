@@ -168,6 +168,94 @@ async def _websocket_restore_configuration(hass, connection, msg) -> None:
 
 
 
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/entity_authority_recorder_evidence",
+    vol.Required("entity_ids"): [str],
+})
+@websocket_api.async_response
+async def _websocket_entity_authority_recorder_evidence(hass, connection, msg) -> None:
+    """Return cached exact Recorder presence for mapped authority entities.
+
+    This deliberately avoids live history expansion.  Entity Authorities only
+    needs to know whether Recorder contains evidence for the exact entity_id.
+    The result is cached for 15 minutes so opening/rendering the page can never
+    turn into a high-frequency Recorder workload.
+    """
+    import time
+    from sqlalchemy import text
+    from homeassistant.components.recorder import get_instance
+    from homeassistant.components.recorder.util import session_scope
+
+    entity_ids = list(dict.fromkeys(
+        str(x).strip() for x in msg.get("entity_ids", []) if str(x).strip()
+    ))[:100]
+    if not entity_ids:
+        connection.send_result(msg["id"], {"evidence": {}, "cached": True})
+        return
+
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    cache = domain_data.setdefault("entity_authority_recorder_cache", {})
+    now = time.monotonic()
+    ttl = 15 * 60
+    evidence = {}
+    missing = []
+    for entity_id in entity_ids:
+        item = cache.get(entity_id)
+        if isinstance(item, dict) and now - float(item.get("checked", 0)) < ttl:
+            evidence[entity_id] = {
+                "available": bool(item.get("available")),
+                "cached": True,
+                "cache_minutes": 15,
+            }
+        else:
+            missing.append(entity_id)
+
+    if missing:
+        def query_exact_presence():
+            found = set()
+            # Recorder's states_meta/entity_id relationship is the stable source
+            # of truth for raw state evidence and works for power as well as
+            # energy sensors. Query in chunks to keep parameter lists bounded.
+            with session_scope(hass=hass, read_only=True) as session:
+                for offset in range(0, len(missing), 50):
+                    chunk = missing[offset:offset + 50]
+                    params = {f"e{i}": value for i, value in enumerate(chunk)}
+                    placeholders = ",".join(f":e{i}" for i in range(len(chunk)))
+                    sql = text(
+                        "SELECT DISTINCT sm.entity_id "
+                        "FROM states_meta sm "
+                        "JOIN states s ON s.metadata_id = sm.metadata_id "
+                        f"WHERE sm.entity_id IN ({placeholders})"
+                    )
+                    for row in session.execute(sql, params):
+                        if row and row[0]:
+                            found.add(str(row[0]))
+            return found
+
+        try:
+            found = await get_instance(hass).async_add_executor_job(query_exact_presence)
+        except Exception as err:
+            # One failed verification request must terminate cleanly. The
+            # frontend records the attempt and will not retry on every render.
+            connection.send_error(msg["id"], "recorder_query_failed", str(err))
+            return
+
+        checked = time.monotonic()
+        for entity_id in missing:
+            available = entity_id in found
+            cache[entity_id] = {"available": available, "checked": checked}
+            evidence[entity_id] = {
+                "available": available,
+                "cached": False,
+                "cache_minutes": 15,
+            }
+
+    connection.send_result(msg["id"], {
+        "evidence": evidence,
+        "cache_minutes": 15,
+    })
+
+
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/heat_pump_day_history"})
 @websocket_api.async_response
 async def _websocket_heat_pump_day_history(hass, connection, msg) -> None:
@@ -373,6 +461,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, _websocket_ha_energy_import_preview)
         websocket_api.async_register_command(hass, _websocket_export_configuration)
         websocket_api.async_register_command(hass, _websocket_restore_configuration)
+        websocket_api.async_register_command(hass, _websocket_entity_authority_recorder_evidence)
         websocket_api.async_register_command(hass, _websocket_heat_pump_day_history)
         websocket_api.async_register_command(hass, _websocket_solar_day_history)
         websocket_api.async_register_command(hass, _websocket_grid_day_history)

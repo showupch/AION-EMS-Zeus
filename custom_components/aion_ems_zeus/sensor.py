@@ -1969,6 +1969,7 @@ class AnomalyIntelligenceSensor(SimpleSensor):
                     "detail": row.get("detail"),
                     "deviation_percent": row.get("deviation_percent"),
                     "severity": row.get("severity"),
+                    "classification": row.get("classification"),
                     "date": row.get("date"),
                 })
             self._snapshot_cache = {
@@ -1978,6 +1979,9 @@ class AnomalyIntelligenceSensor(SimpleSensor):
                 "learning_days": raw.get("learning_days"),
                 "observation_count": raw.get("observation_count", len(observations)),
                 "observations": observations,
+                "correlations": list(raw.get("correlations") or [])[:4],
+                "attention_count": raw.get("attention_count", 0),
+                "positive_count": raw.get("positive_count", 0),
                 "highest_severity": raw.get("highest_severity"),
                 "summary": raw.get("summary"),
                 "updated_at": raw.get("updated_at"),

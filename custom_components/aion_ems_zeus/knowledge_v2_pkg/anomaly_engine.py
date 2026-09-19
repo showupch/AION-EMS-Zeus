@@ -12,7 +12,7 @@ from typing import Any
 class AnomalyIntelligenceEngine:
     """Identify meaningful deviations from the home's measured profile."""
 
-    VERSION = "1.0-alpha.2"
+    VERSION = "1.1-alpha.1"
     METRICS = {
         "solar_energy_kwh": ("Solar production", "solar_profile"),
         "house_energy_kwh": ("Home demand", "household_profile"),
@@ -56,6 +56,48 @@ class AnomalyIntelligenceEngine:
             return "Notice"
         return "Information"
 
+    @staticmethod
+    def _classification(metric: str, deviation_percent: float) -> str:
+        """Classify a deviation without pretending every deviation is a problem."""
+        if metric == "solar_energy_kwh" and deviation_percent > 0:
+            return "Positive"
+        if metric == "grid_export_energy_kwh" and deviation_percent > 0:
+            return "Positive"
+        if metric == "grid_import_energy_kwh" and deviation_percent > 0:
+            return "Attention"
+        return "Observation"
+
+    @staticmethod
+    def _correlate(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Explain obvious same-day relationships without inventing causality."""
+        by_metric = {str(item.get("metric")): item for item in observations}
+        solar = by_metric.get("solar_energy_kwh")
+        export = by_metric.get("grid_export_energy_kwh")
+        discharge = by_metric.get("battery_discharge_energy_kwh")
+        groups: list[dict[str, Any]] = []
+        if (solar and float(solar.get("deviation_percent") or 0) > 0
+                and export and float(export.get("deviation_percent") or 0) > 0):
+            related = ["solar_energy_kwh", "grid_export_energy_kwh"]
+            detail = (
+                f"Solar production is {abs(float(solar.get('deviation_percent') or 0)):.1f}% above its learned average "
+                f"and grid export is {abs(float(export.get('deviation_percent') or 0)):.1f}% above its learned average."
+            )
+            if discharge and float(discharge.get("deviation_percent") or 0) < 0:
+                related.append("battery_discharge_energy_kwh")
+                detail += (
+                    f" Battery discharge is {abs(float(discharge.get('deviation_percent') or 0)):.1f}% below its learned average "
+                    "during the same measured day."
+                )
+            groups.append({
+                "id": "high_solar_day",
+                "classification": "Positive",
+                "title": "High solar day",
+                "detail": detail,
+                "related_metrics": related,
+                "evidence": "Correlated measured daily deviations; relationship shown without claiming unmeasured causality.",
+            })
+        return groups
+
     def refresh(self) -> dict[str, Any]:
         profile_engine = getattr(self.core, "home_profile", None)
         profile = profile_engine.summary() if profile_engine and hasattr(profile_engine, "summary") else {}
@@ -90,6 +132,7 @@ class AnomalyIntelligenceEngine:
                     "typical_high": round(high, 2),
                     "deviation_percent": deviation,
                     "severity": self._severity(deviation),
+                    "classification": self._classification(field, deviation),
                     "category": "Home Observation",
                     "date": today.get("date"),
                     "source": "Measured daily history and Home Profile",
@@ -97,10 +140,24 @@ class AnomalyIntelligenceEngine:
 
         observations.sort(key=lambda item: abs(float(item.get("deviation_percent") or 0)), reverse=True)
         observations = observations[:8]
+        correlations = self._correlate(observations)
+        correlated_metrics = {metric for group in correlations for metric in (group.get("related_metrics") or [])}
+        independent = [item for item in observations if item.get("metric") not in correlated_metrics]
+        attention_count = sum(1 for item in observations if item.get("classification") == "Attention")
+        positive_count = sum(1 for item in observations if item.get("classification") == "Positive")
         if observations:
-            headline = observations[0]["title"]
-            status = "Observation"
-            summary = f"Zeus identified {len(observations)} meaningful deviation(s)."
+            status = "Attention" if attention_count else ("Positive" if (positive_count or correlations) else "Observation")
+            if status == "Attention":
+                attention_item = next(
+                    (item for item in independent if item.get("classification") == "Attention"),
+                    next((item for item in observations if item.get("classification") == "Attention"), None),
+                )
+                headline = attention_item.get("title") if attention_item else "Measured condition requires review."
+            elif correlations:
+                headline = correlations[0]["title"]
+            else:
+                headline = observations[0]["title"]
+            summary = f"Zeus identified {len(observations)} measured deviation(s); {attention_count} require attention."
         elif learning_days >= 7:
             headline = "Measured performance is within the learned ranges."
             status = "Normal"
@@ -117,6 +174,10 @@ class AnomalyIntelligenceEngine:
             "learning_days": learning_days,
             "observation_count": len(observations),
             "observations": observations,
+            "correlations": correlations,
+            "independent_observations": independent,
+            "attention_count": attention_count if observations else 0,
+            "positive_count": positive_count if observations else 0,
             "highest_severity": observations[0].get("severity") if observations else None,
             "summary": summary,
             "updated_at": datetime.now(timezone.utc).isoformat(),
