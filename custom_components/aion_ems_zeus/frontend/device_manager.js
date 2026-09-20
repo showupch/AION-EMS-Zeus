@@ -6672,8 +6672,6 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
 
   financeUnifiedPage(){
     const period=this._financePeriod||'today',buttons=['today','week','month','year','total'];
-    this._energyFinancePeriod=period;
-    this._batteryIntelligencePeriod=period;
     const f=this.s('sensor.aion_ems_zeus_finance_summary')?.attributes||{},cur=f.currency||'CHF',configured=!!f.configured,payback=f.system_payback||{};
     const e=this.financePeriodValueData(period,f),title=this.periodLabel(period);
     const gridCost=Number(e.finance_grid_cost)||0,solarSaving=Number(e.finance_direct_solar_value)||0,batterySaving=Number(e.finance_battery_support_value)||0,exportIncome=Number(e.finance_export_revenue)||0,net=Number(e.finance_net_benefit)||0;
@@ -6698,7 +6696,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     // table below retains the same visible points with exact values.
     if(chartRows.length>16)chartRows=chartRows.slice(-16);
 
-    // v16.0.138: Year display authority only. The monthly rows already shown
+    // v16.0.140: Year display authority only. The monthly rows already shown
     // in this page are the validated historical evidence. Use their sum for
     // the Year table total and Year value-mix grid/export figures. Do not
     // change Finance configured-state, tariffs, backend values, or other periods.
@@ -6756,7 +6754,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       <article class="panel finance-tariff-reference"><ha-icon icon="mdi:information-outline"></ha-icon><div><b>Values use your configured tariffs.</b><small>Tariff editing lives in Configuration, so Finance stays focused on results.</small></div><button type="button" data-page="settings" class="secondary-button"><ha-icon icon="mdi:cog-outline"></ha-icon> Manage Tariffs</button></article>
 
       <article class="ux-simple-insight"><span>ENERGY VALUE</span><h3>${net>=0?'Your energy system created positive value':'Grid cost was higher than measured savings'}</h3><p>${this.money(solarSaving+batterySaving,cur)} saved through local solar and battery support, plus ${this.money(exportIncome,cur)} export income.</p></article>
-      <details class="ux-advanced-page"><summary><span>Advanced finance details<small>Energy quantities, device attribution and battery finance</small></span></summary><div class="ux-advanced-page-body">${this.energyFinancePage()}${this.hasBattery()?this.batteryIntelligencePage():''}${this.financeIntelligenceSection(period)}</div></details>`:`<article class="panel spaced"><h2>Configure tariffs first</h2><p>Finance uses the tariffs configured in Configuration.</p><button data-page="settings" class="primary-button">Manage Tariffs</button></article>`}
+      <details class="ux-advanced-page" ${this._advancedFinanceOpen?'open':''}><summary><span>Advanced finance details<small>Energy quantities, device attribution and battery finance</small></span></summary><div class="ux-advanced-page-body">${this.energyFinancePage()}${this.hasBattery()?this.batteryIntelligencePage():''}${this.financeIntelligenceSection(period)}</div></details>`:`<article class="panel spaced"><h2>Configure tariffs first</h2><p>Finance uses the tariffs configured in Configuration.</p><button data-page="settings" class="primary-button">Manage Tariffs</button></article>`}
     </section>`;
   }
 
@@ -13587,10 +13585,10 @@ actions:
     this.querySelectorAll('button[data-weather-day]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();this._weatherSelectedDate=el.getAttribute('data-weather-day')||'';this.render();};});
     this.querySelectorAll('button[data-energy-flow-intelligence-period]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-energy-flow-intelligence-period');if(!next)return;this._energyFlowIntelligencePeriod=next;try{localStorage.setItem('aion_zeus_energy_flow_intelligence_period',next);}catch(_e){}this.render();};});
     this.querySelectorAll('button[data-energy-flow-intelligence-scope]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-energy-flow-intelligence-scope');if(!next)return;this._energyFlowIntelligenceScope=next;try{localStorage.setItem('aion_zeus_energy_flow_intelligence_scope',next);}catch(_e){}this.render();};});
-    this.querySelectorAll('button[data-battery-intelligence-period]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-battery-intelligence-period');if(!next)return;this._batteryIntelligencePeriod=next;try{localStorage.setItem('aion_zeus_battery_intelligence_period',next);}catch(_e){}this.render();};});
+    this.querySelectorAll('button[data-battery-intelligence-period]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-battery-intelligence-period');if(!next)return;this._batteryIntelligencePeriod=next;this._advancedFinanceOpen=true;try{localStorage.setItem('aion_zeus_battery_intelligence_period',next);}catch(_e){}this.render();};});
     this.querySelectorAll('button[data-device-intelligence-period]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-device-intelligence-period');if(!next)return;this._deviceIntelligencePeriod=next;try{localStorage.setItem('aion_zeus_device_intelligence_period',next);}catch(_e){}this.render();};});
     this.querySelectorAll('button[data-finance-summary-period]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-finance-summary-period');if(!next)return;this._financeSummaryPeriod=next;try{localStorage.setItem('aion_zeus_finance_summary_period',next);}catch(_e){}this.render();};});
-    this.querySelectorAll('button[data-energy-finance-period]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-energy-finance-period');if(!next)return;this._energyFinancePeriod=next;try{localStorage.setItem('aion_zeus_energy_finance_period',next);}catch(_e){}this.render();};});
+    this.querySelectorAll('button[data-energy-finance-period]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-energy-finance-period');if(!next)return;this._energyFinancePeriod=next;this._advancedFinanceOpen=true;try{localStorage.setItem('aion_zeus_energy_finance_period',next);}catch(_e){}this.render();};});
     this.querySelectorAll('button[data-report-period]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-report-period');if(!next)return;this._reportPeriod=next;try{localStorage.setItem('aion_zeus_report_period',next);}catch(_e){}this.render();};});
     this.querySelectorAll('button[data-historical-explorer-range]').forEach(el=>{el.onclick=(event)=>{event.preventDefault();event.stopPropagation();const next=el.getAttribute('data-historical-explorer-range');if(!['7','30','90','year'].includes(next))return;this._historicalExplorerRange=next;this.render();};});
     this.querySelectorAll('select[data-historical-explorer-metric]').forEach(el=>{el.onchange=()=>{const slot=el.getAttribute('data-historical-explorer-metric'),next=el.value;if(slot==='a')this._historicalExplorerMetricA=next;else this._historicalExplorerMetricB=next;this.render();};});
