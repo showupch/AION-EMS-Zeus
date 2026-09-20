@@ -1141,20 +1141,25 @@ class SmartControlSafetyEngine:
             last_topic=str(topic),
             write_count=int(runtime.get("write_count", 0) or 0) + 1,
         )
-        try:
-            self.event_bus.publish(
-                "SmartControlExecutionWrite",
-                "SmartControlSafetyEngine",
-                {
-                    "device_id": device_id,
-                    "action": action,
-                    "service": "mqtt.publish",
-                    "topic": str(topic),
-                    "payload": payload_obj,
-                },
-            )
-        except Exception:
-            pass
+        # PUBLISH_5S is continuous go-e IDS evidence transport, not a control
+        # decision. Do not emit a SmartControlExecutionWrite audit event for
+        # successful routine telemetry. Blocked/failed control paths remain
+        # auditable through their existing events.
+        if action != "PUBLISH_5S":
+            try:
+                self.event_bus.publish(
+                    "SmartControlExecutionWrite",
+                    "SmartControlSafetyEngine",
+                    {
+                        "device_id": device_id,
+                        "action": action,
+                        "service": "mqtt.publish",
+                        "topic": str(topic),
+                        "payload": payload_obj,
+                    },
+                )
+            except Exception:
+                pass
         return True
 
     async def _async_evaluate_goe_mqtt(self, registry_devices: dict[str, dict[str, Any]], force_keepalive: bool = False) -> None:

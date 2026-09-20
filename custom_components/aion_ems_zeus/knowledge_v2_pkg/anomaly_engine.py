@@ -6,20 +6,33 @@ engine is observation-only, recorder-safe, and does not create a polling loop.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
+from homeassistant.util import dt as dt_util
 from typing import Any
 
 
 class AnomalyIntelligenceEngine:
     """Identify meaningful deviations from the home's measured profile."""
 
-    VERSION = "1.1-alpha.1"
+    VERSION = "1.1-alpha.3"
     METRICS = {
         "solar_energy_kwh": ("Solar production", "solar_profile"),
         "house_energy_kwh": ("Home demand", "household_profile"),
         "grid_import_energy_kwh": ("Grid import", ("grid_profile", "import")),
         "grid_export_energy_kwh": ("Grid export", ("grid_profile", "export")),
         "battery_charge_energy_kwh": ("Battery charging", ("battery_profile", "charge")),
-        "battery_discharge_energy_kwh": ("Battery discharge", ("battery_profile", "discharge")),
+        "battery_discharge_energy_kwh": ("Battery support", ("battery_profile", "discharge")),
+    }
+    # A percentage can look dramatic when the underlying energy is tiny.  An
+    # intraday observation must clear both the learned range and a meaningful
+    # absolute delta before Zeus surfaces it.
+    MIN_INTRADAY_DELTA_KWH = {
+        "solar_energy_kwh": 0.25,
+        "house_energy_kwh": 0.25,
+        "grid_import_energy_kwh": 0.10,
+        "grid_export_energy_kwh": 0.10,
+        "battery_charge_energy_kwh": 0.20,
+        "battery_discharge_energy_kwh": 0.20,
     }
 
     def __init__(self, event_bus: Any, core: Any) -> None:
@@ -46,6 +59,106 @@ class AnomalyIntelligenceEngine:
         if isinstance(path, tuple):
             return dict((profile.get(path[0]) or {}).get(path[1]) or {})
         return dict(profile.get(path) or {})
+
+
+    @staticmethod
+    def _intraday_ranges(core: Any) -> tuple[dict[str, dict[str, float]], dict[str, float], int] | None:
+        """Build same-time-of-day ranges from canonical hourly Recorder evidence.
+
+        Only completed local hours are used. This prevents a partial current day
+        from being compared with completed 24-hour totals. If exact hourly
+        evidence is unavailable for a metric, that metric is withheld rather
+        than estimated from full-day history.
+        """
+        analytics = getattr(core, "analytics", None)
+        rows = list(getattr(analytics, "_ha_consumption_hourly", []) or [])
+        if not rows:
+            return None
+        now = dt_util.now()
+        today = now.date().isoformat()
+        cutoff_hour = now.hour  # rows starting before this hour are mature
+        fields = tuple(AnomalyIntelligenceEngine.METRICS)
+        per_day: dict[str, dict[str, float]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            stamp = str(row.get("start") or "")
+            try:
+                parsed = datetime.fromisoformat(stamp)
+                local = dt_util.as_local(parsed) if parsed.tzinfo else parsed
+            except (TypeError, ValueError):
+                continue
+            day = local.date().isoformat()
+            if local.hour >= cutoff_hour:
+                continue
+            target = per_day.setdefault(day, {})
+            for field in fields:
+                value = AnomalyIntelligenceEngine._num(row.get(field))
+                if value is not None and value >= 0:
+                    target[field] = target.get(field, 0.0) + value
+            # Battery anomaly authority is battery support to the home, matching
+            # Day Status Summary / Canonical Finance, not raw battery discharge.
+            # Build the historical same-time equivalent from the same measured
+            # energy-balance boundary for each mature Recorder hour.
+            house = AnomalyIntelligenceEngine._num(row.get("house_energy_kwh"))
+            imported = AnomalyIntelligenceEngine._num(row.get("grid_import_energy_kwh"))
+            discharged = AnomalyIntelligenceEngine._num(row.get("battery_discharge_energy_kwh"))
+            if house is not None and imported is not None and discharged is not None:
+                local_home = max(house - imported, 0.0)
+                support = min(max(discharged, 0.0), local_home)
+                # Replace raw discharge accumulated above with equivalent support.
+                target["battery_discharge_energy_kwh"] = target.get("_battery_support_accum", 0.0) + support
+                target["_battery_support_accum"] = target["battery_discharge_energy_kwh"]
+        # Today's value must come from the same canonical daily authorities used
+        # everywhere else in Zeus (Day Status, Finance and Intelligence Memory).
+        # Recorder hourly rows are used only to learn the historical same-time
+        # comparison range. Reconstructing today's energy from hourly rows can
+        # diverge from a mapped daily-reset authority and create false anomalies.
+        lake = getattr(getattr(core, "data_lake", None), "data", {}) or {}
+        canonical_today = dict((lake.get("daily_summaries", {}) or {}).get(today, {}) or {})
+        # Use the same live *_today mapping overlay as Analytics/Day Status.  The
+        # DataLake snapshot can lag the visible daily-reset meter during the day.
+        overlay_getter = getattr(analytics, "_mapped_today_overlay", None)
+        if callable(overlay_getter):
+            try:
+                canonical_today.update(dict(overlay_getter() or {}))
+            except Exception:
+                pass
+        actual: dict[str, float] = {}
+        for field in fields:
+            value = AnomalyIntelligenceEngine._num(canonical_today.get(field))
+            if value is not None and value >= 0:
+                actual[field] = value
+        # Day Status Summary gets Battery support from Canonical Finance. Use the
+        # exact same authority here so the two Zeus pages can never disagree.
+        finance = getattr(core, "finance", None)
+        if finance is not None and hasattr(finance, "summary"):
+            try:
+                finance_summary = finance.summary() or {}
+                support = AnomalyIntelligenceEngine._num(finance_summary.get("battery_support_to_home_kwh"))
+                if support is not None and support >= 0:
+                    actual["battery_discharge_energy_kwh"] = support
+            except Exception:
+                # If Canonical Finance is unavailable, withhold the battery
+                # observation rather than silently reverting to another authority.
+                actual.pop("battery_discharge_energy_kwh", None)
+        historical = [vals for day, vals in per_day.items() if day != today]
+        if len(historical) < 7:
+            return None
+        ranges: dict[str, dict[str, float]] = {}
+        for field in fields:
+            values = sorted(v[field] for v in historical if field in v)
+            if len(values) < 7:
+                continue
+            n = len(values)
+            low = values[max(0, int((n - 1) * 0.20))]
+            high = values[min(n - 1, int((n - 1) * 0.80))]
+            ranges[field] = {
+                "typical_low": low,
+                "typical_high": high,
+                "average": sum(values) / n,
+            }
+        return ranges, actual, cutoff_hour
 
     @staticmethod
     def _severity(deviation_percent: float) -> str:
@@ -107,11 +220,23 @@ class AnomalyIntelligenceEngine:
         today = days[-1] if days else {}
         learning_days = int(profile.get("learning_days") or 0)
         observations: list[dict[str, Any]] = []
+        today_date = dt_util.now().date().isoformat()
+        is_current_day = str(today.get("date") or "") == today_date
+        intraday = self._intraday_ranges(self.core) if is_current_day else None
+        intraday_ranges, intraday_actual, cutoff_hour = intraday if intraday else ({}, {}, 0)
 
         if learning_days >= 7 and today:
             for field, (label, path) in self.METRICS.items():
-                actual = self._num(today.get(field))
-                expected = self._profile_value(profile, path)
+                if is_current_day:
+                    # Current-day anomaly claims require same-time Recorder evidence.
+                    # Never compare an immature day with completed daily totals.
+                    if field not in intraday_ranges or field not in intraday_actual:
+                        continue
+                    actual = self._num(intraday_actual.get(field))
+                    expected = dict(intraday_ranges.get(field) or {})
+                else:
+                    actual = self._num(today.get(field))
+                    expected = self._profile_value(profile, path)
                 low = self._num(expected.get("typical_low"))
                 high = self._num(expected.get("typical_high"))
                 average = self._num(expected.get("average"))
@@ -119,6 +244,21 @@ class AnomalyIntelligenceEngine:
                     continue
                 if low <= actual <= high:
                     continue
+                if is_current_day:
+                    # Solar is not mature while the sun is below the horizon.
+                    # A zero/near-zero PV total before daylight is normal, not an
+                    # anomaly.  Once daylight begins, the same-time evidence can
+                    # become eligible normally.
+                    if field == "solar_energy_kwh":
+                        sun = getattr(self.core, "hass", None)
+                        sun_state = sun.states.get("sun.sun") if sun is not None else None
+                        if sun_state is not None and str(sun_state.state) == "below_horizon":
+                            continue
+                    nearest = low if actual < low else high
+                    absolute_delta = abs(actual - nearest)
+                    minimum_delta = float(self.MIN_INTRADAY_DELTA_KWH.get(field, 0.1))
+                    if absolute_delta < minimum_delta or max(abs(average), abs(actual)) < minimum_delta:
+                        continue
                 baseline = max(abs(average), 0.1)
                 deviation = round((actual - average) / baseline * 100.0, 1)
                 direction = "above" if deviation > 0 else "below"
@@ -126,7 +266,11 @@ class AnomalyIntelligenceEngine:
                     "id": f"{field}_{today.get('date', 'today')}",
                     "metric": field,
                     "title": f"{label} is {direction} the learned range",
-                    "detail": f"Measured {actual:.1f} kWh versus a typical range of {low:.1f}–{high:.1f} kWh.",
+                    "detail": (
+                        f"Measured {actual:.1f} kWh through {cutoff_hour:02d}:00 versus a same-time typical range of {low:.1f}–{high:.1f} kWh."
+                        if is_current_day else
+                        f"Measured {actual:.1f} kWh versus a typical range of {low:.1f}–{high:.1f} kWh."
+                    ),
                     "actual": round(actual, 2),
                     "typical_low": round(low, 2),
                     "typical_high": round(high, 2),
@@ -178,6 +322,8 @@ class AnomalyIntelligenceEngine:
             "independent_observations": independent,
             "attention_count": attention_count if observations else 0,
             "positive_count": positive_count if observations else 0,
+            "maturity_mode": "same_time_recorder" if is_current_day else "completed_day",
+            "mature_through_hour": cutoff_hour if is_current_day and intraday else None,
             "highest_severity": observations[0].get("severity") if observations else None,
             "summary": summary,
             "updated_at": datetime.now(timezone.utc).isoformat(),

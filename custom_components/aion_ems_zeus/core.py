@@ -66,6 +66,7 @@ from .system_story_engine import SystemStoryEngine
 from .energy_snapshot import EnergySnapshotService
 from .device_energy_attribution import DeviceEnergyAttributionEngine
 from .smart_control import SmartControlSafetyEngine
+from .control_audit import ControlAuditTrail
 from .switch_hub import SwitchHubEngine
 from .knowledge_v2 import (
     KnowledgeEngineV2,
@@ -99,6 +100,8 @@ class AionCore:
 
         # Core engines.
         self.registry = RegistryEngine(hass, self.event_bus)
+        self.control_audit = ControlAuditTrail(self.registry)
+        self.event_bus.audit_sink = self.control_audit.ingest_event
         self.discovery = DiscoveryEngine(hass, self.event_bus)
         self.energy_engine = EnergyEngine(hass, self.event_bus, self.registry)
 

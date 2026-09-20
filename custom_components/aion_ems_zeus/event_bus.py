@@ -33,6 +33,7 @@ class AionEventBus:
     def __init__(self, hass) -> None:
         self.hass = hass
         self.events: list[dict[str, Any]] = []
+        self.audit_sink = None
 
     def publish(self, event: str, engine: str, payload: dict[str, Any] | None = None) -> None:
         record = {
@@ -43,6 +44,12 @@ class AionEventBus:
         }
         self.events.append(record)
         self.events = self.events[-25:]
+        sink = getattr(self, "audit_sink", None)
+        if sink is not None:
+            try:
+                sink(record)
+            except Exception:
+                pass
         self.hass.bus.async_fire(f"{DOMAIN}_{event}", compact(record))
 
     def recent(self, limit: int = 3) -> list[dict[str, Any]]:
