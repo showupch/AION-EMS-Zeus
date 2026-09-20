@@ -2236,7 +2236,12 @@ class PluginDiscoverySensor(SimpleSensor):
 
 
 class FinanceValueSensor(CoordinatorEntity, SensorEntity):
-    """Numeric monetary value from the Finance Engine."""
+    """Numeric monetary value from the already-refreshed Finance snapshot.
+
+    Home Assistant may read native value, unit and attributes separately during
+    one entity write. Cache those properties once per coordinator update so the
+    entity path performs no repeated Finance summary/dict work.
+    """
     def __init__(self, coordinator, core, name, key, finance_key, icon) -> None:
         super().__init__(coordinator)
         self.core = core
@@ -2247,16 +2252,25 @@ class FinanceValueSensor(CoordinatorEntity, SensorEntity):
         self._attr_icon = icon
         self._attr_state_class = SensorStateClass.TOTAL
         self.entity_id = f"sensor.aion_ems_zeus_{key}"
-    @property
-    def native_value(self):
-        return self.core.finance.summary().get(self.finance_key)
-    @property
-    def native_unit_of_measurement(self):
-        return self.core.finance.summary().get("currency", "CHF")
-    @property
-    def extra_state_attributes(self):
+        self._refresh_cached_state()
+
+    def _refresh_cached_state(self) -> None:
         f = self.core.finance.summary()
-        return {"configured": f.get("configured"), "tariff_mode": f.get("tariff_mode"), "import_tariff": f.get("import_tariff"), "export_tariff": f.get("export_tariff"), "standing_charge": f.get("standing_charge"), "vat_included": f.get("vat_included"), "assumptions": f.get("assumptions")}
+        self._attr_native_value = f.get(self.finance_key)
+        self._attr_native_unit_of_measurement = f.get("currency", "CHF")
+        self._attr_extra_state_attributes = {
+            "configured": f.get("configured"),
+            "tariff_mode": f.get("tariff_mode"),
+            "import_tariff": f.get("import_tariff"),
+            "export_tariff": f.get("export_tariff"),
+            "standing_charge": f.get("standing_charge"),
+            "vat_included": f.get("vat_included"),
+            "assumptions": f.get("assumptions"),
+        }
+
+    def _handle_coordinator_update(self) -> None:
+        self._refresh_cached_state()
+        self.async_write_ha_state()
 
 
 class EnergyFlowValueSensor(CoordinatorEntity, SensorEntity):

@@ -6698,7 +6698,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     // table below retains the same visible points with exact values.
     if(chartRows.length>16)chartRows=chartRows.slice(-16);
 
-    // v16.0.136: Year display authority only. The monthly rows already shown
+    // v16.0.138: Year display authority only. The monthly rows already shown
     // in this page are the validated historical evidence. Use their sum for
     // the Year table total and Year value-mix grid/export figures. Do not
     // change Finance configured-state, tariffs, backend values, or other periods.
