@@ -23,7 +23,7 @@ class ControlAuditTrail:
         block = self.registry.data.setdefault("control_audit", [])
         if not isinstance(block, list):
             block = []
-        # v16.0.127 migration: successful go-e PUBLISH_5S records were routine
+        # v16.0.130 migration: successful go-e PUBLISH_5S records were routine
         # telemetry, not meaningful control decisions. Purge legacy cards so
         # existing installations become clean immediately after update.
         filtered = [
