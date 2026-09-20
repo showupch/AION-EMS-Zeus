@@ -6557,11 +6557,14 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
 
   tariffEditorPanel(){
     const f=this.s('sensor.aion_ems_zeus_finance_summary')?.attributes||{};
-    const mode=this._tariffDraft?.tariff_mode??f.tariff_mode??'fixed';
+    const configuredMode=f.configured_tariff_mode??(f.tariff_mode==='dynamic'?'fixed':f.tariff_mode);
+    const mode=this._tariffDraft?.tariff_mode??configuredMode??'fixed';
     const currency=this._tariffDraft?.currency??f.currency??'CHF';
     const exportTariff=this._tariffDraft?.export_tariff??f.export_tariff??'',exportDepreciation=this._tariffDraft?.export_depreciation??f.export_depreciation??'';
-    const fixedImport=this._tariffDraft?.import_tariff??(mode==='fixed'?f.import_tariff:'')??'';
-    const periods=Array.isArray(this._tariffDraft?.tou_periods)?this._tariffDraft.tou_periods:(Array.isArray(f.tou_periods)&&f.tou_periods.length?f.tou_periods:[
+    const configuredImport=f.configured_import_tariff??f.import_tariff;
+    const fixedImport=this._tariffDraft?.import_tariff??(mode==='fixed'?configuredImport:'')??'';
+    const configuredPeriods=Array.isArray(f.configured_tou_periods)&&f.configured_tou_periods.length?f.configured_tou_periods:f.tou_periods;
+    const periods=Array.isArray(this._tariffDraft?.tou_periods)?this._tariffDraft.tou_periods:(Array.isArray(configuredPeriods)&&configuredPeriods.length?configuredPeriods:[
       {name:'Night',start:'23:00',end:'07:00',import_tariff:''},
       {name:'Day',start:'07:00',end:'17:00',import_tariff:''},
       {name:'Peak',start:'17:00',end:'19:00',import_tariff:''},

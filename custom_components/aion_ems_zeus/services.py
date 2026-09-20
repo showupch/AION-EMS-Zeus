@@ -1093,6 +1093,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             "tariff_mode": tariff_mode, "import_tariff": import_tariff, "export_tariff": export_tariff,
             "export_depreciation": export_depreciation,
             "tou_periods": tou_periods,
+            "configured_tariff_mode": tariff_mode,
+            "configured_import_tariff": import_tariff,
+            "configured_tou_periods": list(tou_periods),
             "standing_charge": standing_charge, "vat_included": bool(call.data.get("vat_included", True)),
             "saved_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }
@@ -1205,6 +1208,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         now = datetime.now(timezone.utc)
         source = str(call.data.get("source") or "Home Assistant automation").strip()[:80]
         tariff = dict(core.registry.data.setdefault("sources", {}).get("tariffs") or {})
+        # Dynamic pricing is an overlay and must never destroy the user's
+        # configured Fixed/Time-of-Use authority.
+        if str(tariff.get("tariff_mode") or "fixed") != "dynamic":
+            tariff["configured_tariff_mode"] = str(tariff.get("tariff_mode") or "fixed")
+            tariff["configured_import_tariff"] = tariff.get("import_tariff")
+            tariff["configured_tou_periods"] = list(tariff.get("tou_periods") or [])
         tariff.update({
             "enabled": True,
             "currency": currency,
@@ -1215,7 +1224,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             "dynamic_received_at": now.isoformat(),
             "dynamic_coverage_start": slots[0]["start"],
             "dynamic_coverage_end": slots[-1]["end"],
-            "tou_periods": [],
         })
         # Preserve fixed export/standing-charge settings. Dynamic data controls only import prices.
         tariff.setdefault("export_tariff", 0.0)
@@ -1233,8 +1241,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         tariff = dict(core.registry.data.setdefault("sources", {}).get("tariffs") or {})
         for key in ("dynamic_prices", "dynamic_source", "dynamic_input_unit", "dynamic_received_at", "dynamic_coverage_start", "dynamic_coverage_end"):
             tariff.pop(key, None)
-        tariff["tariff_mode"] = "fixed"
-        tariff["enabled"] = bool(tariff.get("import_tariff") is not None or tariff.get("export_tariff") is not None)
+        restore_mode = str(tariff.get("configured_tariff_mode") or "fixed")
+        if restore_mode not in {"fixed", "time_of_use"}:
+            restore_mode = "fixed"
+        tariff["tariff_mode"] = restore_mode
+        if "configured_import_tariff" in tariff:
+            tariff["import_tariff"] = tariff.get("configured_import_tariff")
+        tariff["tou_periods"] = list(tariff.get("configured_tou_periods") or []) if restore_mode == "time_of_use" else []
+        tariff["enabled"] = bool(tariff.get("import_tariff") is not None or tariff.get("export_tariff") is not None or tariff.get("tou_periods"))
         core.registry.data.setdefault("sources", {})["tariffs"] = tariff
         core.registry.data.setdefault("audit", []).append({"action": "clear_dynamic_tariff"})
         await core.registry.async_save()

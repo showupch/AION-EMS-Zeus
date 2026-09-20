@@ -431,6 +431,9 @@ class FinanceEngine:
         self.last = {
             "status": "Ready" if enabled else "Not configured",
             "configured": enabled, "currency": currency, "tariff_mode": tariff_mode,
+            "configured_tariff_mode": cfg.get("configured_tariff_mode", tariff_mode if tariff_mode != "dynamic" else None),
+            "configured_import_tariff": cfg.get("configured_import_tariff"),
+            "configured_tou_periods": list(cfg.get("configured_tou_periods") or []),
             "vat_included": bool(cfg.get("vat_included", True)),
             "import_tariff": import_rate if enabled else None,
             "active_import_tariff": import_rate if enabled else None,
