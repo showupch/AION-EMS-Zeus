@@ -6698,6 +6698,15 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     // table below retains the same visible points with exact values.
     if(chartRows.length>16)chartRows=chartRows.slice(-16);
 
+    // v16.0.136: Year display authority only. The monthly rows already shown
+    // in this page are the validated historical evidence. Use their sum for
+    // the Year table total and Year value-mix grid/export figures. Do not
+    // change Finance configured-state, tariffs, backend values, or other periods.
+    const yearRowGridCost=chartRows.reduce((sum,r)=>sum+(Number(r.cost)||0),0);
+    const yearRowExportIncome=chartRows.reduce((sum,r)=>sum+(Number(r.income)||0),0);
+    const yearDisplayGridCost=period==='year'&&chartRows.length?yearRowGridCost:gridCost;
+    const yearDisplayExportIncome=period==='year'&&chartRows.length?yearRowExportIncome:exportIncome;
+
     const max=Math.max(.01,...chartRows.flatMap(r=>[r.cost,r.income]));
     const chartW=1100,chartH=330,left=72,right=24,top=42,bottom=58,plotW=chartW-left-right,plotH=chartH-top-bottom;
     const tickCount=5,ticks=Array.from({length:tickCount+1},(_,i)=>max*(tickCount-i)/tickCount);
@@ -6714,12 +6723,12 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       <line x1="${left}" y1="${top+plotH}" x2="${chartW-right}" y2="${top+plotH}" class="finance-axis-line"></line>
     </svg>`:'';
 
-    const positiveTotal=Math.max(.001,gridCost+solarSaving+batterySaving+exportIncome);
+    const positiveTotal=Math.max(.001,yearDisplayGridCost+solarSaving+batterySaving+yearDisplayExportIncome);
     const breakdown=[
-      ['Grid cost',gridCost,'cost'],
+      ['Grid cost',yearDisplayGridCost,'cost'],
       ['Solar saved',solarSaving,'solar'],
       ['Battery saved',batterySaving,'battery'],
-      ['Export earned',exportIncome,'export']
+      ['Export earned',yearDisplayExportIncome,'export']
     ];
     const pcts=breakdown.map(x=>Math.max(0,x[1]/positiveTotal*100));
     const stops=[pcts[0],pcts[0]+pcts[1],pcts[0]+pcts[1]+pcts[2]];
@@ -6739,7 +6748,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
 
       <div class="finance-redesign-lower">
         <article class="panel finance-breakdown-panel"><div class="section-title"><div><span>VALUE MIX</span><h2>Breakdown of your ${this.esc(title.toLowerCase())}</h2></div></div><div class="finance-breakdown-body"><div class="finance-donut" style="${donutStyle}"><div><b>${this.money(net,cur)}</b><small>net benefit</small></div></div><div class="finance-breakdown-list">${breakdown.map((x,i)=>`<div><span><i class="${x[2]}"></i>${x[0]}</span><b>${this.money(x[1],cur)}</b><small>${pcts[i].toFixed(1)}%</small></div>`).join('')}<div class="total"><span>Net benefit</span><b>${this.money(net,cur)}</b><small>${title}</small></div></div></div></article>
-        <article class="panel finance-daily-table-panel"><div class="section-title"><div><span>EXACT VALUES</span><h2>${period==='week'?'Daily summary':`${this.esc(title)} summary`}</h2></div></div>${chartRows.length?`<div class="finance-table-scroll"><table class="finance-daily-table"><thead><tr><th>${period==='today'?'Time':'Period'}</th><th>Grid cost (${this.esc(cur)})</th><th>Export income (${this.esc(cur)})</th><th>Net (${this.esc(cur)})</th></tr></thead><tbody>${tableRows}</tbody><tfoot><tr><th>Total</th><th>${this.money(gridCost,cur)}</th><th>${this.money(exportIncome,cur)}</th><th class="${net>=0?'positive':'negative'}">${net>=0?'+':'−'}${this.money(Math.abs(net),cur)}</th></tr></tfoot></table></div>`:'<div class="empty">No completed history for this period yet.</div>'}</article>
+        <article class="panel finance-daily-table-panel"><div class="section-title"><div><span>EXACT VALUES</span><h2>${period==='week'?'Daily summary':`${this.esc(title)} summary`}</h2><small>Grid balance = export income − grid cost. Net benefit also includes solar and battery savings.</small></div></div>${chartRows.length?`<div class="finance-table-scroll"><table class="finance-daily-table"><thead><tr><th>${period==='today'?'Time':'Period'}</th><th>Grid cost (${this.esc(cur)})</th><th>Export income (${this.esc(cur)})</th><th>Grid balance (${this.esc(cur)})</th></tr></thead><tbody>${tableRows}</tbody><tfoot><tr><th>Total</th><th>${this.money(yearDisplayGridCost,cur)}</th><th>${this.money(yearDisplayExportIncome,cur)}</th><th class="${net>=0?'positive':'negative'}">${net>=0?'+':'−'}${this.money(Math.abs(net),cur)}</th></tr></tfoot></table></div>`:'<div class="empty">No completed history for this period yet.</div>'}</article>
       </div>
 
       <article class="panel spaced finance-payback-panel"><div class="section-title"><div><span>SYSTEM PAYBACK</span><h2>When does the energy system pay for itself?</h2></div><ha-icon icon="mdi:chart-timeline-variant-shimmer"></ha-icon></div>${payback.configured?`<div class="zf-evidence"><div><span>Net investment</span><b>${this.money(payback.net_investment,cur)}</b></div><div><span>Annualized net benefit</span><b>${this.money(payback.annualized_net_benefit,cur)} per year</b></div><div><span>Simple payback</span><b>${payback.simple_payback_years==null?'Collecting':Number(payback.simple_payback_years).toFixed(1)+' years'}</b></div><div><span>Break-even</span><b>${this.esc(payback.estimated_break_even_date||'Add commissioning date')}</b></div><div><span>Estimated recovered</span><b>${payback.estimated_recovered_percent==null?'—':Number(payback.estimated_recovered_percent).toFixed(0)+'%'}</b></div><div><span>Evidence</span><b>${this.esc(payback.evidence_days??0)} days · ${this.esc(payback.confidence_label||'Learning')}</b></div></div><p class="data-note">${this.esc(payback.method||'Zeus annualizes measured energy value from the available Finance evidence.')}</p><details><summary>Edit system investment</summary><div class="topology-config-grid" style="margin-top:12px"><label>System investment (${this.esc(cur)})<input id="payback-gross" type="number" min="1" step="1" value="${this.esc(payback.gross_investment??'')}"></label><label>Subsidy / grant (${this.esc(cur)})<input id="payback-subsidy" type="number" min="0" step="1" value="${this.esc(payback.subsidy??0)}"></label><label>Annual maintenance (${this.esc(cur)})<input id="payback-maintenance" type="number" min="0" step="1" value="${this.esc(payback.annual_maintenance??0)}"></label><label>Commissioning date<input id="payback-date" type="date" value="${this.esc(payback.commissioning_date||'')}"></label></div><div class="buttons"><button id="save-payback" class="primary-button">Save payback settings</button><button id="clear-payback" class="secondary-button">Clear</button></div></details><small>${this.esc(payback.boundary||'Simple payback excludes financing, tax effects, degradation, tariff inflation and replacement costs.')}</small>`:`<p>Add the installed system cost once and Zeus will use measured Finance evidence to estimate annual benefit, simple payback and break-even.</p><div class="topology-config-grid"><label>System investment (${this.esc(cur)})<input id="payback-gross" type="number" min="1" step="1" placeholder="e.g. 30000"></label><label>Subsidy / grant (${this.esc(cur)})<input id="payback-subsidy" type="number" min="0" step="1" value="0"></label><label>Annual maintenance (${this.esc(cur)})<input id="payback-maintenance" type="number" min="0" step="1" value="0"></label><label>Commissioning date<input id="payback-date" type="date"></label></div><div class="buttons"><button id="save-payback" class="primary-button">Calculate system payback</button></div>`}</article>
