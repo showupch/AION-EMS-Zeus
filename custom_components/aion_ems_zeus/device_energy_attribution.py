@@ -6,7 +6,8 @@ occurred; mapped device energy remains authoritative for period totals.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import asyncio
 import logging
 from typing import Any
 
@@ -36,8 +37,13 @@ class DeviceEnergyAttributionEngine:
         self.device_analytics = device_analytics
         self.last: dict[str, Any] = {
             "status": "Waiting", "engine": "Device Energy Attribution Engine",
-            "version": "1.16", "devices": [], "periods": {},
+            "version": "1.17", "devices": [], "periods": {},
         }
+        # v16.0.162: serialize heavyweight Recorder work. UI requests reuse the
+        # most recent snapshot instead of starting parallel history scans.
+        self._refresh_lock = asyncio.Lock()
+        self._last_refresh_monotonic: float = 0.0
+        self._cache_seconds = 15 * 60
 
     @staticmethod
     def _num(value: Any) -> float:
@@ -174,6 +180,80 @@ class DeviceEnergyAttributionEngine:
                 diag["first_state_at"], diag["last_state_at"],
             )
         return result, diagnostics
+
+    async def _statistics_power(
+        self, entity_ids: list[str], start: datetime, end: datetime
+    ) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, Any]]]:
+        """Return hourly Recorder statistics for long DEA windows.
+
+        Month/week attribution does not need raw state-change resolution. Home
+        Assistant's hourly mean power statistics preserve measured timing while
+        avoiding multi-week scans of the states table. Entities without eligible
+        power statistics remain unavailable here and use DEA's existing explicit
+        fallback path; Zeus never fabricates missing history.
+        """
+        ids = list(dict.fromkeys(x for x in entity_ids if x))
+        if not ids:
+            return {}, {}
+        try:
+            response = await self.hass.services.async_call(
+                "recorder", "get_statistics",
+                {
+                    "statistic_ids": ids,
+                    "start_time": start,
+                    "end_time": end,
+                    "period": "hour",
+                    "types": ["mean"],
+                    "units": {"power": "W"},
+                },
+                blocking=True, return_response=True,
+            )
+        except Exception as err:
+            _LOGGER.warning("DEA aggregated power statistics query failed: %s", err)
+            return {}, {entity_id: {"diagnostic_status": "statistics_query_failed", "error": str(err)} for entity_id in ids}
+
+        raw = (response or {}).get("statistics", response or {})
+        result: dict[str, dict[str, float]] = {}
+        diagnostics: dict[str, dict[str, Any]] = {}
+        for entity_id in ids:
+            rows = [row for row in list((raw or {}).get(entity_id) or []) if isinstance(row, dict)]
+            samples: dict[str, float] = {}
+            for row in rows:
+                value = row.get("mean")
+                if value is None:
+                    continue
+                try:
+                    watts = max(0.0, float(value))
+                except (TypeError, ValueError):
+                    continue
+                stamp = row.get("start")
+                if isinstance(stamp, (int, float)):
+                    dt = datetime.fromtimestamp(float(stamp), tz=timezone.utc)
+                elif isinstance(stamp, str):
+                    dt = dt_util.parse_datetime(stamp)
+                else:
+                    dt = stamp if isinstance(stamp, datetime) else None
+                if dt is None:
+                    continue
+                samples[dt_util.as_utc(dt).isoformat()] = watts
+            result[entity_id] = samples
+            diagnostics[entity_id] = {
+                "entity_id": entity_id,
+                "diagnostic_status": "statistics_available" if samples else "statistics_unavailable",
+                "statistics_row_count": len(rows),
+                "aligned_sample_count": len(samples),
+                "query_start": dt_util.as_utc(start).isoformat(),
+                "query_end": dt_util.as_utc(end).isoformat(),
+                "interval_seconds": 3600,
+                "source": "Home Assistant Recorder hourly mean statistics",
+            }
+        return result, diagnostics
+
+    def cache_is_fresh(self, max_age_seconds: int | None = None) -> bool:
+        """Return whether the in-memory DEA snapshot is fresh enough for UI use."""
+        import time
+        age_limit = self._cache_seconds if max_age_seconds is None else max(0, int(max_age_seconds))
+        return bool(self.last.get("generated_at")) and (time.monotonic() - self._last_refresh_monotonic) < age_limit
 
     @staticmethod
     def _period_energy(device: dict[str, Any], period: str) -> float:
@@ -322,7 +402,16 @@ class DeviceEnergyAttributionEngine:
             result.append(merged)
         return result
 
-    async def async_refresh(self) -> dict[str, Any]:
+    async def async_refresh(self, *, force: bool = False) -> dict[str, Any]:
+        """Refresh DEA once, reusing fresh results and preventing duplicate scans."""
+        if not force and self.cache_is_fresh():
+            return self.last
+        async with self._refresh_lock:
+            if not force and self.cache_is_fresh():
+                return self.last
+            return await self._async_refresh_locked()
+
+    async def _async_refresh_locked(self) -> dict[str, Any]:
         registry_devices = list(self.registry.data.get("devices", []) or [])
         registry_with_power = [d for d in registry_devices if d.get("power_entity")]
         registry_with_energy = [d for d in registry_devices if d.get("energy_entity")]
@@ -335,6 +424,17 @@ class DeviceEnergyAttributionEngine:
         period_payload: dict[str, Any] = {}
         per_device: dict[str, dict[str, Any]] = {str(d.get("id")): {"id": d.get("id"), "name": d.get("name"), "periods": {}} for d in devices}
 
+        # v16.0.162: fetch one aggregated Month window for Week + Month instead
+        # of issuing overlapping raw-state scans. Today retains detailed raw
+        # Recorder history because its short window benefits from 5-minute timing.
+        all_power_ids = required_sources + [str(d.get("power_entity")) for d in devices if d.get("power_entity")]
+        month_window = canonical_period_window("month", now)
+        week_window = canonical_period_window("week", now)
+        month_start = month_window.start or dt_util.start_of_local_day(now - timedelta(days=31))
+        week_start = week_window.start or dt_util.start_of_local_day(now - timedelta(days=6))
+        long_start = min(month_start, week_start)
+        long_aligned, long_diagnostics = await self._statistics_power(all_power_ids, long_start, now)
+
         for period_name, (days, resolution) in self.PERIODS.items():
             # v14.0.0-alpha.22.8.9.2: all accounting engines consume one
             # canonical local-calendar period authority. DEA no longer rebuilds
@@ -343,17 +443,27 @@ class DeviceEnergyAttributionEngine:
             start = window.start
             if start is None:
                 start = dt_util.start_of_local_day(now - timedelta(days=days-1))
-            entity_ids = required_sources + [str(d.get("power_entity")) for d in devices if d.get("power_entity")]
-            seconds = {"5minute": 300, "15minute": 900, "hour": 3600}.get(resolution, 3600)
-            try:
-                aligned, history_diagnostics = await self._history_power(entity_ids, start, now, seconds)
-            except Exception as err:
-                period_payload[period_name] = {
-                    "status": "Fallback", "reason": f"recorder_history_error: {err}",
-                    "resolution": resolution,
+            entity_ids = all_power_ids
+            if period_name == "today":
+                seconds = 300
+                try:
+                    aligned, history_diagnostics = await self._history_power(entity_ids, start, now, seconds)
+                except Exception as err:
+                    period_payload[period_name] = {
+                        "status": "Fallback", "reason": f"recorder_history_error: {err}",
+                        "resolution": resolution,
+                    }
+                    aligned = {}
+                    history_diagnostics = {}
+            else:
+                seconds = 3600
+                start_utc = dt_util.as_utc(start)
+                aligned = {
+                    entity_id: {ts: value for ts, value in series.items() if (dt_util.parse_datetime(ts) or start_utc) >= start_utc}
+                    for entity_id, series in long_aligned.items()
                 }
-                aligned = {}
-                history_diagnostics = {}
+                history_diagnostics = long_diagnostics
+                resolution = "hourly_statistics"
             source_series = {name: aligned.get(entity, {}) for name, entity in sources.items() if entity}
             timestamps = sorted(set().union(*(set(s.keys()) for s in source_series.values()))) if source_series else []
 
@@ -597,10 +707,10 @@ class DeviceEnergyAttributionEngine:
         payload_devices = list(per_device.values())
         self.last = {
             "status": "Ready" if payload_devices else "Waiting",
-            "engine": "Device Energy Attribution Engine", "version": "1.16",
+            "engine": "Device Energy Attribution Engine", "version": "1.17",
             "generated_at": now.isoformat(), "devices": payload_devices,
             "periods": period_payload,
-            "method": "Recorder state-history power timing on exact calendar windows; registered-device power is reconciled to measured whole-home demand at each aligned timestamp before energy integration and source allocation.",
+            "method": "Today uses detailed Recorder power history; Week/Month use Home Assistant hourly mean power statistics. Registered-device power is reconciled to measured whole-home demand before source allocation.",
             "principle": "Every device kWh is attributed once across solar, wind, generator, battery and grid; local generation remains source-preserving.",
             "registry_diagnostics": {
                 "registered_total": len(registry_devices),
@@ -612,6 +722,8 @@ class DeviceEnergyAttributionEngine:
             },
             "safety": "Read-only. Recommendation-only mode; no device control.",
         }
+        import time
+        self._last_refresh_monotonic = time.monotonic()
         self.event_bus.publish("DeviceEnergyAttributionUpdated", "DeviceEnergyAttributionEngine", {"device_count": len(payload_devices)})
         return self.last
 

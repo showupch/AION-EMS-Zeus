@@ -30,11 +30,10 @@ async def _websocket_device_energy_attribution(hass, connection, msg) -> None:
         connection.send_error(msg["id"], "not_ready", "AION EMS is not ready")
         return
     try:
-        # Full DEA detail is requested by interactive Zeus pages.  Refresh it
-        # against the current Registry + Recorder evidence first so the websocket
-        # never returns a stale startup snapshot after device/mapping changes.
-        await core.device_analytics.async_refresh_recorder_energy()
-        core.device_analytics.refresh()
+        # v16.0.162: interactive pages consume the cached DEA snapshot. A UI open
+        # must not launch another multi-period Recorder workload. The engine
+        # refreshes on the normal capture cadence and async_refresh() itself is
+        # serialized/cached for explicit configuration refreshes.
         payload = await core.device_energy_attribution.async_refresh()
     except Exception as err:
         connection.send_error(msg["id"], "dea_refresh_failed", str(err))
