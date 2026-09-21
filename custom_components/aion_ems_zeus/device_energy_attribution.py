@@ -28,6 +28,10 @@ class DeviceEnergyAttributionEngine:
         "today": (1, "5minute"),
         "week": (7, "15minute"),
         "month": (32, "15minute"),
+        # Year uses the same measured hourly-statistics path as Month. The
+        # canonical period authority supplies the trusted accounting boundary
+        # (01.09 on installations whose Zeus data epoch starts there).
+        "year": (366, "hourly_statistics"),
     }
 
     def __init__(self, hass, event_bus, registry, device_analytics) -> None:
@@ -424,15 +428,18 @@ class DeviceEnergyAttributionEngine:
         period_payload: dict[str, Any] = {}
         per_device: dict[str, dict[str, Any]] = {str(d.get("id")): {"id": d.get("id"), "name": d.get("name"), "periods": {}} for d in devices}
 
-        # v16.0.162: fetch one aggregated Month window for Week + Month instead
-        # of issuing overlapping raw-state scans. Today retains detailed raw
-        # Recorder history because its short window benefits from 5-minute timing.
+        # v16.0.173: fetch one aggregated Year window for Week + Month + Year.
+        # Long DEA periods use Home Assistant hourly statistics rather than raw
+        # Recorder states. Today retains detailed raw history because its short
+        # window benefits from 5-minute timing.
         all_power_ids = required_sources + [str(d.get("power_entity")) for d in devices if d.get("power_entity")]
         month_window = canonical_period_window("month", now)
         week_window = canonical_period_window("week", now)
+        year_window = canonical_period_window("year", now)
         month_start = month_window.start or dt_util.start_of_local_day(now - timedelta(days=31))
         week_start = week_window.start or dt_util.start_of_local_day(now - timedelta(days=6))
-        long_start = min(month_start, week_start)
+        year_start = year_window.start or month_start
+        long_start = min(month_start, week_start, year_start)
         long_aligned, long_diagnostics = await self._statistics_power(all_power_ids, long_start, now)
 
         for period_name, (days, resolution) in self.PERIODS.items():
@@ -667,13 +674,15 @@ class DeviceEnergyAttributionEngine:
                 "source_diagnostics": {name: history_diagnostics.get(entity, {}) for name, entity in sources.items() if entity},
             }
 
-        # Year/total deliberately use transparent period estimates in Phase 1.
+        # Total deliberately uses a transparent period estimate. Year is now
+        # retained from the measured hourly-statistics path above so it follows
+        # the same canonical year boundary/evidence authority as Month/Week.
         for device in devices:
             did = str(device.get("id"))
             today_mix = per_device[did]["periods"].get("month") or per_device[did]["periods"].get("week") or {}
             shares = [self._num(today_mix.get(k)) for k in ("solar_percent", "wind_percent", "generator_percent", "battery_percent", "grid_percent")]
             denom = sum(shares) or 100.0
-            for pname in ("year", "total"):
+            for pname in ("total",):
                 energy = self._period_energy(device, pname)
                 solar_e = energy * shares[0] / denom
                 wind_e = energy * shares[1] / denom
@@ -710,7 +719,7 @@ class DeviceEnergyAttributionEngine:
             "engine": "Device Energy Attribution Engine", "version": "1.17",
             "generated_at": now.isoformat(), "devices": payload_devices,
             "periods": period_payload,
-            "method": "Today uses detailed Recorder power history; Week/Month use Home Assistant hourly mean power statistics. Registered-device power is reconciled to measured whole-home demand before source allocation.",
+            "method": "Today uses detailed Recorder power history; Week/Month/Year use Home Assistant hourly mean power statistics. Registered-device power is reconciled to measured whole-home demand before source allocation.",
             "principle": "Every device kWh is attributed once across solar, wind, generator, battery and grid; local generation remains source-preserving.",
             "registry_diagnostics": {
                 "registered_total": len(registry_devices),
