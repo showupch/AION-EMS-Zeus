@@ -428,7 +428,7 @@ class DeviceEnergyAttributionEngine:
         period_payload: dict[str, Any] = {}
         per_device: dict[str, dict[str, Any]] = {str(d.get("id")): {"id": d.get("id"), "name": d.get("name"), "periods": {}} for d in devices}
 
-        # v16.0.173: fetch one aggregated Year window for Week + Month + Year.
+        # v16.0.174: fetch one aggregated Year window for Week + Month + Year.
         # Long DEA periods use Home Assistant hourly statistics rather than raw
         # Recorder states. Today retains detailed raw history because its short
         # window benefits from 5-minute timing.
