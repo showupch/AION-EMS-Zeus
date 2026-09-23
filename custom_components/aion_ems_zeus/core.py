@@ -396,6 +396,12 @@ class AionCore:
                 "background_failed_steps": failed,
             },
         )
+        # Sensor entities are registered before deferred Recorder warm-up.
+        # Publish the completed in-memory snapshot now that the UpdateEngine is
+        # running, so Heat Pump Intelligence immediately exposes Recorder-backed
+        # compressor runtime instead of waiting for the 5-minute coordinator tick.
+        if update_ok:
+            await self.update_engine.async_publish_current_snapshot("background_warmup_complete")
 
     async def async_unload(self) -> None:
         # If Zeus owns an active ELWA session, attempt one safe 0 W before unload.

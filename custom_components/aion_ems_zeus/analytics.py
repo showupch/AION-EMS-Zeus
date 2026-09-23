@@ -4870,6 +4870,9 @@ class DeviceAnalyticsEngine:
         self._cop_statistics: dict[str, dict[str, Any]] = {}
         self._cop_statistics_status: dict[str, Any] = {"status": "Not loaded", "entity_count": 0, "row_count": 0}
         self._compressor_history: dict[str, dict[str, Any]] = {}
+        self._compressor_counters: dict[str, dict[str, Any]] = {}
+        self._compressor_power_evidence: dict[str, dict[str, Any]] = {}
+        self._compressor_power_debug: dict[str, dict[str, Any]] = {}
         self._compressor_history_status: dict[str, Any] = {"status": "Not loaded", "entity_count": 0, "row_count": 0}
 
 
@@ -4905,6 +4908,8 @@ class DeviceAnalyticsEngine:
             self._recorder_status = {"status": "No mapped device energy entities", "entity_count": 0, "row_count": 0}
             await self._async_refresh_cop_statistics()
             await self._async_refresh_compressor_history()
+            await self._async_refresh_compressor_counters()
+            await self._async_refresh_compressor_power_evidence()
             return
         try:
             now = dt_util.now()
@@ -5048,6 +5053,8 @@ class DeviceAnalyticsEngine:
 
         await self._async_refresh_cop_statistics()
         await self._async_refresh_compressor_history()
+        await self._async_refresh_compressor_counters()
+        await self._async_refresh_compressor_power_evidence()
 
     async def _async_refresh_cop_statistics(self) -> None:
         """Load direct Heat Pump COP statistics from Home Assistant Recorder."""
@@ -5230,6 +5237,254 @@ class DeviceAnalyticsEngine:
         if raw:
             return "Reported mode", "Mapped operating-mode text is preserved as evidence but does not match a normalized Heating/DHW/Cooling token."
         return "Unavailable", "No mapped operating-mode evidence is available."
+
+
+    async def _async_refresh_compressor_counters(self) -> None:
+        """Load mapped compressor runtime/start counters for today's delta.
+
+        These optional mappings are authoritative when present. Zeus derives only
+        the change since the local day boundary; it does not infer compressor
+        activity from arbitrary power thresholds.
+        """
+        devices = [d for d in self.registry.data.get("devices", []) if str(d.get("type") or "") == "heat_pump"]
+        ids = []
+        for d in devices:
+            for key in ("compressor_runtime_entity", "compressor_starts_entity"):
+                eid = str(d.get(key) or "").strip()
+                if eid:
+                    ids.append(eid)
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            self._compressor_counters = {}
+            return
+        now = dt_util.now()
+        start_utc = dt_util.as_utc(dt_util.start_of_local_day(now))
+        end_utc = dt_util.as_utc(now + timedelta(minutes=1))
+        def _query():
+            with session_scope(hass=self.hass, read_only=True) as session:
+                # Request the complete state-change stream explicitly.  Starts and
+                # completed cycles must be derived from the same raw compressor-power
+                # evidence as runtime; do not rely on Recorder's default
+                # significant-change filtering for transition accounting.
+                return history.get_significant_states_with_session(
+                    self.hass,
+                    session,
+                    start_utc,
+                    end_utc,
+                    ids,
+                    filters=None,
+                    include_start_time_state=True,
+                    significant_changes_only=False,
+                    minimal_response=False,
+                    no_attributes=True,
+                )
+        try:
+            raw = await get_instance(self.hass).async_add_executor_job(_query)
+        except Exception:
+            self._compressor_counters = {}
+            return
+        out = {}
+        def delta(eid):
+            rows = list((raw or {}).get(eid, []) or [])
+            vals=[]
+            for row in rows:
+                try: vals.append(float(getattr(row, "state", "")))
+                except (TypeError, ValueError): pass
+            if len(vals) < 2 or vals[-1] < vals[0]:
+                return None
+            return vals[-1]-vals[0]
+        for d in devices:
+            item={}
+            rid=str(d.get("compressor_runtime_entity") or "").strip()
+            sid=str(d.get("compressor_starts_entity") or "").strip()
+            if rid:
+                value=delta(rid)
+                st=self.hass.states.get(rid)
+                unit=str((st.attributes.get("unit_of_measurement") if st else "") or "").strip().lower()
+                if value is not None:
+                    if unit in {"h","hr","hrs","hour","hours"}: value*=60.0
+                    elif unit in {"s","sec","secs","second","seconds"}: value/=60.0
+                    elif unit in {"d","day","days"}: value*=1440.0
+                    # blank/minute units are already minutes; unknown units stay unavailable.
+                    elif unit not in {"", "min", "mins", "minute", "minutes"}: value=None
+                item["runtime_today_minutes"] = round(value,1) if value is not None else None
+                item["runtime_entity"] = rid
+            if sid:
+                value=delta(sid)
+                item["starts_today"] = int(round(value)) if value is not None else None
+                item["starts_entity"] = sid
+            out[str(d.get("id") or d.get("name") or "")] = item
+        self._compressor_counters = out
+
+    async def _async_refresh_compressor_power_evidence(self) -> None:
+        """Derive today's compressor operation from an explicitly compressor-named power entity.
+
+        This is a fallback only when no authoritative compressor-state transition
+        stream is available. The ON threshold is learned from the entity's own
+        Recorder distribution (standby cluster versus active cluster); Zeus does
+        not apply a fixed manufacturer-independent watt threshold.
+        """
+        devices = [d for d in self.registry.data.get("devices", []) if str(d.get("type") or "") == "heat_pump"]
+        candidates = []
+        for d in devices:
+            eid = str(d.get("power_entity") or "").strip()
+            st = self.hass.states.get(eid) if eid else None
+            friendly = str((st.attributes.get("friendly_name") if st else "") or "").lower()
+            if eid and ("compressor" in eid.lower() or "compressor" in friendly or "verdichter" in friendly):
+                candidates.append((d, eid))
+        debug = {}
+        for d in devices:
+            key=str(d.get("id") or d.get("name") or "")
+            eid=str(d.get("power_entity") or "").strip()
+            st=self.hass.states.get(eid) if eid else None
+            debug[key]={"device_key":key or None,"device_type":d.get("type"),"mapped_power_entity":eid or None,"entity_exists":bool(st),"candidate":bool(eid and ("compressor" in eid.lower() or "compressor" in str((st.attributes.get("friendly_name") if st else "") or "").lower() or "verdichter" in str((st.attributes.get("friendly_name") if st else "") or "").lower())),"status":"candidate" if eid else "no_power_entity","reason":None}
+        # Publish mapping diagnostics immediately. If a later Recorder/history
+        # processing step raises unexpectedly, the frontend must still show the
+        # exact registry handoff rather than an empty diagnostic payload.
+        self._compressor_power_debug = dict(debug)
+        if not candidates:
+            self._compressor_power_evidence = {}
+            for item in debug.values(): item["reason"]="No explicitly compressor-named mapped power entity qualified."
+            self._compressor_power_debug=debug
+            return
+        now = dt_util.now()
+        today_start = dt_util.start_of_local_day(now)
+        start_utc = dt_util.as_utc(today_start - timedelta(hours=6))
+        today_start_utc = dt_util.as_utc(today_start)
+        end_utc = dt_util.as_utc(now + timedelta(minutes=1))
+        ids = list(dict.fromkeys(eid for _, eid in candidates))
+        def _query():
+            with session_scope(hass=self.hass, read_only=True) as session:
+                return history.get_significant_states_with_session(
+                    self.hass, session, start_utc, end_utc, ids, None, True, False, False, True
+                )
+        try:
+            raw = await get_instance(self.hass).async_add_executor_job(_query)
+        except Exception as err:
+            self._compressor_power_evidence = {}
+            for item in debug.values(): item.update({"status":"query_error","reason":f"{type(err).__name__}: {err}"})
+            self._compressor_power_debug=debug
+            return
+        out = {}
+        for device, eid in candidates:
+            st = self.hass.states.get(eid)
+            unit = str((st.attributes.get("unit_of_measurement") if st else "") or "W").strip().lower()
+            rows=[]
+            raw_rows=list((raw or {}).get(eid, []) or [])
+            dbg=debug.setdefault(str(device.get("id") or device.get("name") or ""),{})
+            dbg.update({"status":"processing","raw_row_count":len(raw_rows),"raw_keys":sorted(list((raw or {}).keys()))[:20],"unit":unit})
+            self._compressor_power_debug = dict(debug)
+            for row in raw_rows:
+                try:
+                    value=float(getattr(row,"state",""))
+                except (TypeError,ValueError):
+                    continue
+                if unit == "kw": value *= 1000.0
+                elif unit not in {"w","watt","watts"}: continue
+                stamp=getattr(row,"last_changed",None) or getattr(row,"last_updated",None)
+                if isinstance(stamp, str):
+                    stamp = dt_util.parse_datetime(stamp)
+                if stamp is not None:
+                    try:
+                        rows.append((dt_util.as_utc(stamp), max(0.0,value)))
+                    except (TypeError, ValueError, AttributeError) as err:
+                        dbg.setdefault("timestamp_errors", []).append(f"{type(err).__name__}: {err}")
+            # Recorder normally returns chronological rows, but transition
+            # accounting must not depend on backend ordering (MariaDB/PostgreSQL).
+            rows.sort(key=lambda item: item[0])
+            dbg["numeric_timestamped_rows"]=len(rows)
+            if rows:
+                dbg["first_timestamp"]=rows[0][0].isoformat(); dbg["last_timestamp"]=rows[-1][0].isoformat(); dbg["min_w"]=round(min(v for _,v in rows),1); dbg["max_w"]=round(max(v for _,v in rows),1)
+            if len(rows) < 8:
+                dbg.update({"status":"rejected","reason":"Fewer than 8 numeric timestamped Recorder rows."})
+                continue
+            # Recorder stores state *changes*, not uniformly sampled power. A simple
+            # percentile over row count therefore over-weights a modulating compressor
+            # (many changing active values) and under-weights long, flat standby periods.
+            # Learn the standby/active clusters from *time-weighted* evidence instead.
+            weighted=[]
+            for i,(stamp,value) in enumerate(rows):
+                nxt=rows[i+1][0] if i+1 < len(rows) else end_utc
+                seconds=max(0.0,(nxt-stamp).total_seconds())
+                if seconds > 0:
+                    weighted.append((value,seconds))
+            if not weighted:
+                dbg.update({"status":"rejected","reason":"No positive time-weighted Recorder intervals."})
+                continue
+            weighted.sort(key=lambda item:item[0])
+            total_weight=sum(weight for _,weight in weighted)
+            def weighted_pct(q):
+                target=total_weight*q
+                acc=0.0
+                for value,weight in weighted:
+                    acc += weight
+                    if acc >= target:
+                        return value
+                return weighted[-1][0]
+            # Learn two power regimes directly from the compressor entity's own
+            # recorded values.  Do not let the amount of elapsed OFF time later in
+            # the day erase the active regime: Recorder stores state changes, so the
+            # distribution of recorded power values is the stable evidence for the
+            # two operating clusters, while elapsed time is used only for runtime.
+            row_values=sorted(value for _,value in rows)
+            low=float(row_values[0]); high=float(row_values[-1])
+            if high <= low:
+                dbg.update({"status":"rejected","reason":"Compressor power history contains only one observed level."})
+                continue
+            c0, c1 = low, high
+            for _ in range(24):
+                g0=[]; g1=[]
+                for value in row_values:
+                    (g0 if abs(value-c0) <= abs(value-c1) else g1).append(value)
+                if not g0 or not g1:
+                    break
+                n0=sum(g0)/len(g0); n1=sum(g1)/len(g1)
+                if abs(n0-c0) < 0.01 and abs(n1-c1) < 0.01:
+                    c0, c1 = n0, n1
+                    break
+                c0, c1 = n0, n1
+            standby, active = sorted((float(c0), float(c1)))
+            if active <= standby:
+                dbg.update({"status":"rejected","reason":"Compressor power history did not produce two distinct operating regimes."})
+                continue
+            # Midpoint between the two self-observed cluster centres.  This is fully
+            # data-derived: no manufacturer-specific or fixed watt threshold.
+            threshold=(standby+active)/2.0
+            dbg.update({"standby_cluster_w":round(standby,1),"active_cluster_w":round(active,1),"total_weight_seconds":round(total_weight,1),"classifier":"two_cluster_recorded_power"})
+            states=[]
+            for stamp,value in rows:
+                state="on" if value >= threshold else "off"
+                # Keep the FIRST timestamp of a continuous state. Replacing it with
+                # every later Recorder sample would move the start forward and
+                # systematically under-count runtime.
+                if states and states[-1][1] == state:
+                    continue
+                states.append((stamp,state,value))
+            # Runtime integrates the state carried by each Recorder sample. A
+            # run already active at midnight contributes runtime today but not a start today.
+            runtime_s=0.0
+            for i,(stamp,state,value) in enumerate(states):
+                nxt=states[i+1][0] if i+1 < len(states) else end_utc
+                if state == "on" and nxt > today_start_utc:
+                    a=max(stamp,today_start_utc); b=min(nxt,end_utc)
+                    if b>a: runtime_s += (b-a).total_seconds()
+            transitions=[]
+            for i in range(1,len(states)):
+                if states[i][1] != states[i-1][1]: transitions.append((states[i][0],states[i][1]))
+            starts=sum(1 for stamp,state in transitions if state=="on" and stamp>=today_start_utc)
+            stops=sum(1 for stamp,state in transitions if state=="off" and stamp>=today_start_utc)
+            key=str(device.get("id") or device.get("name") or "")
+            dbg.update({"status":"ready","reason":"Recorder compressor-power evidence accepted.","learned_threshold_w":round(threshold,1),"transition_count":len(transitions),"runtime_today_minutes":round(runtime_s/60.0,1),"starts_today":starts,"stops_today":stops})
+            out[key]={
+                "status":"Ready", "source":eid, "runtime_today_minutes":round(runtime_s/60.0,1),
+                "starts_today":starts, "stops_today":stops, "completed_cycles_today":stops,
+                "today_transitions":[{"at":stamp.isoformat(),"state":state} for stamp,state in transitions if stamp>=today_start_utc],
+                "standby_cluster_w":round(standby,1), "active_cluster_w":round(active,1),
+                "learned_threshold_w":round(threshold,1), "sample_count":len(rows),
+                "policy":"Self-calibrated from Recorder compressor-power evidence; no fixed watt threshold."
+            }
+        self._compressor_power_evidence=out
+        self._compressor_power_debug=debug
 
     async def _async_refresh_compressor_history(self) -> None:
         """Load timestamped Heat Pump compressor transitions from HA Recorder.
@@ -6429,6 +6684,19 @@ class DeviceAnalyticsEngine:
 
                 compressor_entity = str(device.get("compressor_state_entity") or "").strip()
                 cycle_evidence = dict(self._compressor_history.get(compressor_entity) or {}) if compressor_entity else {}
+                device_evidence_key = str(device.get("id") or device.get("name") or "")
+                compressor_counter_evidence = dict(self._compressor_counters.get(device_evidence_key) or {})
+                compressor_power_evidence = dict(self._compressor_power_evidence.get(device_evidence_key) or {})
+                if str(cycle_evidence.get("status") or "") != "Ready" and compressor_power_evidence.get("status") == "Ready":
+                    cycle_evidence = {
+                        "status":"Ready", "source":compressor_power_evidence.get("source"),
+                        "starts_today":compressor_power_evidence.get("starts_today"),
+                        "stops_today":compressor_power_evidence.get("stops_today"),
+                        "completed_cycles_today":compressor_power_evidence.get("completed_cycles_today"),
+                        "today_transitions":compressor_power_evidence.get("today_transitions") or [],
+                        "cycle_pattern_status":"Power-history fallback", "cycle_pattern_reason":compressor_power_evidence.get("policy"),
+                        "cycle_profile_status":"Insufficient evidence", "cycle_profile_reason":"Today-only compressor-power fallback does not create a 7-day cycle profile.",
+                    }
                 cycle_evidence_status = str(cycle_evidence.get("status") or "Unavailable")
                 if cycle_evidence_status == "Ready":
                     cycle_pattern_status = str(cycle_evidence.get("cycle_pattern_status") or "Insufficient pattern evidence")
@@ -6519,9 +6787,17 @@ class DeviceAnalyticsEngine:
                     "cycle_raw_state_count": cycle_evidence.get("raw_state_count"),
                     "cycle_transition_count": cycle_evidence.get("transition_count"),
                     "cycle_today_transitions": cycle_evidence.get("today_transitions") or [],
-                    "cycle_starts_today": cycle_evidence.get("starts_today"),
-                    "cycle_stops_today": cycle_evidence.get("stops_today"),
-                    "cycle_completed_today": cycle_evidence.get("completed_cycles_today"),
+                    # One canonical operation authority: when an explicitly compressor-named
+                    # power entity has usable Recorder evidence, use that same observed timeline
+                    # for runtime, starts and completed cycles. Mapped cumulative counters remain
+                    # supporting evidence only and must not override the timestamped timeline.
+                    "cycle_starts_today": compressor_power_evidence.get("starts_today") if compressor_power_evidence.get("status") == "Ready" else (cycle_evidence.get("starts_today") if cycle_evidence.get("starts_today") is not None else compressor_counter_evidence.get("starts_today")),
+                    "compressor_runtime_today_minutes": compressor_power_evidence.get("runtime_today_minutes") if compressor_power_evidence.get("status") == "Ready" else compressor_counter_evidence.get("runtime_today_minutes"),
+                    "compressor_runtime_today_source": compressor_power_evidence.get("source") if compressor_power_evidence.get("status") == "Ready" else compressor_counter_evidence.get("runtime_entity"),
+                    "compressor_starts_today_source": compressor_power_evidence.get("source") if compressor_power_evidence.get("status") == "Ready" else (cycle_evidence.get("source") or compressor_counter_evidence.get("starts_entity")),
+                    "compressor_power_diagnostic": dict(self._compressor_power_debug.get(device_evidence_key) or {}),
+                    "cycle_stops_today": compressor_power_evidence.get("stops_today") if compressor_power_evidence.get("status") == "Ready" else cycle_evidence.get("stops_today"),
+                    "cycle_completed_today": compressor_power_evidence.get("completed_cycles_today") if compressor_power_evidence.get("status") == "Ready" else cycle_evidence.get("completed_cycles_today"),
                     "cycle_completed_7d": cycle_evidence.get("completed_cycles_7d"),
                     "cycle_average_runtime_minutes_7d": cycle_evidence.get("average_runtime_minutes_7d"),
                     "cycle_shortest_runtime_minutes_7d": cycle_evidence.get("shortest_runtime_minutes_7d"),

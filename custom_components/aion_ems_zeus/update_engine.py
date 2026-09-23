@@ -106,6 +106,18 @@ class UpdateEngine:
 
         return _remove
 
+    async def async_publish_current_snapshot(self, reason: str = "manual_publish") -> None:
+        """Publish already-computed Zeus state without recomputing engines."""
+        self.event_bus.publish(
+            "UpdateEngineSnapshotPublished",
+            "UpdateEngine",
+            {"reason": reason},
+        )
+        for listener in list(self._listeners):
+            result = listener()
+            if hasattr(result, "__await__"):
+                await result
+
     def _handle_state_changed(self, event: Event) -> None:
         entity_id = event.data.get("entity_id")
         if not entity_id or entity_id not in self._tracked_entities:

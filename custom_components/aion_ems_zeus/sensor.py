@@ -981,6 +981,72 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         }
 
 
+    def _intelligence_engine_attributes(core) -> dict[str, Any]:
+        """Return the compact live Intelligence Engine payload used by Zeus UI.
+
+        The engine keeps its complete optimizer/knowledge/briefing snapshots
+        internally. Publishing those duplicated nested snapshots on the Home
+        Assistant entity made every state write unnecessarily expensive even
+        though Recorder already excludes the attributes. Keep only the fields
+        consumed by the public Zeus frontend.
+        """
+        data = core.intelligence.summary() or {}
+
+        def text(value: Any, limit: int = 420) -> Any:
+            if not isinstance(value, str):
+                return value
+            return value if len(value) <= limit else value[: max(0, limit - 1)] + "…"
+
+        def recommendation(row: Any) -> dict[str, Any] | None:
+            if not isinstance(row, dict):
+                return None
+            keys = (
+                "device_id", "device_name", "device_type", "device_icon",
+                "is_system_status", "title", "source_action", "normalized_action",
+                "action", "why_now", "reason", "expected_benefit", "urgency",
+                "confidence", "confidence_percent", "confidence_label",
+                "best_window", "estimated_saving", "estimated_saving_eur",
+                "currency", "actionable_surplus_sink", "actionable_surplus",
+            )
+            out: dict[str, Any] = {}
+            for key in keys:
+                value = row.get(key)
+                out[key] = text(value, 420 if key in {"why_now", "reason", "expected_benefit"} else 220)
+            constraints = row.get("constraints")
+            if isinstance(constraints, list):
+                out["constraints"] = [text(v, 220) for v in constraints[:4]]
+            return out
+
+        recommendations = [
+            item for item in
+            (recommendation(row) for row in list(data.get("recommendations") or [])[:6])
+            if item is not None
+        ]
+        top = recommendation(data.get("top_recommendation"))
+        battery = data.get("battery_strategy") if isinstance(data.get("battery_strategy"), dict) else {}
+
+        return {
+            "status": data.get("status"),
+            "mode": data.get("mode"),
+            "recommendation_count": data.get("recommendation_count"),
+            "recommendations": recommendations,
+            "top_recommendation": top,
+            "system_confidence": data.get("system_confidence"),
+            "confidence_label": data.get("confidence_label"),
+            "best_surplus_window": data.get("best_surplus_window"),
+            "battery_strategy": {
+                "status": battery.get("status"),
+                "strategy": battery.get("strategy"),
+                "reason": text(battery.get("reason"), 320),
+                "soc_percent": battery.get("soc_percent"),
+            },
+            "summary": text(data.get("summary"), 420),
+            "limitations": [text(v, 260) for v in list(data.get("limitations") or [])[:4]],
+            "safety": text(data.get("safety"), 260),
+            "payload_scope": "public_compact",
+        }
+
+
     def _optimization_intelligence_attributes(core) -> dict[str, Any]:
         """Recorder-safe Optimization Intelligence payload.
 
@@ -1239,6 +1305,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "sample_count": row.get("sample_count"),
                 "method": row.get("method"),
                 "integrated_energy_today_kwh": row.get("integrated_energy_today_kwh"),
+                # Heat Pump operation evidence used by the Day Status UI. Keep these
+                # compact derived fields in the HA payload; verbose/raw Recorder
+                # evidence remains backend-only.
+                "cycle_starts_today": row.get("cycle_starts_today"),
+                "cycle_stops_today": row.get("cycle_stops_today"),
+                "cycle_completed_today": row.get("cycle_completed_today"),
+                "cycle_today_transitions": row.get("cycle_today_transitions"),
+                "compressor_runtime_today_minutes": row.get("compressor_runtime_today_minutes"),
+                "compressor_runtime_today_source": row.get("compressor_runtime_today_source"),
+                "compressor_starts_today_source": row.get("compressor_starts_today_source"),
+                "compressor_power_diagnostic": row.get("compressor_power_diagnostic"),
             })
         return {
             "status": data.get("status"),
@@ -1338,6 +1415,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "cycle_raw_state_count": hp.get("cycle_raw_state_count"),
                 "cycle_transition_count": hp.get("cycle_transition_count"),
                 "cycle_today_transitions": hp.get("cycle_today_transitions"),
+                # Compressor power-history authority used by Heat Pump Day Status.
+                # These compact derived fields are intentionally exposed here because
+                # that page consumes the dedicated Heat Pump Intelligence sensor, not
+                # the generic Device Analytics payload. Raw Recorder rows remain backend-only.
+                "compressor_runtime_today_minutes": hp.get("compressor_runtime_today_minutes"),
+                "compressor_runtime_today_source": hp.get("compressor_runtime_today_source"),
+                "compressor_starts_today_source": hp.get("compressor_starts_today_source"),
+                "compressor_power_diagnostic": hp.get("compressor_power_diagnostic"),
                 "cycle_starts_today": hp.get("cycle_starts_today"),
                 "cycle_stops_today": hp.get("cycle_stops_today"),
                 "cycle_completed_today": hp.get("cycle_completed_today"),
@@ -1812,7 +1897,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "AI Energy Advisor", "ai_energy_advisor", "mdi:account-tie-voice", lambda c: c.ai_advisor.summary().get("headline"), _advisor_attributes),
         SimpleSensor(coordinator, core, "Conversational Zeus Assistant", "conversational_assistant", "mdi:message-processing-outline", lambda c: c.conversational_assistant.summary().get("status"), lambda c: c.conversational_assistant.summary()),
         PredictiveBatterySensor(coordinator, core, "Predictive Battery Optimization", "predictive_battery", "mdi:battery-clock-outline", lambda c: c.predictive_battery.summary().get("strategy"), lambda c: c.predictive_battery.summary()),
-        IntelligenceEngineSensor(coordinator, core, "Intelligence Engine", "intelligence_engine", "mdi:brain", lambda c: c.intelligence.summary().get("status"), lambda c: c.intelligence.summary()),
+        IntelligenceEngineSensor(coordinator, core, "Intelligence Engine", "intelligence_engine", "mdi:brain", lambda c: c.intelligence.summary().get("status"), _intelligence_engine_attributes),
         SimpleSensor(coordinator, core, "Notification Engine", "notification_engine", "mdi:bell-outline", lambda c: c.notifications.summary().get("status"), lambda c: c.notifications.summary()),
         SimpleSensor(coordinator, core, "Control Audit Trail", "control_audit_trail", "mdi:clipboard-text-clock-outline", lambda c: c.control_audit.summary().get("status"), lambda c: c.control_audit.summary()),
         SimpleSensor(coordinator, core, "Dashboard API", "dashboard_api", "mdi:api", lambda c: c.dashboard_api.summary().get("status"), lambda c: c.dashboard_api.recorder_summary()),
