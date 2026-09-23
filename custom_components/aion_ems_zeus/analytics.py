@@ -5426,40 +5426,70 @@ class DeviceAnalyticsEngine:
             # the day erase the active regime: Recorder stores state changes, so the
             # distribution of recorded power values is the stable evidence for the
             # two operating clusters, while elapsed time is used only for runtime.
+            # Separate standby from compressor operation in log-power space.
+            # Linear two-cluster k-means can split a modulating compressor into
+            # "normal" and "high" power and incorrectly treat normal ~400 W
+            # operation as OFF. log1p keeps the low standby regime distinct while
+            # remaining fully self-calibrated to this entity.
+            import math
             row_values=sorted(value for _,value in rows)
-            low=float(row_values[0]); high=float(row_values[-1])
+            log_values=[math.log1p(value) for value in row_values]
+            low=float(log_values[0]); high=float(log_values[-1])
             if high <= low:
                 dbg.update({"status":"rejected","reason":"Compressor power history contains only one observed level."})
                 continue
             c0, c1 = low, high
-            for _ in range(24):
+            for _ in range(32):
                 g0=[]; g1=[]
-                for value in row_values:
+                for value in log_values:
                     (g0 if abs(value-c0) <= abs(value-c1) else g1).append(value)
                 if not g0 or not g1:
                     break
                 n0=sum(g0)/len(g0); n1=sum(g1)/len(g1)
-                if abs(n0-c0) < 0.01 and abs(n1-c1) < 0.01:
+                if abs(n0-c0) < 0.0001 and abs(n1-c1) < 0.0001:
                     c0, c1 = n0, n1
                     break
                 c0, c1 = n0, n1
-            standby, active = sorted((float(c0), float(c1)))
+            standby_log, active_log = sorted((float(c0), float(c1)))
+            standby=max(0.0, math.expm1(standby_log))
+            active=max(0.0, math.expm1(active_log))
             if active <= standby:
                 dbg.update({"status":"rejected","reason":"Compressor power history did not produce two distinct operating regimes."})
                 continue
-            # Midpoint between the two self-observed cluster centres.  This is fully
-            # data-derived: no manufacturer-specific or fixed watt threshold.
-            threshold=(standby+active)/2.0
-            dbg.update({"standby_cluster_w":round(standby,1),"active_cluster_w":round(active,1),"total_weight_seconds":round(total_weight,1),"classifier":"two_cluster_recorded_power"})
-            states=[]
+            threshold=max(0.0, math.expm1((standby_log+active_log)/2.0))
+            dbg.update({"standby_cluster_w":round(standby,1),"active_cluster_w":round(active,1),"total_weight_seconds":round(total_weight,1),"classifier":"two_cluster_log_power"})
+
+            # Build raw state segments first, then suppress only short opposite-state
+            # glitches. The persistence window is derived from the Recorder cadence
+            # (two median update intervals), not from a manufacturer watt threshold.
+            raw_states=[]
             for stamp,value in rows:
                 state="on" if value >= threshold else "off"
-                # Keep the FIRST timestamp of a continuous state. Replacing it with
-                # every later Recorder sample would move the start forward and
-                # systematically under-count runtime.
-                if states and states[-1][1] == state:
+                if raw_states and raw_states[-1][1] == state:
                     continue
-                states.append((stamp,state,value))
+                raw_states.append((stamp,state,value))
+            deltas=sorted((rows[i+1][0]-rows[i][0]).total_seconds() for i in range(len(rows)-1) if rows[i+1][0] > rows[i][0])
+            median_delta=deltas[len(deltas)//2] if deltas else 30.0
+            persistence=max(5.0, min(180.0, median_delta*2.0))
+            states=list(raw_states)
+            changed=True
+            while changed and len(states) >= 3:
+                changed=False
+                cleaned=[states[0]]
+                i=1
+                while i < len(states)-1:
+                    prev=cleaned[-1]; cur=states[i]; nxt=states[i+1]
+                    duration=(nxt[0]-cur[0]).total_seconds()
+                    if prev[1] == nxt[1] and cur[1] != prev[1] and duration < persistence:
+                        # Momentary 0 W / telemetry dip inside one continuous run.
+                        changed=True
+                        i += 2
+                        continue
+                    cleaned.append(cur); i += 1
+                if i == len(states)-1:
+                    cleaned.append(states[-1])
+                states=cleaned
+            dbg["transition_persistence_seconds"]=round(persistence,1)
             # Runtime integrates the state carried by each Recorder sample. A
             # run already active at midnight contributes runtime today but not a start today.
             runtime_s=0.0
