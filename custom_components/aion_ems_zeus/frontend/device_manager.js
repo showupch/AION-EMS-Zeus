@@ -904,6 +904,17 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     // state updates in memory but do not rebuild the entire page underneath the
     // user. The explicit Refresh data action applies the latest state on demand.
     if(this._page==='statistics_hub')return;
+    // v16.0.196: Only the genuinely live energy surfaces may rebuild their
+    // complete DOM in response to Home Assistant state pushes. Most Zeus
+    // pages are reading/analysis surfaces; rebuilding the full custom element
+    // for every periodic sensor publication causes a visible flash on some
+    // browser/compositor combinations (reported on macOS Safari/Chrome and
+    // also observable on Windows). They still receive the latest hass object
+    // immediately and render fresh data on navigation, user actions and their
+    // explicit async loaders. This keeps live energy animation responsive
+    // without periodically destroying/recreating normal page DOM.
+    const realtimePages=new Set(['flow','topology','kiosk','command_center','live']);
+    if(!realtimePages.has(this._page))return;
     const ids=this.pageEntityIds();const sig=this.stateSignature(hass,ids);const previous=this._lastSignatureByPage.get(this._page);
     if(sig===previous)return;this._lastSignatureByPage.set(this._page,sig);this.queueRender(['flow','topology','kiosk','command_center'].includes(this._page)?180:900);
   }
@@ -1679,7 +1690,6 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     ['heat_pump_statistics','Heat Pump','mdi:heat-pump-outline','Review electrical input, thermal output, COP, runtime and Heat Pump operating statistics.'],
     ['dhw_statistics','DHW','mdi:water-boiler','Review domestic hot-water energy, temperature and source statistics when evidence is available.']]);}
   intelligenceHubPage(){return this.sectionNavigationHub('ZEUS INTELLIGENCE','Intelligence center','Choose the Zeus intelligence view you want to explore.',[
-    ['intelligence_center','Intelligence Center','mdi:brain','Open the main cross-domain intelligence view and current Zeus insights.'],
     ['anomaly_detection','Anomalies','mdi:alert-decagram-outline','Review measured deviations and unusual behaviour detected from learned system evidence.'],
     ['control_audit','Control Audit','mdi:clipboard-text-clock-outline','See the persistent explanation and history of supervised Zeus control actions.'],
     ['device_intelligence','Device Intelligence','mdi:dna','Review device health, trends, diagnostics, recovery tracking and Energy DNA.'],
@@ -1689,7 +1699,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     ['weather_setup','Weather Setup','mdi:weather-cloudy-cog','Configure the Home Assistant weather source used by Zeus.']]);}
   systemHubPage(){return this.sectionNavigationHub('SYSTEM','System center','Choose the system, health or learning view you need.',[
     ['knowledge','Knowledge','mdi:book-open-variant','Review Zeus system knowledge and the evidence available to the platform.'],
-    ['health','Health','mdi:heart-pulse','Check current system health, readiness and important operational status.'],
+    ['health','Zeus Status','mdi:heart-pulse','Check current system health, readiness and important operational status.'],
     ['system_health','System Health','mdi:shield-check-outline','Open detailed system-health and diagnostic evidence.'],
     ['device_energy_attribution','Device Energy Attribution','mdi:chart-sankey-variant','See how Zeus attributes measured registered-device energy across local generation, battery and grid.'],
     ['planning_learning','Planning Learning','mdi:school-outline','Review what Zeus has learned for planning and future energy decisions.'],
@@ -7930,7 +7940,8 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       .zi-clean .zi-confidence{text-align:center;min-width:112px}.zi-clean .zi-confidence b{display:block;font-size:30px}.zi-clean .zi-confidence small{color:var(--muted)}
       .zi-clean .zi-action{padding:18px 20px;border:1px solid rgba(72,168,255,.25);background:linear-gradient(145deg,rgba(72,168,255,.10),var(--surface));border-radius:17px}
       .zi-clean .zi-action span{font-size:10px;letter-spacing:.11em;color:var(--accent2);font-weight:900}.zi-clean .zi-action h3{font-size:19px;margin:6px 0}.zi-clean .zi-action p{margin:0;color:var(--muted);line-height:1.45}
-      .zi-clean .zi-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}
+      .zi-clean .zi-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px;align-items:stretch}
+      .zi-clean .zi-kpis>.zi-card,.zi-clean .zi-kpis>.panel+.panel{margin-top:0;height:100%;box-sizing:border-box}
       .zi-clean .zi-card{padding:14px 15px}.zi-clean .zi-card b{display:block;font-size:19px;margin:5px 0 2px}.zi-clean .zi-card small{color:var(--muted);font-size:10px}
       .zi-clean .zi-two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
       .zi-clean .zi-mini-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
