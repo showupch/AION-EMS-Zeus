@@ -916,7 +916,15 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const realtimePages=new Set(['flow','topology','kiosk','command_center','live']);
     if(!realtimePages.has(this._page))return;
     const ids=this.pageEntityIds();const sig=this.stateSignature(hass,ids);const previous=this._lastSignatureByPage.get(this._page);
-    if(sig===previous)return;this._lastSignatureByPage.set(this._page,sig);this.queueRender(['flow','topology','kiosk','command_center'].includes(this._page)?180:900);
+    if(sig===previous)return;this._lastSignatureByPage.set(this._page,sig);
+    // v16.0.199: Day Status > Live receives frequent value changes. Rebuilding
+    // the complete page DOM for each change can visibly flash/repaint on some
+    // macOS compositors even though the data itself is correct. Patch only the
+    // live value nodes in place; navigation and explicit renders still build
+    // the full page normally. Other real-time surfaces retain the v16.0.196
+    // refresh behaviour unchanged.
+    if(this._page==='live'){this.patchLivePowerDom();return;}
+    this.queueRender(180);
   }
   connectedCallback(){document.addEventListener('visibilitychange',this._onVisibilityChange,{passive:true});window.addEventListener('keydown',this._onZeusPageKeydown);}
   disconnectedCallback(){document.removeEventListener('visibilitychange',this._onVisibilityChange);window.removeEventListener('keydown',this._onZeusPageKeydown);this._deaRequestSeq++;this._deaLoading=false;clearTimeout(this._timer);clearTimeout(this._contentScrollTimer);cancelAnimationFrame(this._flowAnimationFrame);clearInterval(this._flowAnimationTimer);this._flowVisibilityObserver?.disconnect();this._flowVisibilityObserver=null;this._flowAnimationFrame=0;this._flowAnimationTimer=0;this._renderQueued=false;this._renderDueAt=0;}
@@ -1732,6 +1740,41 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const tableRows=rows.length?rows.map(r=>`<tr><td><b>${this.esc(r.name||r.id)}</b><small>${this.esc(r.quality||'Evidence unavailable')}</small></td><td>${this.kwh(r.energy_kwh)}</td><td>${this.kwh((Number(r.solar_kwh)||0)+(Number(r.wind_kwh)||0)+(Number(r.generator_kwh)||0))}</td><td>${this.kwh(r.battery_kwh)}</td><td>${this.kwh(r.grid_kwh)}</td><td><span class="dea-status ${String(r.reconciliation_status||'').toLowerCase()==='balanced'?'ok':''}">${this.esc(r.reconciliation_status||'Unavailable')}</span></td></tr>`).join(''):`<tr><td colspan="6" class="empty">Device attribution is unavailable for this period. Zeus will not invent missing evidence.</td></tr>`;
     const status=this._deaLoading?'Loading':this._deaError?'Unavailable':(dea.status||'Collecting');
     return `<section class="page dea-page"><style>.dea-page{max-width:1500px;margin:0 auto}.dea-card-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:18px 0;align-items:start}.dea-card-grid .panel{display:grid;gap:7px;min-width:0;height:184px;box-sizing:border-box;align-content:start;margin-top:0!important}.dea-card-grid ha-icon{color:var(--accent2);--mdc-icon-size:27px}.dea-card-grid span{color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.dea-card-grid b{font-size:24px}.dea-card-grid small{color:var(--muted)}.dea-table{overflow:auto}.dea-table table{width:100%;border-collapse:collapse}.dea-table th,.dea-table td{padding:14px 12px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}.dea-table th:first-child,.dea-table td:first-child{text-align:left}.dea-table td:first-child{display:grid;gap:4px}.dea-table td small{color:var(--muted);white-space:normal}.dea-status{padding:5px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}.dea-status.ok{color:var(--accent2);border-color:color-mix(in srgb,var(--accent2) 40%,var(--line))}.dea-note{margin-top:14px;color:var(--muted)}@media(max-width:900px){.dea-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dea-card-grid .panel{height:184px}}@media(max-width:600px){.dea-card-grid{grid-template-columns:1fr}.dea-card-grid .panel{height:auto;min-height:184px}}</style><div class="analytics-topbar"><div><span class="eyebrow">SYSTEM · DEVICE ENERGY ATTRIBUTION</span><h1>Device Energy Attribution</h1><p>Measured registered-device demand attributed across local generation, battery and grid.</p></div><div class="period-switch">${buttons}</div></div>${this._deaError?`<article class="panel empty">DEA is currently unavailable: ${this.esc(this._deaError)}</article>`:''}<div class="dea-card-grid"><article class="panel"><ha-icon icon="mdi:devices"></ha-icon><span>Attributed demand</span><b>${this.kwh(energy)}</b><small>${rows.length} registered load${rows.length===1?'':'s'}</small></article>${sourceCards}<article class="panel"><span>DEA status</span><b>${this.esc(status)}</b><small>${isEstimate?'Estimated period allocation':'Measured / Recorder-backed attribution'}</small></article><article class="panel"><span>Evidence</span><b>${measured} measured</b><small>${reconciled} reconciled · ${rows.length} attributed</small></article><article class="panel"><span>Reconciliation</span><b>${this.esc(pinfo.aggregate_reconciled?'Reconciled':'Balanced')}</b><small>${pinfo.resolution?this.esc(String(pinfo.resolution).replaceAll('_',' ')):'Canonical period evidence'}</small></article></div><article class="panel dea-table"><div class="section-title"><div><span>REGISTERED LOADS</span><h2>${this.esc(this.periodLabel(period))} attribution</h2></div><small>${isEstimate?'Estimated source mix from measured evidence':'Read-only measured attribution'}</small></div><table><thead><tr><th>Device</th><th>Energy</th><th>Local generation</th><th>Battery</th><th>Grid</th><th>Reconciliation</th></tr></thead><tbody>${tableRows}</tbody></table></article>${isEstimate?'<p class="dea-note">Total uses transparent period allocation from available measured source-share evidence. Zeus does not invent missing device energy.</p>':''}</section>`;
+  }
+
+  patchLivePowerDom(){
+    const current=this.querySelector('.live-power-page');
+    if(!current)return;
+    // Render into a detached template so calculations and formatting remain
+    // exactly identical to livePowerPage(), then copy only mutable values into
+    // the connected DOM. This avoids destroying cards, SVG/CSS and layout.
+    const template=document.createElement('template');
+    template.innerHTML=this.livePowerPage();
+    const fresh=template.content.querySelector('.live-power-page');
+    if(!fresh)return;
+    const currentCards=[...current.querySelectorAll('.live-power-card')];
+    const freshCards=[...fresh.querySelectorAll('.live-power-card')];
+    currentCards.forEach((card,index)=>{
+      const next=freshCards[index];if(!next)return;
+      card.className=next.className;
+      const gauge=card.querySelector('.live-gauge'),nextGauge=next.querySelector('.live-gauge');
+      if(gauge&&nextGauge)gauge.style.cssText=nextGauge.style.cssText;
+      const value=card.querySelector('.live-gauge-value strong'),nextValue=next.querySelector('.live-gauge-value strong');
+      const status=card.querySelector('.live-gauge-value small'),nextStatus=next.querySelector('.live-gauge-value small');
+      if(value&&nextValue&&value.textContent!==nextValue.textContent)value.textContent=nextValue.textContent;
+      if(status&&nextStatus&&status.textContent!==nextStatus.textContent)status.textContent=nextStatus.textContent;
+      const soc=card.querySelector('.live-soc'),nextSoc=next.querySelector('.live-soc');
+      if(soc&&nextSoc){
+        const label=soc.querySelector('span'),nextLabel=nextSoc.querySelector('span');
+        const bar=soc.querySelector('em'),nextBar=nextSoc.querySelector('em');
+        if(label&&nextLabel&&label.textContent!==nextLabel.textContent)label.textContent=nextLabel.textContent;
+        if(bar&&nextBar)bar.style.width=nextBar.style.width;
+      }
+    });
+    const totals=[...current.querySelectorAll('.live-total-card strong')],nextTotals=[...fresh.querySelectorAll('.live-total-card strong')];
+    totals.forEach((node,index)=>{const next=nextTotals[index];if(next&&node.textContent!==next.textContent)node.textContent=next.textContent;});
+    const clock=current.querySelector('.live-power-clock strong'),nextClock=fresh.querySelector('.live-power-clock strong');
+    if(clock&&nextClock&&clock.textContent!==nextClock.textContent)clock.textContent=nextClock.textContent;
   }
 
   livePowerPage(){
