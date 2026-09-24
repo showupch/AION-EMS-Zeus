@@ -3473,6 +3473,15 @@ class ForecastEngine:
                 }
                 for r in rows if r.get("weather_forecast_applied")
             ][:6]
+            # Calendar-day automation values. Keep these on the daily row so
+            # Home Assistant entities can expose the exact same Forecast Engine
+            # evidence without creating a second forecast path.
+            remaining_solar = (
+                energy_between(now, forecast_start + timedelta(days=1), "solar_power_w")
+                if day_offset == 0 else None
+            )
+            energy_balance = round(float(expected_solar) - float(expected_load), 2)
+
             daily_forecast.append({
                 "date": target_date.isoformat(),
                 "label": "Today" if day_offset == 0 else "Tomorrow" if day_offset == 1 else target_date.strftime("%A"),
@@ -3483,6 +3492,8 @@ class ForecastEngine:
                 "expected_consumption_kwh": round(max(expected_load, 0.0), 2),
                 "expected_grid_import_kwh": round(max(expected_import, 0.0), 2),
                 "expected_grid_export_kwh": round(max(expected_export, 0.0), 2),
+                "expected_solar_remaining_kwh": round(max(remaining_solar, 0.0), 2) if remaining_solar is not None else None,
+                "expected_energy_balance_kwh": energy_balance,
                 "battery_soc_end_percent": end_soc,
                 "peak_hour": peak.get("hour") if peak else None,
                 "peak_power_w": peak.get("solar_power_w") if peak else None,

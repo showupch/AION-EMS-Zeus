@@ -1886,12 +1886,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Learning Engine 2.0", "learning_preview", "mdi:brain", lambda c: c.learning.summary().get("status"), _learning_preview_attributes),
         SimpleSensor(coordinator, core, "Long-Term Seasonal Analysis", "seasonal_analysis", "mdi:calendar-range", lambda c: c.learning.summary().get("confidence_label"), lambda c: c.learning.summary()),
         SimpleSensor(coordinator, core, "Home Efficiency", "home_efficiency", "mdi:home-analytics", lambda c: c.home_efficiency.summary().get("score"), lambda c: c.home_efficiency.summary()),
-        SimpleSensor(coordinator, core, "Forecast Today", "forecast_today", "mdi:weather-sunny", lambda c: c.forecast.summary().get("expected_solar_next_24h_kwh"), lambda c: {"unit": "kWh", "confidence": c.forecast.summary().get("confidence"), "best_surplus_window": c.forecast.summary().get("best_surplus_window"), "daily_forecast": c.forecast.summary().get("daily_forecast", [])}),
-        SimpleSensor(coordinator, core, "Forecast Tomorrow", "forecast_tomorrow", "mdi:weather-sunset-up", lambda c: c.forecast.summary().get("expected_solar_following_24h_kwh"), lambda c: {"unit": "kWh", "confidence": c.forecast.summary().get("confidence"), "daily": (c.forecast.summary().get("daily_forecast") or [None, None])[1] if len(c.forecast.summary().get("daily_forecast") or []) > 1 else None}),
+        SimpleSensor(coordinator, core, "Forecast Next 24h", "forecast_today", "mdi:weather-sunny", lambda c: c.forecast.summary().get("expected_solar_next_24h_kwh"), lambda c: {"unit": "kWh", "horizon": "rolling_next_24h", "confidence": c.forecast.summary().get("confidence"), "best_surplus_window": c.forecast.summary().get("best_surplus_window")}),
+        SimpleSensor(coordinator, core, "Forecast Following 24h", "forecast_tomorrow", "mdi:weather-sunset-up", lambda c: c.forecast.summary().get("expected_solar_following_24h_kwh"), lambda c: {"unit": "kWh", "horizon": "rolling_following_24h", "confidence": c.forecast.summary().get("confidence")}),
         SimpleSensor(coordinator, core, "Forecast Consumption", "forecast_consumption", "mdi:home-lightning-bolt-outline", lambda c: c.forecast.summary().get("expected_consumption_next_24h_kwh"), lambda c: {"unit": "kWh", "next_24h_kwh": c.forecast.summary().get("expected_consumption_next_24h_kwh"), "following_24h_kwh": c.forecast.summary().get("expected_consumption_following_24h_kwh"), "confidence": c.forecast.summary().get("confidence"), "recorder_safe": True}),
         SimpleSensor(coordinator, core, "Forecast Battery", "forecast_battery", "mdi:battery-clock-outline", lambda c: c.forecast.summary().get("projected_battery_soc_24h_percent"), lambda c: {"unit": "%", "soc_24h_percent": c.forecast.summary().get("projected_battery_soc_24h_percent"), "soc_48h_percent": c.forecast.summary().get("projected_battery_soc_48h_percent"), "confidence": c.forecast.summary().get("confidence"), "limitations": c.forecast.summary().get("limitations"), "recorder_safe": True}),
         SimpleSensor(coordinator, core, "Forecast Grid", "forecast_grid", "mdi:transmission-tower", lambda c: c.forecast.summary().get("expected_grid_import_next_24h_kwh"), lambda c: {"unit": "kWh", "import_next_24h_kwh": c.forecast.summary().get("expected_grid_import_next_24h_kwh"), "export_next_24h_kwh": c.forecast.summary().get("expected_grid_export_next_24h_kwh"), "import_following_24h_kwh": c.forecast.summary().get("expected_grid_import_following_24h_kwh"), "export_following_24h_kwh": c.forecast.summary().get("expected_grid_export_following_24h_kwh"), "confidence": c.forecast.summary().get("confidence"), "recorder_safe": True}),
-        SimpleSensor(coordinator, core, "Forecast Confidence", "forecast_confidence", "mdi:gauge", lambda c: c.forecast.summary().get("confidence"), lambda c: {"unit": "%", "label": c.forecast.summary().get("confidence_label"), "factors": c.forecast.summary().get("confidence_factors", {}), "method": c.forecast.summary().get("method"), "recorder_safe": True}),
+        ForecastMetricSensor(coordinator, core, "Forecast Confidence", "forecast_confidence", "mdi:gauge", lambda c: c.forecast.summary().get("confidence"), unit="%", state_class=SensorStateClass.MEASUREMENT, attrs_fn=lambda c: {"label": c.forecast.summary().get("confidence_label"), "quality": c.forecast.summary().get("forecast_quality", {}), "method": c.forecast.summary().get("method")}),
+        ForecastMetricSensor(coordinator, core, "Expected Solar Today", "forecast_solar_today", "mdi:solar-power", lambda c: _forecast_day(c, 0).get("expected_solar_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL, attrs_fn=lambda c: {"date": _forecast_day(c, 0).get("date"), "evidence_method": _forecast_day(c, 0).get("evidence_method")}),
+        ForecastMetricSensor(coordinator, core, "Expected Solar Remaining Today", "forecast_solar_remaining_today", "mdi:solar-power-variant", lambda c: _forecast_day(c, 0).get("expected_solar_remaining_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL),
+        ForecastMetricSensor(coordinator, core, "Expected Solar Tomorrow", "forecast_solar_tomorrow", "mdi:weather-sunset-up", lambda c: _forecast_day(c, 1).get("expected_solar_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL, attrs_fn=lambda c: {"date": _forecast_day(c, 1).get("date"), "evidence_method": _forecast_day(c, 1).get("evidence_method")}),
+        ForecastMetricSensor(coordinator, core, "Expected Consumption Today", "forecast_consumption_today", "mdi:home-lightning-bolt-outline", lambda c: _forecast_day(c, 0).get("expected_consumption_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL),
+        ForecastMetricSensor(coordinator, core, "Expected Consumption Tomorrow", "forecast_consumption_tomorrow", "mdi:home-lightning-bolt-outline", lambda c: _forecast_day(c, 1).get("expected_consumption_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL),
+        ForecastMetricSensor(coordinator, core, "Expected Grid Import Today", "forecast_grid_import_today", "mdi:transmission-tower-import", lambda c: _forecast_day(c, 0).get("expected_grid_import_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL),
+        ForecastMetricSensor(coordinator, core, "Expected Grid Import Tomorrow", "forecast_grid_import_tomorrow", "mdi:transmission-tower-import", lambda c: _forecast_day(c, 1).get("expected_grid_import_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL),
+        ForecastMetricSensor(coordinator, core, "Expected Grid Export Today", "forecast_grid_export_today", "mdi:transmission-tower-export", lambda c: _forecast_day(c, 0).get("expected_grid_export_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL),
+        ForecastMetricSensor(coordinator, core, "Expected Grid Export Tomorrow", "forecast_grid_export_tomorrow", "mdi:transmission-tower-export", lambda c: _forecast_day(c, 1).get("expected_grid_export_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL),
+        ForecastMetricSensor(coordinator, core, "Expected Surplus Deficit Today", "forecast_surplus_deficit_today", "mdi:scale-balance", lambda c: _forecast_day(c, 0).get("expected_energy_balance_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL, attrs_fn=lambda c: {"meaning": "positive=solar surplus vs consumption; negative=solar deficit vs consumption"}),
+        ForecastMetricSensor(coordinator, core, "Expected Surplus Deficit Tomorrow", "forecast_surplus_deficit_tomorrow", "mdi:scale-balance", lambda c: _forecast_day(c, 1).get("expected_energy_balance_kwh"), unit="kWh", device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL, attrs_fn=lambda c: {"meaning": "positive=solar surplus vs consumption; negative=solar deficit vs consumption"}),
+        ForecastMetricSensor(coordinator, core, "Expected Battery SoC End Today", "forecast_battery_soc_end_today", "mdi:battery-clock-outline", lambda c: _forecast_day(c, 0).get("battery_soc_end_percent"), unit="%", device_class=SensorDeviceClass.BATTERY, state_class=SensorStateClass.MEASUREMENT),
+        ForecastMetricSensor(coordinator, core, "Expected Battery SoC End Tomorrow", "forecast_battery_soc_end_tomorrow", "mdi:battery-clock-outline", lambda c: _forecast_day(c, 1).get("battery_soc_end_percent"), unit="%", device_class=SensorDeviceClass.BATTERY, state_class=SensorStateClass.MEASUREMENT),
+        ForecastMetricSensor(coordinator, core, "Best Surplus Window Start", "forecast_best_surplus_window_start", "mdi:clock-start", lambda c: _forecast_timestamp(c, "start"), device_class=SensorDeviceClass.TIMESTAMP),
+        ForecastMetricSensor(coordinator, core, "Best Surplus Window End", "forecast_best_surplus_window_end", "mdi:clock-end", lambda c: _forecast_timestamp(c, "end"), device_class=SensorDeviceClass.TIMESTAMP),
         SimpleSensor(coordinator, core, "Next Best Energy Window", "next_best_window", "mdi:clock-star-four-points", lambda c: (c.forecast.summary().get("best_surplus_window") or {}).get("label") or "Calculating", lambda c: {"window": c.forecast.summary().get("best_surplus_window"), "recommendations": (c.forecast.summary().get("recommendations") or [])[:3], "safety": c.forecast.summary().get("safety"), "recorder_safe": True}),
         SimpleSensor(coordinator, core, "Optimization Score", "optimization_score", "mdi:gauge", lambda c: c.home_efficiency.summary().get("score"), lambda c: c.home_efficiency.summary()),
         SimpleSensor(coordinator, core, "AI Energy Advisor", "ai_energy_advisor", "mdi:account-tie-voice", lambda c: c.ai_advisor.summary().get("headline"), _advisor_attributes),
@@ -1962,6 +1977,48 @@ class SimpleSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs = self.attrs_fn(self.core) or {}
         return _apply_recorder_guard(self, attrs)
+
+
+class ForecastMetricSensor(CoordinatorEntity, SensorEntity):
+    """Recorder-visible HA-native metric backed by the Zeus Forecast Engine."""
+
+    def __init__(self, coordinator, core, name, key, icon, value_fn, *, unit=None, device_class=None, state_class=None, attrs_fn=None) -> None:
+        super().__init__(coordinator)
+        self.core = core
+        self._attr_has_entity_name = True
+        self._attr_name = name
+        self._attr_unique_id = f"{DOMAIN}_{key}"
+        self._attr_icon = icon
+        self.entity_id = f"sensor.aion_ems_zeus_{key}"
+        self.value_fn = value_fn
+        self.attrs_fn = attrs_fn
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = device_class
+        self._attr_state_class = state_class
+
+    @property
+    def native_value(self):
+        return self.value_fn(self.core)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self.attrs_fn(self.core) if self.attrs_fn else {}
+
+
+def _forecast_day(core, index: int) -> dict[str, Any]:
+    days = core.forecast.summary().get("daily_forecast") or []
+    return days[index] if len(days) > index and isinstance(days[index], dict) else {}
+
+
+def _forecast_timestamp(core, key: str):
+    value = (core.forecast.summary().get("best_surplus_window") or {}).get(key)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 class RecorderStateOnlySimpleSensor(SimpleSensor):
