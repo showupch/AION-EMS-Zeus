@@ -913,6 +913,11 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     // immediately and render fresh data on navigation, user actions and their
     // explicit async loaders. This keeps live energy animation responsive
     // without periodically destroying/recreating normal page DOM.
+    // v16.0.200: Battery Statistics has live SOC / charge / discharge values,
+    // but it is an analysis page and must never rebuild the full DOM for those
+    // frequent state pushes. Keep the existing page mounted and patch only its
+    // live battery hero values, matching the proven Day Status > Live strategy.
+    if(this._page==='battery_statistics'){this.patchBatteryStatisticsDom();return;}
     const realtimePages=new Set(['flow','topology','kiosk','command_center','live']);
     if(!realtimePages.has(this._page))return;
     const ids=this.pageEntityIds();const sig=this.stateSignature(hass,ids);const previous=this._lastSignatureByPage.get(this._page);
@@ -1775,6 +1780,30 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     totals.forEach((node,index)=>{const next=nextTotals[index];if(next&&node.textContent!==next.textContent)node.textContent=next.textContent;});
     const clock=current.querySelector('.live-power-clock strong'),nextClock=fresh.querySelector('.live-power-clock strong');
     if(clock&&nextClock&&clock.textContent!==nextClock.textContent)clock.textContent=nextClock.textContent;
+  }
+
+  patchBatteryStatisticsDom(){
+    const current=this.querySelector('.battery-analytics-page');
+    if(!current)return;
+    const template=document.createElement('template');
+    template.innerHTML=this.batteryStatisticsPage();
+    const fresh=template.content.querySelector('.battery-analytics-page');
+    if(!fresh)return;
+    const hero=current.querySelector('.battery-live-hero'),nextHero=fresh.querySelector('.battery-live-hero');
+    if(!hero||!nextHero)return;
+    const copyText=(selector)=>{const node=hero.querySelector(selector),next=nextHero.querySelector(selector);if(node&&next&&node.textContent!==next.textContent)node.textContent=next.textContent;};
+    copyText('.battery-state-line h2');
+    copyText('.battery-hero-copy p');
+    copyText('.battery-health-pill');
+    const stateDot=hero.querySelector('.battery-state-line i'),nextDot=nextHero.querySelector('.battery-state-line i');
+    if(stateDot&&nextDot&&stateDot.className!==nextDot.className)stateDot.className=nextDot.className;
+    const ring=hero.querySelector('.battery-soc-ring'),nextRing=nextHero.querySelector('.battery-soc-ring');
+    if(ring&&nextRing)ring.style.cssText=nextRing.style.cssText;
+    copyText('.battery-soc-ring strong');
+    const values=[...hero.querySelectorAll('.battery-live-values b')],nextValues=[...nextHero.querySelectorAll('.battery-live-values b')];
+    values.forEach((node,index)=>{const next=nextValues[index];if(next&&node.textContent!==next.textContent)node.textContent=next.textContent;});
+    const insights=current.querySelectorAll('.battery-insight-grid>div b'),nextInsights=fresh.querySelectorAll('.battery-insight-grid>div b');
+    if(insights[0]&&nextInsights[0]&&insights[0].textContent!==nextInsights[0].textContent)insights[0].textContent=nextInsights[0].textContent;
   }
 
   livePowerPage(){

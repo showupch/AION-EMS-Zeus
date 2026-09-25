@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from homeassistant.core import Event, HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_call_later,
     async_track_state_change_event,
@@ -118,6 +118,7 @@ class UpdateEngine:
             if hasattr(result, "__await__"):
                 await result
 
+    @callback
     def _handle_state_changed(self, event: Event) -> None:
         entity_id = event.data.get("entity_id")
         if not entity_id or entity_id not in self._tracked_entities:
