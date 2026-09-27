@@ -3180,7 +3180,7 @@ class ForecastEngine:
         battery_profile = home_settings.get("battery_profile") if isinstance(home_settings.get("battery_profile"), dict) else {}
         battery_capacity_kwh = self._number(battery_profile.get("capacity_kwh") or battery_profile.get("usable_capacity_kwh") or home_settings.get("battery_capacity_kwh"), 10.0)
         battery_capacity_kwh = max(1.0, battery_capacity_kwh)
-        reserve_percent = max(0.0, min(90.0, self._number(battery_profile.get("minimum_soc_percent"), 15.0)))
+        reserve_percent = max(0.0, min(90.0, self._number(battery_profile.get("minimum_soc_percent"), 20.0)))
         max_charge_power_w = max(100.0, self._number(battery_profile.get("max_charge_power_w"), 5000.0))
         max_discharge_power_w = max(100.0, self._number(battery_profile.get("max_discharge_power_w"), 5000.0))
         round_trip_efficiency = max(0.5, min(1.0, self._number(battery_profile.get("round_trip_efficiency"), 0.92)))

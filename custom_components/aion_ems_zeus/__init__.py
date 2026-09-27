@@ -333,6 +333,47 @@ async def _websocket_heat_pump_day_history(hass, connection, msg) -> None:
 
 
 
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/battery_day_history"})
+@websocket_api.async_response
+async def _websocket_battery_day_history(hass, connection, msg) -> None:
+    """Return today's Recorder-backed Battery SOC and power history."""
+    from datetime import timedelta
+    from homeassistant.components.recorder import get_instance, history
+    from homeassistant.components.recorder.util import session_scope
+    from homeassistant.util import dt as dt_util
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        connection.send_error(msg["id"], "not_ready", "AION EMS is not ready"); return
+    summary = core.energy_mapping.summary(); mappings = summary.get("mappings", {}) or {}; options = summary.get("mapping_options", {}) or {}
+    ids_by_key = {"soc": str(mappings.get("battery_soc") or "").strip(), "power": str(mappings.get("battery_power") or "").strip(), "charge": str(mappings.get("battery_charge_power") or "").strip(), "discharge": str(mappings.get("battery_discharge_power") or "").strip()}
+    ids = list(dict.fromkeys(v for v in ids_by_key.values() if v))
+    if not ids:
+        connection.send_result(msg["id"], {"series": [], "mappings": ids_by_key, "options": options, "status": "No canonical Battery mapping"}); return
+    now = dt_util.now(); start = dt_util.as_utc(dt_util.start_of_local_day(now)); end = dt_util.as_utc(now + timedelta(minutes=1))
+    def query():
+        with session_scope(hass=hass, read_only=True) as session:
+            return history.get_significant_states_with_session(hass, session, start, end, ids, None, True, False, False, True)
+    try: raw = await get_instance(hass).async_add_executor_job(query)
+    except Exception as err:
+        connection.send_error(msg["id"], "recorder_query_failed", str(err)); return
+    rows = []
+    for key, eid in ids_by_key.items():
+        if not eid: continue
+        current = hass.states.get(eid); current_unit = current.attributes.get("unit_of_measurement") if current else None
+        for st in list((raw or {}).get(eid, []) or []):
+            stamp = getattr(st, "last_changed", None) or getattr(st, "last_updated", None)
+            if stamp is None: continue
+            try: value = float(st.state)
+            except (TypeError, ValueError): continue
+            unit = st.attributes.get("unit_of_measurement") or current_unit
+            if key != "soc":
+                if str(unit or "").lower() == "kw": value *= 1000.0
+                elif str(unit or "").lower() == "mw": value *= 1000000.0
+            rows.append({"key": key, "entity_id": eid, "at": dt_util.as_utc(stamp).isoformat(), "value": value, "unit": unit})
+    rows.sort(key=lambda x: x["at"])
+    connection.send_result(msg["id"], {"series": rows, "mappings": ids_by_key, "options": options, "source": "Home Assistant Recorder", "date": dt_util.as_local(start).date().isoformat()})
+
+
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/solar_day_history"})
 @websocket_api.async_response
 async def _websocket_solar_day_history(hass, connection, msg) -> None:
@@ -477,6 +518,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, _websocket_heat_pump_day_history)
         websocket_api.async_register_command(hass, _websocket_solar_day_history)
         websocket_api.async_register_command(hass, _websocket_grid_day_history)
+        websocket_api.async_register_command(hass, _websocket_battery_day_history)
         hass.data[_WEBSOCKET_REGISTERED] = True
     await _async_register_frontend(hass, core.version)
     core.event_bus.publish(
