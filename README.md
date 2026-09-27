@@ -2,21 +2,23 @@
 
 ## Energy Management & Intelligence for Home Assistant
 
-**AION EMS Zeus** is an open-source Energy Management System (EMS) for Home Assistant.
+**AION EMS Zeus** is an open-source **Energy Management System for Home Assistant** built to unify monitoring, analysis, forecasting and energy optimization across a complete home energy system.
 
-Zeus brings **Solar, Grid, House, Battery, EV charging, Heat Pump, DHW/ELWA and flexible loads** together as one connected energy system.
+Zeus brings **Solar, Grid, House, Battery, EV charging, Heat Pump, DHW/ELWA and flexible loads** together as one connected energy system instead of treating them as isolated devices.
 
-It uses real Home Assistant entities and Recorder history to provide live energy flow, daily and historical analytics, device energy attribution, forecasting, finance, battery intelligence and supervised Smart Control.
+It works directly with real Home Assistant entities and Recorder history to understand where energy comes from, where it goes, how devices behave over time, how efficiently energy is being used, and where optimization opportunities exist.
+
+**Observe → Learn → Predict → Recommend → Verify → Improve**
 
 Zeus is built around a simple principle:
 
 > **If Zeus doesn't know it, Zeus shouldn't invent it.**
 
-Missing evidence remains unavailable rather than being presented as measured fact.
+Zeus therefore prioritizes measured, mapped and Recorder-backed evidence. When reliable data is missing, the result remains **Unavailable** instead of being presented as a guessed or synthetic value.
 
-### ⚡ Current Release — v16.0.90
+### ⚡ Current Release — v16.0.203
 
-v16.0.90 includes the new **Day Status** system with dedicated views for **Live, Heatpump, Solar, Grid and Finance**, Recorder-backed daily analysis, improved Finance intelligence and additional protection for ELWA solar-surplus control during battery discharge.
+v16.0.203 improves Recorder graph compatibility for **Day Status → Heat Pump → Today Power** and **Statistics → Grid Flow → Today**, while preserving the confirmed frontend flicker fixes, Forecast sensors, Heat Pump accounting, Grid accounting totals and the locked go-e MQTT solar-surplus behaviour.
 
 ### What Zeus does
 
@@ -24,18 +26,25 @@ v16.0.90 includes the new **Day Status** system with dedicated views for **Live,
 - ☀️ Solar, Grid and Battery intelligence
 - ♨️ Heat Pump & DHW analysis
 - 🚗 EV and flexible-load monitoring
-- 📊 Recorder-backed historical analytics
+- 📊 Recorder-backed daily and historical analytics
+- 🧩 Device Energy Attribution
 - 💰 Energy costs, savings and export value
-- 🔮 Forecasting and planning
+- 🔮 Calendar-day forecasting and planning
+- 🔋 Battery planning and intelligence
 - 🧠 Device and system intelligence
 - ⚙️ Supervised Smart Control
 - 🖥️ Dedicated Command Center / Kiosk
 - 🤖 Zeus Briefing & Copilot
 - 🩺 Diagnostics and evidence confidence
+- 🏠 Home Assistant-native forecast sensors with long-term statistics support
 
 **AION** stands for **Adaptive Intelligence & Optimization Network**.
 
+AION EMS Zeus is developed and tested against **real Home Assistant energy systems**, where actual measurements, Recorder history and community feedback help uncover edge cases that simulations often miss.
+
 AION EMS Zeus is an independent community project released under the **MIT License**. It is not an official Home Assistant or Nabu Casa product.
+
+Feedback, testing and reproducible examples are very welcome.
 
 ---
 
