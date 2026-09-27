@@ -269,9 +269,21 @@ async def _websocket_heat_pump_day_history(hass, connection, msg) -> None:
     if not devices:
         connection.send_result(msg["id"], {"series": []}); return
     d = devices[0]
-    keys = {"power":"power_entity","thermal":"thermal_power_entity","cop":"cop_entity",
-            "flow":"supply_temperature_entity","dhw":"dhw_temperature_entity",
-            "outside":"outdoor_temperature_entity","compressor":"compressor_state_entity"}
+    # Day Status must support both the simple whole-unit Heat Pump mapping and
+    # the explicit circuit mappings used by installations that expose Heating /
+    # DHW / Cooling independently.  Keep every source identified; the frontend
+    # aggregates circuit power only when the whole-unit source is not mapped.
+    keys = {
+        "power":"power_entity", "thermal":"thermal_power_entity", "cop":"cop_entity",
+        "flow":"supply_temperature_entity", "dhw":"dhw_temperature_entity",
+        "outside":"outdoor_temperature_entity", "compressor":"compressor_state_entity",
+        "heating_electrical":"heating_electrical_power_entity",
+        "heating_thermal":"heating_thermal_power_entity",
+        "dhw_electrical":"dhw_electrical_power_entity",
+        "dhw_thermal":"dhw_thermal_power_entity",
+        "cooling_electrical":"cooling_electrical_power_entity",
+        "cooling_thermal":"cooling_thermal_power_entity",
+    }
     maps = {k:str(d.get(v) or "").strip() for k,v in keys.items()}
     maps = {k:v for k,v in maps.items() if v}
     now=dt_util.now(); start=dt_util.as_utc(dt_util.start_of_local_day(now)); end=dt_util.as_utc(now+timedelta(minutes=1))
@@ -279,7 +291,7 @@ async def _websocket_heat_pump_day_history(hass, connection, msg) -> None:
     def query():
         if not ids: return {}
         with session_scope(hass=hass, read_only=True) as session:
-            return history.get_significant_states_with_session(hass,session,start,end,ids,None,True,False,False,True)
+            return history.get_significant_states_with_session(hass,session,start,end,ids,None,False,False,False,True)
     try: raw=await get_instance(hass).async_add_executor_job(query)
     except Exception as err:
         connection.send_error(msg["id"],"recorder_query_failed",str(err)); return
@@ -383,7 +395,8 @@ async def _websocket_grid_day_history(hass, connection, msg) -> None:
     grid_id=str(mappings.get("grid_power") or "").strip()
     import_id=str(mappings.get("grid_import_power") or "").strip()
     export_id=str(mappings.get("grid_export_power") or "").strip()
-    ids=list(dict.fromkeys(x for x in (grid_id,import_id,export_id) if x))
+    house_id=str(mappings.get("house_power") or mappings.get("home_power") or "").strip()
+    ids=list(dict.fromkeys(x for x in (grid_id,import_id,export_id,house_id) if x))
     if not ids:
         connection.send_result(msg["id"],{"series":[],"mappings":{},"status":"No canonical Grid power mapping"}); return
 
@@ -408,7 +421,7 @@ async def _websocket_grid_day_history(hass, connection, msg) -> None:
             elif str(unit or "").lower()=="mw":value*=1000000
             rows.append({"entity_id":eid,"at":dt_util.as_utc(stamp).isoformat(),"value_w":value})
     rows.sort(key=lambda x:x["at"])
-    connection.send_result(msg["id"],{"series":rows,"mappings":{"grid":grid_id,"import":import_id,"export":export_id},"options":options,"source":"Home Assistant Recorder"})
+    connection.send_result(msg["id"],{"series":rows,"mappings":{"grid":grid_id,"import":import_id,"export":export_id,"house":house_id},"options":options,"source":"Home Assistant Recorder"})
 
 
 async def _async_register_frontend(hass: HomeAssistant, version: str) -> None:

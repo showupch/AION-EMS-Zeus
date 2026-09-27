@@ -1165,10 +1165,12 @@ class SmartControlSafetyEngine:
     async def _async_evaluate_goe_mqtt(self, registry_devices: dict[str, dict[str, Any]], force_keepalive: bool = False) -> None:
         """Publish go-e PV-surplus evidence only for explicitly permissioned devices.
 
-        This intentionally mirrors the user's proven Home Assistant automation:
-        pGrid is the rounded live grid-power sensor and pAkku is the optional
-        battery-power sensor (or 0 when not configured). No current/amp command
-        is calculated by Zeus; go-e's own IDS logic remains responsible for the
+        Publish export-only surplus evidence for go-e IDS.
+
+        pGrid is always the positive grid-export/surplus magnitude in watts.
+        Grid import therefore publishes pGrid=0. Battery power is deliberately
+        excluded from this feed and pAkku is always 0. No current/amp command is
+        calculated by Zeus; go-e's own IDS logic remains responsible for the
         charging decision.
         """
         now = datetime.now(timezone.utc)
@@ -1189,11 +1191,13 @@ class SmartControlSafetyEngine:
             )
             topic = str(device.get("control_mqtt_topic") or "").strip()
             grid_entity = str(device.get("control_grid_power_entity") or "").strip()
-            battery_entity = str(device.get("control_battery_power_entity") or "").strip()
-            # go-e IDS expects fresh grid evidence continuously. Keep the
-            # proven Home Assistant behaviour: publish the real signed pGrid
-            # value every 5 seconds. Zeus does not add a surplus threshold or
-            # slower idle cadence; go-e IDS owns the charging start/stop logic.
+            # go-e IDS is driven by Zeus' canonical grid-balance sensor, not by a
+            # device-local/raw meter sign convention. This keeps the MQTT feed
+            # identical to the Grid direction shown by Zeus Live.
+            canonical_grid_entity = "sensor.aion_ems_zeus_ev_surplus_grid_signal"
+            # go-e IDS expects fresh surplus evidence continuously. Zeus publishes
+            # only the positive grid-export magnitude every 5 seconds. Import is
+            # clamped to zero and battery power never contributes to this feed.
             interval_s = 5
 
             # Fail closed: profile may be fully configured while still Observe Only.
@@ -1209,25 +1213,20 @@ class SmartControlSafetyEngine:
                     last_write_dt=None,
                 )
                 continue
-            if not actuator_ok or not topic or not grid_entity:
-                runtime.update(active=False, status="INTERLOCKED", last_error="Incomplete go-e MQTT target or grid-power mapping")
+            if not actuator_ok or not topic:
+                runtime.update(active=False, status="INTERLOCKED", last_error="Incomplete go-e MQTT target")
                 continue
 
-            pgrid = self._state_number(grid_entity)
+            # Read the canonical Zeus grid balance. Its contract is explicit:
+            # positive = import, negative = export. Do not use the raw device
+            # mapping here because vendor meters may expose the opposite sign and
+            # can therefore turn import into a false surplus.
+            pgrid = self._state_number(canonical_grid_entity)
             if pgrid is None:
-                runtime.update(active=False, status="INTERLOCKED", last_error=f"Grid Power unavailable: {grid_entity}")
+                runtime.update(active=False, status="INTERLOCKED", last_error=f"Canonical Grid Power unavailable: {canonical_grid_entity}")
                 continue
-            if battery_entity:
-                pakku = self._state_number(battery_entity)
-                if pakku is None:
-                    runtime.update(active=False, status="INTERLOCKED", last_error=f"Battery Power unavailable: {battery_entity}")
-                    continue
-            else:
-                pakku = 0.0
-
-            # go-e pGrid convention: negative = grid export, positive = import.
-            # Always publish the real signed grid value at the fixed 5 s cadence.
             export_w = max(0.0, -float(pgrid))
+            pakku = 0.0
             cadence_s = interval_s
 
             last_dt = runtime.get("last_write_dt")
@@ -1239,7 +1238,7 @@ class SmartControlSafetyEngine:
             runtime.update(
                 goe_export_w=round(export_w, 1),
                 goe_publish_cadence_s=cadence_s,
-                goe_feed_mode="fixed_5s_live_grid",
+                goe_feed_mode="fixed_5s_export_only",
             )
             if not due:
                 runtime.update(active=True, status="ACTIVE", last_error=None)
@@ -1248,8 +1247,8 @@ class SmartControlSafetyEngine:
             await self._async_publish_goe_ids(
                 device_id,
                 topic,
-                int(round(pgrid)),
-                int(round(pakku)),
+                int(round(export_w)),
+                0,
                 "PUBLISH_5S",
             )
 
