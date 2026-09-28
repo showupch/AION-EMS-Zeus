@@ -2566,7 +2566,7 @@ class EVSurplusGridSignalSensor(CoordinatorEntity, SensorEntity):
             "sign_convention": "positive_import_negative_export",
             "go_e_pgrid_compatible": True,
             "recommended_payload_field": "pGrid",
-            "go_e_publisher_policy": "Export-only surplus is sent as positive pGrid; import sends 0.",
+            "go_e_publisher_policy": "Canonical signed grid balance: import positive pGrid, export/surplus negative pGrid.",
             "battery_payload_policy": "Zeus go-e publisher always sends pAkku = 0; battery does not contribute.",
             "source": "aion_ems_energy_flow_canonical_grid_balance",
             "safety": "Read-only derived signal. No charger current, phase or relay control.",

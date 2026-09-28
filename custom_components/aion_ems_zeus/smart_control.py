@@ -1165,13 +1165,13 @@ class SmartControlSafetyEngine:
     async def _async_evaluate_goe_mqtt(self, registry_devices: dict[str, dict[str, Any]], force_keepalive: bool = False) -> None:
         """Publish go-e PV-surplus evidence only for explicitly permissioned devices.
 
-        Publish export-only surplus evidence for go-e IDS.
+        Publish the canonical signed grid balance for go-e IDS.
 
-        pGrid is always the positive grid-export/surplus magnitude in watts.
-        Grid import therefore publishes pGrid=0. Battery power is deliberately
-        excluded from this feed and pAkku is always 0. No current/amp command is
-        calculated by Zeus; go-e's own IDS logic remains responsible for the
-        charging decision.
+        pGrid follows the canonical Zeus/go-e convention: positive watts mean
+        grid import and negative watts mean grid export/surplus. Battery power is
+        deliberately excluded from this feed and pAkku is always 0. No current/amp
+        command is calculated by Zeus; go-e's own IDS logic remains responsible
+        for the charging decision.
         """
         now = datetime.now(timezone.utc)
         for device_id, device in registry_devices.items():
@@ -1195,9 +1195,9 @@ class SmartControlSafetyEngine:
             # device-local/raw meter sign convention. This keeps the MQTT feed
             # identical to the Grid direction shown by Zeus Live.
             canonical_grid_entity = "sensor.aion_ems_zeus_ev_surplus_grid_signal"
-            # go-e IDS expects fresh surplus evidence continuously. Zeus publishes
-            # only the positive grid-export magnitude every 5 seconds. Import is
-            # clamped to zero and battery power never contributes to this feed.
+            # go-e IDS expects fresh grid evidence continuously. Zeus publishes
+            # the canonical signed grid balance every 5 seconds: import positive,
+            # export/surplus negative. Battery power never contributes to this feed.
             interval_s = 5
 
             # Fail closed: profile may be fully configured while still Observe Only.
@@ -1225,7 +1225,7 @@ class SmartControlSafetyEngine:
             if pgrid is None:
                 runtime.update(active=False, status="INTERLOCKED", last_error=f"Canonical Grid Power unavailable: {canonical_grid_entity}")
                 continue
-            export_w = max(0.0, -float(pgrid))
+            signed_grid_w = float(pgrid)
             pakku = 0.0
             cadence_s = interval_s
 
@@ -1236,9 +1236,9 @@ class SmartControlSafetyEngine:
                 or (now - last_dt).total_seconds() >= cadence_s
             )
             runtime.update(
-                goe_export_w=round(export_w, 1),
+                goe_signed_grid_w=round(signed_grid_w, 1),
                 goe_publish_cadence_s=cadence_s,
-                goe_feed_mode="fixed_5s_export_only",
+                goe_feed_mode="fixed_5s_signed_grid",
             )
             if not due:
                 runtime.update(active=True, status="ACTIVE", last_error=None)
@@ -1247,7 +1247,7 @@ class SmartControlSafetyEngine:
             await self._async_publish_goe_ids(
                 device_id,
                 topic,
-                int(round(export_w)),
+                int(round(signed_grid_w)),
                 0,
                 "PUBLISH_5S",
             )
