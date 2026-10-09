@@ -40,6 +40,7 @@ class LifecycleManager:
         (f"{DOMAIN}.settings", 1),
         (f"{DOMAIN}.cache", 1),
         (f"{DOMAIN}.knowledge", 1),
+        (f"{DOMAIN}.prediction_accuracy", 1),
         (f"{DOMAIN}.backups", 1),
     )
 

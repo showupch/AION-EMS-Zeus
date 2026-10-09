@@ -326,6 +326,7 @@ class AionCore:
         await self._async_startup_step("observation_knowledge_load", self.observation_knowledge.async_load)
         await self._async_startup_step("intelligence_memory_load", self.intelligence_memory.async_load)
         await self._async_startup_step("decision_engine_load", self.decision_engine.async_load)
+        await self._async_startup_step("prediction_accuracy_load", self.prediction_accuracy.async_load)
         await self._async_startup_step("opportunity_learning_load", self.opportunity_learning.async_load)
         await self._async_startup_step("planning_engine_load", self.planning_engine.async_load)
         await self._async_startup_step("ha_mount_discovery", self.integration_hub.async_discover_ha_mounts)

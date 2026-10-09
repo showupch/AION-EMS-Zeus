@@ -3485,6 +3485,27 @@ class ForecastEngine:
             daily_forecast.append({
                 "date": target_date.isoformat(),
                 "label": "Today" if day_offset == 0 else "Tomorrow" if day_offset == 1 else target_date.strftime("%A"),
+                # Diagnostic trace of the *actual* model stages, not a second forecast.
+                # None means that Zeus has no explicit evidence for that field.
+                "solar_forecast_diagnostics": {
+                    "historical_baseline_kwh": energy(rows, "baseline_solar_power_w"),
+                    "weather_adjusted_raw_kwh": energy(rows, "raw_solar_power_w"),
+                    "calibrated_hourly_kwh": energy(rows, "solar_power_w"),
+                    "final_calendar_day_kwh": round(max(expected_solar, 0.0), 2),
+                    "weather_applied": bool(weather_applied),
+                    "weather_granularity": forecast_granularity if weather_applied else None,
+                    "weather_hour_count": sum(1 for r in rows if r.get("weather_forecast_applied")),
+                    "average_weather_factor": round(sum(float(r.get("weather_factor") or 1.0) for r in rows if r.get("weather_forecast_applied")) / max(1, sum(1 for r in rows if r.get("weather_forecast_applied"))), 3) if weather_applied else None,
+                    "calibration_source": "contextual" if any(r.get("calibration_source") == "weather_context" for r in rows) else "global",
+                    "global_calibration_percent": adaptive.get("applied_correction_percent"),
+                    "hourly_sampled_count": sum(1 for r in rows if r.get("baseline_solar_power_w") is not None),
+                    "historical_completed_day_median_kwh": measured_solar_baseline,
+                    "evidence_method": evidence_method,
+                    "pv_array_capacity_kwp": None,
+                    "inverter_ac_limit_kw": None,
+                    "panel_geometry": None,
+                    "note": "Capacity, inverter and array geometry are not used by this historical hourly solar model; unavailable here, not inferred from entity names.",
+                },
                 "raw_expected_solar_kwh": energy(rows, "raw_solar_power_w"),
                 "expected_solar_kwh": round(max(expected_solar, 0.0), 2),
                 "adaptive_correction_percent": adaptive.get("applied_correction_percent", 0.0),

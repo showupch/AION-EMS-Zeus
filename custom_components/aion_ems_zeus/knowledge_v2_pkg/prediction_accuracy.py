@@ -11,6 +11,8 @@ from typing import Any
 
 from ..flow_access import flow_soc, flow_w
 
+from homeassistant.helpers.storage import Store
+
 
 class PredictionAccuracyEngine:
     """Track real forward forecast-versus-measured comparisons.
@@ -22,10 +24,13 @@ class PredictionAccuracyEngine:
 
     LEAD_HOURS = (1, 3, 6, 12, 24)
     METRICS = ("solar", "home", "grid_import", "grid_export", "battery_soc")
+    STORAGE_VERSION = 1
+    STORAGE_KEY = "aion_ems_zeus.prediction_accuracy"
 
     def __init__(self, event_bus: Any, core: Any) -> None:
         self.event_bus = event_bus
         self.core = core
+        self.store = Store(core.hass, self.STORAGE_VERSION, self.STORAGE_KEY)
         self._samples: deque[dict[str, Any]] = deque(maxlen=168)
         self._pending: deque[dict[str, Any]] = deque(maxlen=96)
         self._queued_markers: deque[str] = deque(maxlen=384)
@@ -45,6 +50,40 @@ class PredictionAccuracyEngine:
             "mode": "measurement_only",
             "control_permission": False,
         }
+
+
+    async def async_load(self) -> None:
+        """Restore genuine pre-target forecast evidence across HA restarts."""
+        stored = await self.store.async_load()
+        if not isinstance(stored, dict):
+            return
+        for attr, key, limit in (
+            ("_samples", "samples", 168),
+            ("_pending", "pending", 96),
+            ("_daily_pending", "daily_pending", 45),
+            ("_daily_samples", "daily_samples", 120),
+        ):
+            values = stored.get(key)
+            if isinstance(values, list):
+                setattr(self, attr, deque((x for x in values if isinstance(x, dict)), maxlen=limit))
+        markers = stored.get("queued_markers")
+        if isinstance(markers, list):
+            self._queued_markers = deque((str(x) for x in markers if x), maxlen=384)
+
+    def _schedule_save(self) -> None:
+        """Persist captured forecasts/outcomes without blocking the refresh path."""
+        payload = {
+            "samples": list(self._samples),
+            "pending": list(self._pending),
+            "queued_markers": list(self._queued_markers),
+            "daily_pending": list(self._daily_pending),
+            "daily_samples": list(self._daily_samples),
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            self.core.hass.async_create_task(self.store.async_save(payload))
+        except Exception:
+            pass
 
     @staticmethod
     def _num(value: Any) -> float | None:
@@ -91,6 +130,7 @@ class PredictionAccuracyEngine:
         rows = self._timeline()
         if not rows:
             return
+        changed = False
         for lead in self.LEAD_HOURS:
             desired = now + timedelta(hours=lead)
             nearest: tuple[float, dict[str, Any], datetime] | None = None
@@ -123,9 +163,13 @@ class PredictionAccuracyEngine:
                 "predicted": predicted,
             })
             self._queued_markers.append(marker)
+            changed = True
+        if changed:
+            self._schedule_save()
 
     def _mature_forecasts(self, now: datetime, actual: dict[str, float | None]) -> None:
         keep: deque[dict[str, Any]] = deque(maxlen=self._pending.maxlen)
+        changed = False
         for pending in self._pending:
             target = self._parse_time(pending.get("target_time"))
             if target is None:
@@ -155,7 +199,12 @@ class PredictionAccuracyEngine:
                 "predicted": predicted,
                 "actual": dict(actual),
             })
+            changed = True
+        if len(keep) != len(self._pending):
+            changed = True
         self._pending = keep
+        if changed:
+            self._schedule_save()
 
     def _canonical_daily_rows(self) -> list[dict[str, Any]]:
         analytics = getattr(self.core, "analytics", None)
@@ -191,10 +240,12 @@ class PredictionAccuracyEngine:
         }
         if any(v is not None for v in predicted.values()):
             self._daily_pending.append({"created_at": now.isoformat(), "target_date": tomorrow, "predicted": predicted, "evidence_method": row.get("evidence_method")})
+            self._schedule_save()
 
     def _mature_daily_forecasts(self, now: datetime) -> None:
         rows = {str(r.get("date")): r for r in self._canonical_daily_rows()}
         keep: deque[dict[str, Any]] = deque(maxlen=self._daily_pending.maxlen)
+        matured = False
         today = now.astimezone().date().isoformat()
         for pending in self._daily_pending:
             target = str(pending.get("target_date") or "")
@@ -219,7 +270,12 @@ class PredictionAccuracyEngine:
                 metrics[key]=round(max(0.0,100.0-abs(act-pred)/scale*100.0),1)
                 errors[key]=round(act-pred,3)
             self._daily_samples.append({"target_date":target,"forecast_created_at":pending.get("created_at"),"predicted":predicted,"actual":actual,"metrics":metrics,"errors":errors,"evidence_method":pending.get("evidence_method")})
+            matured = True
+        if len(keep) != len(self._daily_pending):
+            matured = True
         self._daily_pending=keep
+        if matured:
+            self._schedule_save()
 
     def _daily_accuracy_summary(self) -> dict[str, Any]:
         result={}
