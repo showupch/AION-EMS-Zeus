@@ -3473,6 +3473,14 @@ class ForecastEngine:
                 }
                 for r in rows if r.get("weather_forecast_applied")
             ][:6]
+            # Read-only daylight evidence; does not modify forecast values.
+            daylight_rows = [r for r in rows if float(r.get("baseline_solar_power_w") or 0) > 0]
+            matched_daylight = [r for r in daylight_rows if r.get("weather_forecast_applied")]
+            baseline_daylight_wh = sum(max(0.0, float(r.get("baseline_solar_power_w") or 0)) for r in daylight_rows)
+            matched_baseline_wh = sum(max(0.0, float(r.get("baseline_solar_power_w") or 0)) for r in matched_daylight)
+            baseline_trace = energy(rows, "baseline_solar_power_w")
+            raw_trace = energy(rows, "raw_solar_power_w")
+            calibrated_trace = energy(rows, "solar_power_w")
             # Calendar-day automation values. Keep these on the daily row so
             # Home Assistant entities can expose the exact same Forecast Engine
             # evidence without creating a second forecast path.
@@ -3500,6 +3508,15 @@ class ForecastEngine:
                     "global_calibration_percent": adaptive.get("applied_correction_percent"),
                     "hourly_sampled_count": sum(1 for r in rows if r.get("baseline_solar_power_w") is not None),
                     "historical_completed_day_median_kwh": measured_solar_baseline,
+                    "daylight_baseline_hours": len(daylight_rows),
+                    "daylight_weather_matched_hours": len(matched_daylight),
+                    "daylight_energy_coverage_percent": round(100 * matched_baseline_wh / baseline_daylight_wh, 1) if baseline_daylight_wh > 0 else None,
+                    "unmatched_daylight_hours": [str(r.get("hour")) for r in daylight_rows if not r.get("weather_forecast_applied")],
+                    "effective_weather_energy_ratio": round(raw_trace / baseline_trace, 3) if baseline_trace > 0 else None,
+                    "weather_energy_change_kwh": round(raw_trace - baseline_trace, 2),
+                    "hourly_calibration_change_kwh": round(calibrated_trace - raw_trace, 2),
+                    "calibration_scope": "Hourly model; not necessarily the same horizon as day-ahead comparisons",
+
                     "evidence_method": evidence_method,
                     "pv_array_capacity_kwp": None,
                     "inverter_ac_limit_kw": None,
