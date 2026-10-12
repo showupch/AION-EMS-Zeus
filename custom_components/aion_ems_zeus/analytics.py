@@ -1,6 +1,7 @@
 """Historical analytics, forecasting, optimization and scheduling engines."""
 
 from __future__ import annotations
+import math
 
 from .device_roles import is_consuming_load
 from .period_authority import canonical_period_windows, date_in_period
@@ -3538,13 +3539,16 @@ class ForecastEngine:
                 base_w = shadow_row.get("baseline_solar_power_w")
                 if base_w is None:
                     continue
-                original_factor = float(shadow_row.get("weather_factor") or 1.0)
+                try:
+                    original_factor = float(shadow_row.get("weather_factor") or 1.0)
+                except (TypeError, ValueError, OverflowError):
+                    original_factor = 1.0
                 if shadow_row.get("weather_forecast_applied"):
                     cloud_pct = shadow_row.get("cloud_coverage")
                     try:
                         cloud_pct = max(0.0, min(100.0, float(cloud_pct)))
                     except (TypeError, ValueError):
-                        cloud_pct = self.weather.cloud_for_condition(shadow_row.get("condition")) if self.weather else None
+                        cloud_pct = None  # No numeric cloud cover: reuse existing weather factor safely
                     if cloud_pct is None:
                         # No reliable cloud percentage: keep the original factor.
                         shadow_unknown += 1
@@ -3555,9 +3559,15 @@ class ForecastEngine:
                 else:
                     candidates = (1.0, 1.0)
                 # Same hourly calibration multiplier as the live forecast.
-                calibration_multiplier = float(shadow_row.get("shadow_calibration_multiplier") or 1.0)
-                shadow_totals["moderate"] += max(0.0, float(base_w) * candidates[0] * calibration_multiplier) / 1000.0
-                shadow_totals["lighter"] += max(0.0, float(base_w) * candidates[1] * calibration_multiplier) / 1000.0
+                try:
+                    calibration_multiplier = float(shadow_row.get("shadow_calibration_multiplier") or 1.0)
+                    baseline_value = max(0.0, float(base_w))
+                    if not (math.isfinite(baseline_value) and math.isfinite(calibration_multiplier)):
+                        continue
+                    shadow_totals["moderate"] += baseline_value * candidates[0] * calibration_multiplier / 1000.0
+                    shadow_totals["lighter"] += baseline_value * candidates[1] * calibration_multiplier / 1000.0
+                except (TypeError, ValueError, OverflowError):
+                    continue
             shadow_diagnostics = {
                 "target_date": target_date.isoformat(),
                 "current_production_forecast_kwh": round(max(expected_solar, 0.0), 2),
