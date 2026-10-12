@@ -3315,6 +3315,7 @@ class ForecastEngine:
                 "adaptive_correction_percent": round(contextual_correction_percent, 1),
                 "calibration_context": calibration_context,
                 "calibration_source": calibration_source,
+                "shadow_calibration_multiplier": learned_factor,
                 "global_adaptive_correction_percent": adaptive.get("applied_correction_percent", 0.0),
                 "house_power_w": house,
                 "surplus_power_w": round(max(net_w, 0), 1) if adjusted_solar is not None and house is not None else None,
@@ -3473,14 +3474,100 @@ class ForecastEngine:
                 }
                 for r in rows if r.get("weather_forecast_applied")
             ][:6]
-            # Read-only daylight evidence; does not modify forecast values.
-            daylight_rows = [r for r in rows if float(r.get("baseline_solar_power_w") or 0) > 0]
+            # Read-only astronomical daylight evidence. Use Home Assistant's
+            # configured installation location and the target calendar date.
+            # The actual forecast pipeline and its hourly baselines are unchanged.
+            sunrise_utc = sunset_utc = None
+            daylight_failure = None
+            daylight_parsed_hours = 0
+            try:
+                # Compute from the configured installation coordinates directly.
+                # Some installations do not provide sunrise/sunset via the
+                # optional Home Assistant sun helper. Astral is an HA dependency.
+                from astral import Observer
+                from astral.sun import sun as astral_sun
+                # ForecastEngine does not own `hass`; its attached AionCore
+                # provides the canonical Home Assistant instance.
+                hass = self.core.hass if self.core is not None else None
+                if hass is None:
+                    raise ValueError("forecast_core_unavailable")
+                observer = Observer(
+                    latitude=float(hass.config.latitude),
+                    longitude=float(hass.config.longitude),
+                    elevation=float(hass.config.elevation or 0),
+                )
+                events = astral_sun(observer, date=target_date, tzinfo=timezone.utc)
+                sunrise_utc = events.get("sunrise")
+                sunset_utc = events.get("sunset")
+            except Exception as err:
+                # Never disclose location coordinates or exception arguments.
+                daylight_failure = "astronomy:" + type(err).__name__
+                sunrise_utc = sunset_utc = None
+            daylight_rows = []
+            if sunrise_utc is not None and sunset_utc is not None and sunset_utc > sunrise_utc:
+                for r in rows:
+                    try:
+                        at = dt_util.parse_datetime(str(r.get("time") or ""))
+                        if at is None:
+                            continue
+                        at = dt_util.as_utc(at)
+                        daylight_parsed_hours += 1
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    # Include hourly buckets intersecting daylight. A boundary
+                    # bucket counts as one hour of weather coverage, not as one
+                    # full astronomical daylight hour.
+                    if at < sunset_utc and at + timedelta(hours=1) > sunrise_utc:
+                        daylight_rows.append(r)
             matched_daylight = [r for r in daylight_rows if r.get("weather_forecast_applied")]
             baseline_daylight_wh = sum(max(0.0, float(r.get("baseline_solar_power_w") or 0)) for r in daylight_rows)
             matched_baseline_wh = sum(max(0.0, float(r.get("baseline_solar_power_w") or 0)) for r in matched_daylight)
+            daylight_available = sunrise_utc is not None and sunset_utc is not None and sunset_utc > sunrise_utc and daylight_parsed_hours > 0
+            if daylight_failure is None and not daylight_available:
+                daylight_failure = "invalid_sun_boundaries" if sunrise_utc is None or sunset_utc is None or sunset_utc <= sunrise_utc else "no_parseable_hourly_timestamps"
             baseline_trace = energy(rows, "baseline_solar_power_w")
             raw_trace = energy(rows, "raw_solar_power_w")
             calibrated_trace = energy(rows, "solar_power_w")
+            # v16.0.243: diagnostic-only counterfactual cloud models.
+            # Preserve the production weather and calibration pipeline unchanged.
+            # Candidate outputs are not used for planning, control or sensor states.
+            shadow_totals = {"moderate": 0.0, "lighter": 0.0}
+            shadow_matched = 0
+            shadow_unknown = 0
+            for shadow_row in rows:
+                base_w = shadow_row.get("baseline_solar_power_w")
+                if base_w is None:
+                    continue
+                original_factor = float(shadow_row.get("weather_factor") or 1.0)
+                if shadow_row.get("weather_forecast_applied"):
+                    cloud_pct = shadow_row.get("cloud_coverage")
+                    try:
+                        cloud_pct = max(0.0, min(100.0, float(cloud_pct)))
+                    except (TypeError, ValueError):
+                        cloud_pct = self.weather.cloud_for_condition(shadow_row.get("condition")) if self.weather else None
+                    if cloud_pct is None:
+                        # No reliable cloud percentage: keep the original factor.
+                        shadow_unknown += 1
+                        candidates = (original_factor, original_factor)
+                    else:
+                        shadow_matched += 1
+                        candidates = (max(0.08, 1.0 - cloud_pct / 150.0), max(0.08, 1.0 - cloud_pct / 200.0))
+                else:
+                    candidates = (1.0, 1.0)
+                # Same hourly calibration multiplier as the live forecast.
+                calibration_multiplier = float(shadow_row.get("shadow_calibration_multiplier") or 1.0)
+                shadow_totals["moderate"] += max(0.0, float(base_w) * candidates[0] * calibration_multiplier) / 1000.0
+                shadow_totals["lighter"] += max(0.0, float(base_w) * candidates[1] * calibration_multiplier) / 1000.0
+            shadow_diagnostics = {
+                "target_date": target_date.isoformat(),
+                "current_production_forecast_kwh": round(max(expected_solar, 0.0), 2),
+                "moderate_cloud_kwh": round(shadow_totals["moderate"], 2) if weather_applied else None,
+                "lighter_cloud_kwh": round(shadow_totals["lighter"], 2) if weather_applied else None,
+                "cloud_matched_sample_hours": shadow_matched,
+                "cloud_unknown_sample_hours": shadow_unknown,
+                "method": "read_only_hourly_counterfactual_same_calibration",
+                "note": "Experimental. No changes to production forecasts, automation or control. Compare with actual generation for this target date.",
+            }
             # Calendar-day automation values. Keep these on the daily row so
             # Home Assistant entities can expose the exact same Forecast Engine
             # evidence without creating a second forecast path.
@@ -3496,6 +3583,7 @@ class ForecastEngine:
                 # Diagnostic trace of the *actual* model stages, not a second forecast.
                 # None means that Zeus has no explicit evidence for that field.
                 "solar_forecast_diagnostics": {
+                    "shadow_cloud_comparison": shadow_diagnostics,
                     "historical_baseline_kwh": energy(rows, "baseline_solar_power_w"),
                     "weather_adjusted_raw_kwh": energy(rows, "raw_solar_power_w"),
                     "calibrated_hourly_kwh": energy(rows, "solar_power_w"),
@@ -3508,10 +3596,15 @@ class ForecastEngine:
                     "global_calibration_percent": adaptive.get("applied_correction_percent"),
                     "hourly_sampled_count": sum(1 for r in rows if r.get("baseline_solar_power_w") is not None),
                     "historical_completed_day_median_kwh": measured_solar_baseline,
-                    "daylight_baseline_hours": len(daylight_rows),
-                    "daylight_weather_matched_hours": len(matched_daylight),
-                    "daylight_energy_coverage_percent": round(100 * matched_baseline_wh / baseline_daylight_wh, 1) if baseline_daylight_wh > 0 else None,
-                    "unmatched_daylight_hours": [str(r.get("hour")) for r in daylight_rows if not r.get("weather_forecast_applied")],
+                    "daylight_baseline_hours": len(daylight_rows) if daylight_available else None,
+                    "daylight_weather_matched_hours": len(matched_daylight) if daylight_available else None,
+                    "daylight_energy_coverage_percent": round(100 * matched_baseline_wh / baseline_daylight_wh, 1) if daylight_available and baseline_daylight_wh > 0 else None,
+                    "unmatched_daylight_hours": [str(r.get("hour")) for r in daylight_rows if not r.get("weather_forecast_applied")] if daylight_available else None,
+                    "daylight_method": "astronomical_sunrise_sunset_hourly_overlap" if daylight_available else "unavailable_sunrise_sunset",
+                    "daylight_failure_stage": daylight_failure,
+                    "daylight_parsed_hour_count": daylight_parsed_hours,
+                    "daylight_target_date": target_date.isoformat(),
+                    "daylight_astronomy_available": sunrise_utc is not None and sunset_utc is not None,
                     "effective_weather_energy_ratio": round(raw_trace / baseline_trace, 3) if baseline_trace > 0 else None,
                     "weather_energy_change_kwh": round(raw_trace - baseline_trace, 2),
                     "hourly_calibration_change_kwh": round(calibrated_trace - raw_trace, 2),
