@@ -3532,51 +3532,72 @@ class ForecastEngine:
             # v16.0.243: diagnostic-only counterfactual cloud models.
             # Preserve the production weather and calibration pipeline unchanged.
             # Candidate outputs are not used for planning, control or sensor states.
+            # Read-only counterfactuals use exactly the weather factor that the
+            # production hourly forecast consumed. This is critical for weather
+            # providers that expose condition factors but no cloud percentage.
             shadow_totals = {"moderate": 0.0, "lighter": 0.0}
-            shadow_matched = 0
-            shadow_unknown = 0
+            shadow_numeric = shadow_condition = shadow_factor = 0
+            shadow_unmatched = shadow_invalid = 0
+            shadow_weather_hours = 0
             for shadow_row in rows:
-                base_w = shadow_row.get("baseline_solar_power_w")
-                if base_w is None:
-                    continue
                 try:
-                    original_factor = float(shadow_row.get("weather_factor") or 1.0)
-                except (TypeError, ValueError, OverflowError):
-                    original_factor = 1.0
-                if shadow_row.get("weather_forecast_applied"):
-                    cloud_pct = shadow_row.get("cloud_coverage")
-                    try:
-                        cloud_pct = max(0.0, min(100.0, float(cloud_pct)))
-                    except (TypeError, ValueError):
-                        cloud_pct = None  # No numeric cloud cover: reuse existing weather factor safely
-                    if cloud_pct is None:
-                        # No reliable cloud percentage: keep the original factor.
-                        shadow_unknown += 1
-                        candidates = (original_factor, original_factor)
-                    else:
-                        shadow_matched += 1
-                        candidates = (max(0.08, 1.0 - cloud_pct / 150.0), max(0.08, 1.0 - cloud_pct / 200.0))
-                else:
-                    candidates = (1.0, 1.0)
-                # Same hourly calibration multiplier as the live forecast.
-                try:
-                    calibration_multiplier = float(shadow_row.get("shadow_calibration_multiplier") or 1.0)
-                    baseline_value = max(0.0, float(base_w))
-                    if not (math.isfinite(baseline_value) and math.isfinite(calibration_multiplier)):
+                    baseline = shadow_row.get("baseline_solar_power_w")
+                    if baseline is None:
                         continue
-                    shadow_totals["moderate"] += baseline_value * candidates[0] * calibration_multiplier / 1000.0
-                    shadow_totals["lighter"] += baseline_value * candidates[1] * calibration_multiplier / 1000.0
-                except (TypeError, ValueError, OverflowError):
+                    baseline = max(0.0, float(baseline))
+                    multiplier = float(shadow_row.get("shadow_calibration_multiplier") or 1.0)
+                    original_factor = float(shadow_row.get("weather_factor"))
+                    if not all(math.isfinite(x) for x in (baseline, multiplier, original_factor)):
+                        shadow_invalid += 1
+                        continue
+                    original_factor = max(0.0, min(1.0, original_factor))
+                except (ValueError, TypeError, OverflowError):
+                    shadow_invalid += 1
                     continue
+                if shadow_row.get("weather_forecast_applied"):
+                    shadow_weather_hours += 1
+                    raw_cloud = shadow_row.get("cloud_coverage")
+                    try:
+                        cloud = float(raw_cloud) if raw_cloud is not None else None
+                        if cloud is not None and not math.isfinite(cloud):
+                            cloud = None
+                    except (ValueError, TypeError, OverflowError):
+                        cloud = None
+                    if cloud is not None:
+                        cloud = max(0.0, min(100.0, cloud))
+                        shadow_numeric += 1
+                        factors = (max(0.08, 1.0 - cloud / 150.0),
+                                   max(0.08, 1.0 - cloud / 200.0))
+                    else:
+                        # Re-scale the *actual applied attenuation*, not an
+                        # invented cloud-cover percentage. This also supports
+                        # HA providers that only expose weather conditions.
+                        if shadow_row.get("condition"):
+                            shadow_condition += 1
+                        else:
+                            shadow_factor += 1
+                        loss = max(0.0, 1.0 - original_factor)
+                        factors = (max(0.08, 1.0 - loss * 115.0 / 150.0),
+                                   max(0.08, 1.0 - loss * 115.0 / 200.0))
+                else:
+                    shadow_unmatched += 1
+                    factors = (1.0, 1.0)
+                shadow_totals["moderate"] += baseline * factors[0] * multiplier / 1000.0
+                shadow_totals["lighter"] += baseline * factors[1] * multiplier / 1000.0
+            shadow_ready = bool(shadow_weather_hours) and shadow_invalid == 0
             shadow_diagnostics = {
                 "target_date": target_date.isoformat(),
                 "current_production_forecast_kwh": round(max(expected_solar, 0.0), 2),
-                "moderate_cloud_kwh": round(shadow_totals["moderate"], 2) if weather_applied else None,
-                "lighter_cloud_kwh": round(shadow_totals["lighter"], 2) if weather_applied else None,
-                "cloud_matched_sample_hours": shadow_matched,
-                "cloud_unknown_sample_hours": shadow_unknown,
-                "method": "read_only_hourly_counterfactual_same_calibration",
-                "note": "Experimental. No changes to production forecasts, automation or control. Compare with actual generation for this target date.",
+                "moderate_cloud_kwh": round(shadow_totals["moderate"], 2) if shadow_ready else None,
+                "lighter_cloud_kwh": round(shadow_totals["lighter"], 2) if shadow_ready else None,
+                "cloud_matched_sample_hours": shadow_numeric,
+                "cloud_estimated_sample_hours": shadow_condition,
+                "cloud_factor_derived_hours": shadow_factor,
+                "cloud_unknown_sample_hours": shadow_unmatched,
+                "cloud_invalid_sample_hours": shadow_invalid,
+                "cloud_comparison_status": "Available · factor-derived where needed" if shadow_ready else "Unavailable · no valid weather evidence",
+                "method": "read_only_counterfactual_from_applied_weather_factor",
+                "note": "Non-numeric weather uses applied production weather factor, not estimated cloud percentage. No production/control changes.",
             }
             # Calendar-day automation values. Keep these on the daily row so
             # Home Assistant entities can expose the exact same Forecast Engine
