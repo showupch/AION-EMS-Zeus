@@ -1864,7 +1864,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Planning Engine", "planning_engine", "mdi:calendar-clock-outline", lambda c: c.planning_engine.recorder_summary().get("status"), lambda c: c.planning_engine.recorder_summary()),
         OptimizationIntelligenceSensor(coordinator, core, "Optimization Intelligence", "optimization_intelligence", "mdi:target", lambda c: c.optimization_intelligence.summary().get("optimization_score") if c.optimization_intelligence.summary().get("optimization_score") is not None else c.optimization_intelligence.summary().get("status"), _optimization_intelligence_attributes),
         SimpleSensor(coordinator, core, "Insight Intelligence", "insight_intelligence", "mdi:lightbulb-alert-outline", lambda c: c.insight_intelligence.summary().get("briefing", {}).get("headline", c.insight_intelligence.summary().get("status")), lambda c: _insight_intelligence_attributes(c)),
-        SimpleSensor(coordinator, core, "Root Cause Intelligence", "root_cause_intelligence", "mdi:source-branch", lambda c: c.root_cause_intelligence.summary().get("severity", "Information"), lambda c: c.root_cause_intelligence.summary()),
+        RootCauseRecorderSensor(coordinator, core, "Root Cause Intelligence", "root_cause_intelligence", "mdi:source-branch", lambda c: c.root_cause_intelligence.summary().get("severity", "Information"), lambda c: c.root_cause_intelligence.summary()),
         SimpleSensor(coordinator, core, "Correlation Confidence", "correlation_confidence", "mdi:vector-link", lambda c: c.correlation_confidence.summary().get("confidence_percent", 0), lambda c: c.correlation_confidence.summary()),
         SimpleSensor(coordinator, core, "Recommendation Priority", "recommendation_priority", "mdi:format-list-numbered", lambda c: c.recommendation_priority.summary().get("top_priority", "Information"), lambda c: c.recommendation_priority.summary()),
         SimpleSensor(coordinator, core, "System Story", "system_story", "mdi:text-box-outline", lambda c: c.system_story.summary().get("action_state", "Monitoring"), lambda c: c.system_story.summary()),
@@ -2082,6 +2082,28 @@ class RecorderStateOnlySimpleSensor(SimpleSensor):
         self.async_write_ha_state()
 
 
+class RootCauseRecorderSensor(RecorderStateOnlySimpleSensor):
+    """Publish root-cause summary at most once per minute to HA Recorder.
+
+    The core root-cause engine is never throttled. The HA entity keeps the
+    full live snapshot refreshed on a bounded cadence; the existing sensor
+    value and attributes are preserved. No Recorder exclusions required.
+    """
+
+    _ZEUS_ROOT_CAUSE_MIN_PUBLISH_SECONDS = 60.0
+    _ZEUS_DIAGNOSTIC_KEEPALIVE_SECONDS = 300.0
+
+    def _handle_coordinator_update(self) -> None:
+        now = monotonic()
+        if (
+            self._zeus_diag_publish_initialized
+            and now - self._zeus_last_diag_publish_monotonic
+            < self._ZEUS_ROOT_CAUSE_MIN_PUBLISH_SECONDS
+        ):
+            return
+        super()._handle_coordinator_update()
+
+
 class AnomalyIntelligenceSensor(SimpleSensor):
     """Publish a compact cached anomaly snapshot for Home Assistant.
 
@@ -2248,7 +2270,7 @@ class EnergyFlowSensor(SimpleSensor):
     """
 
     _unrecorded_attributes = frozenset({MATCH_ALL})
-    _ZEUS_FLOW_SUMMARY_PUBLISH_SECONDS = 5.0
+    _ZEUS_FLOW_SUMMARY_PUBLISH_SECONDS = 60.0
 
     def __init__(self, coordinator, core, name, key, icon, value_fn, attrs_fn) -> None:
         super().__init__(coordinator, core, name, key, icon, value_fn, attrs_fn)
