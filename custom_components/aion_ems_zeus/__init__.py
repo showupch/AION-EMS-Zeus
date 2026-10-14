@@ -12,6 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN, ENERGY_FLOW_PANEL_URL_PATH, COMMAND_CENTER_PANEL_URL_PATH, PLATFORMS
+from .climate_schedule import ClimateScheduleManager
 from .core import AionCore
 from .services import async_setup_services, async_unload_services
 from .lifecycle import LifecycleManager
@@ -845,6 +846,30 @@ async def _async_register_frontend(hass: HomeAssistant, version: str) -> None:
     )
 
 
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/climate_schedules"})
+@websocket_api.async_response
+async def _websocket_climate_schedules(hass, connection, msg):
+    manager = hass.data.get(DOMAIN, {}).get("climate_schedule_manager")
+    connection.send_result(msg["id"], manager.schedules if manager else {})
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/save_climate_schedule", vol.Required("entity_id"): str, vol.Required("enabled"): bool, vol.Required("days"): list, vol.Required("slots"): list})
+@websocket_api.async_response
+async def _websocket_save_climate_schedule(hass, connection, msg):
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Admin access required")
+        return
+    manager = hass.data.get(DOMAIN, {}).get("climate_schedule_manager")
+    if manager is None:
+        connection.send_error(msg["id"], "not_ready", "Climate scheduler unavailable")
+        return
+    try:
+        result = await manager.async_save(msg["entity_id"], msg["enabled"], msg["days"], msg["slots"])
+    except (ValueError, TypeError, OverflowError) as exc:
+        connection.send_error(msg["id"], "invalid_schedule", str(exc))
+        return
+    connection.send_result(msg["id"], result)
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up AION EMS from a config entry."""
     core = AionCore(hass, entry)
@@ -854,8 +879,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = core
     hass.data[DOMAIN]["core"] = core
 
+    manager = hass.data[DOMAIN].get("climate_schedule_manager")
+    if manager is None:
+        manager = ClimateScheduleManager(hass)
+        hass.data[DOMAIN]["climate_schedule_manager"] = manager
+        await manager.async_start()
     await async_setup_services(hass)
     if not hass.data.get(_WEBSOCKET_REGISTERED):
+        websocket_api.async_register_command(hass, _websocket_climate_schedules)
+        websocket_api.async_register_command(hass, _websocket_save_climate_schedule)
         websocket_api.async_register_command(hass, _websocket_device_energy_attribution)
         websocket_api.async_register_command(hass, _websocket_ha_energy_import_preview)
         websocket_api.async_register_command(hass, _websocket_export_configuration)
@@ -895,6 +927,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not unload_ok:
         return False
 
+    manager = hass.data.get(DOMAIN, {}).pop("climate_schedule_manager", None)
+    if manager:
+        await manager.async_stop()
     lifecycle = LifecycleManager(hass)
     lifecycle.remove_panel()
     await async_unload_services(hass)

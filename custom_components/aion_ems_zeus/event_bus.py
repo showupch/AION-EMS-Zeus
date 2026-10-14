@@ -3,9 +3,23 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any
 
 from .const import DOMAIN
+
+# These are frequent status notifications, not historical measurements.
+# Limit their publication to the Home Assistant event bus while keeping
+# every internal update and audit callback intact.
+HIGH_VOLUME_STATUS_EVENTS = frozenset({
+    "EnergyMappingUpdated",
+    "EnergyFlowUpdated",
+    "ObservationKnowledgeUpdated",
+    "DataBusUpdated",
+    "UpdateEngineRefreshed",
+    "EnergyTopologyUpdated",
+})
+STATUS_EVENT_MIN_INTERVAL_SECONDS = 60.0
 
 
 def compact(value: Any, depth: int = 0) -> Any:
@@ -34,6 +48,8 @@ class AionEventBus:
         self.hass = hass
         self.events: list[dict[str, Any]] = []
         self.audit_sink = None
+        self._last_ha_status_event: dict[str, float] = {}
+        self._suppressed_ha_status_events: dict[str, int] = {}
 
     def publish(self, event: str, engine: str, payload: dict[str, Any] | None = None) -> None:
         record = {
@@ -50,6 +66,15 @@ class AionEventBus:
                 sink(record)
             except Exception:
                 pass
+        if event in HIGH_VOLUME_STATUS_EVENTS:
+            now = monotonic()
+            previous = self._last_ha_status_event.get(event)
+            if previous is not None and now - previous < STATUS_EVENT_MIN_INTERVAL_SECONDS:
+                self._suppressed_ha_status_events[event] = (
+                    self._suppressed_ha_status_events.get(event, 0) + 1
+                )
+                return
+            self._last_ha_status_event[event] = now
         self.hass.bus.async_fire(f"{DOMAIN}_{event}", compact(record))
 
     def recent(self, limit: int = 3) -> list[dict[str, Any]]:
