@@ -3599,6 +3599,38 @@ class ForecastEngine:
                 "method": "read_only_counterfactual_from_applied_weather_factor",
                 "note": "Non-numeric weather uses applied production weather factor, not estimated cloud percentage. No production/control changes.",
             }
+            # v16.0.256: read-only hourly forecast pipeline evidence. This is
+            # derived from the existing rows; no second forecast is calculated.
+            hourly_pipeline_audit = []
+            for audit_row in rows[:24]:
+                def audit_number(value):
+                    try:
+                        number = float(value)
+                        return round(number, 3) if math.isfinite(number) else None
+                    except (ValueError, TypeError, OverflowError):
+                        return None
+                hourly_pipeline_audit.append({
+                    "time": audit_row.get("time"),
+                    "baseline_w": audit_number(audit_row.get("baseline_solar_power_w")),
+                    "weather_factor": audit_number(audit_row.get("weather_factor")),
+                    "weather_adjusted_w": audit_number(audit_row.get("raw_solar_power_w")),
+                    "calibration_multiplier": audit_number(audit_row.get("shadow_calibration_multiplier")),
+                    "calibration_source": audit_row.get("calibration_source"),
+                    "final_w": audit_number(audit_row.get("solar_power_w")),
+                    "weather_matched": bool(audit_row.get("weather_forecast_applied")),
+                    "cloud_percent": audit_number(audit_row.get("cloud_coverage")),
+                    "sample_count": audit_row.get("sample_count"),
+                })
+            hourly_pipeline_evidence = {
+                "target_date": target_date.isoformat(),
+                "hours": hourly_pipeline_audit,
+                "source": "existing_forecast_hourly_rows",
+                "historical_power_source": "historical_hourly_recorder_power_samples",
+                "historical_entity_id": None,
+                "source_note": "The model uses historical solar power samples; the originating entity is not proven by this diagnostic. Do not infer it from daily energy mappings.",
+                "method": evidence_method,
+                "read_only": True,
+            }
             # Calendar-day automation values. Keep these on the daily row so
             # Home Assistant entities can expose the exact same Forecast Engine
             # evidence without creating a second forecast path.
@@ -3615,6 +3647,7 @@ class ForecastEngine:
                 # None means that Zeus has no explicit evidence for that field.
                 "solar_forecast_diagnostics": {
                     "shadow_cloud_comparison": shadow_diagnostics,
+                    "hourly_pipeline_audit": hourly_pipeline_evidence,
                     "historical_baseline_kwh": energy(rows, "baseline_solar_power_w"),
                     "weather_adjusted_raw_kwh": energy(rows, "raw_solar_power_w"),
                     "calibrated_hourly_kwh": energy(rows, "solar_power_w"),
@@ -6588,11 +6621,38 @@ class DeviceAnalyticsEngine:
                 if classified_live_power_w:
                     electrical_power_w = sum(classified_live_power_w)
                 thermal_power_w = None
+                thermal_power_source = "unavailable"
                 if thermal_power is not None:
                     if str(thermal_power_unit or "") == "kW":
                         thermal_power_w = thermal_power * 1000.0
                     elif str(thermal_power_unit or "") == "W":
                         thermal_power_w = thermal_power
+                    if thermal_power_w is not None:
+                        thermal_power_source = "mapped_combined_thermal_power"
+
+                # v16.0.266: a split Heating/DHW configuration is a valid
+                # alternative to the optional combined thermal-power mapping.
+                # Sum only valid measured W/kW channels, never energy counters,
+                # and never add these channels to an already mapped whole-unit
+                # thermal measurement (which would double count output).
+                if thermal_power_w is None and bool(device.get("separate_heating_dhw_measurements", False)):
+                    split_thermal_w = []
+                    split_missing = []
+                    for _key in ("heating_thermal_power_entity", "dhw_thermal_power_entity"):
+                        if not str(device.get(_key) or "").strip():
+                            continue
+                        _value = hp_number(_key)
+                        _unit = str(hp_unit(_key) or "").strip()
+                        if _value is None or _unit not in ("W", "kW"):
+                            split_missing.append(_key)
+                            continue
+                        split_thermal_w.append(float(_value) * (1000.0 if _unit == "kW" else 1.0))
+                    if split_thermal_w and not split_missing:
+                        thermal_power_w = sum(split_thermal_w)
+                        thermal_power_source = "measured_heating_plus_dhw"
+                    elif split_missing:
+                        thermal_power_source = "split_thermal_measurement_unavailable"
+
 
                 derived_live_cop = None
                 derived_live_cop_reason = "Mapped thermal power and electrical power are required."
@@ -6601,7 +6661,7 @@ class DeviceAnalyticsEngine:
                 # Treat that proven inactive state as COP 0.00 rather than
                 # "Unavailable". Unavailable remains reserved for missing or
                 # invalid measurement evidence.
-                if thermal_power_w is not None and power_entity and thermal_power_w >= 0.0:
+                if thermal_power_w is not None and thermal_power_w >= 0.0:
                     if electrical_power_w > 50.0:
                         derived_live_cop = round(thermal_power_w / electrical_power_w, 3)
                         derived_live_cop_reason = "Thermal power ÷ measured electrical power; both are live mapped measurements."
@@ -6939,6 +6999,7 @@ class DeviceAnalyticsEngine:
                     "derived_live_cop": derived_live_cop,
                     "derived_live_cop_reason": derived_live_cop_reason,
                     "thermal_power_w": round(thermal_power_w, 1) if thermal_power_w is not None else None,
+                    "thermal_power_source": thermal_power_source,
                     "electrical_power_w": round(electrical_power_w, 1),
                     "compressor_state": compressor_state,
                     "compressor_state_normalized": compressor_binary,

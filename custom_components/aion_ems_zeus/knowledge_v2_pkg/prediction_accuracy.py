@@ -5,6 +5,8 @@ engine is recommendation-only and never calls services or controls devices.
 """
 from __future__ import annotations
 
+import math
+
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -12,6 +14,7 @@ from typing import Any
 from ..flow_access import flow_soc, flow_w
 
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 
 class PredictionAccuracyEngine:
@@ -36,6 +39,14 @@ class PredictionAccuracyEngine:
         self._queued_markers: deque[str] = deque(maxlen=384)
         self._daily_pending: deque[dict[str, Any]] = deque(maxlen=45)
         self._daily_samples: deque[dict[str, Any]] = deque(maxlen=120)
+        self._forward_shadow_pending: deque[dict[str, Any]] = deque(maxlen=45)
+        self._forward_shadow_outcomes: deque[dict[str, Any]] = deque(maxlen=120)
+        self._cloud_pending: deque[dict[str, Any]] = deque(maxlen=45)
+        self._cloud_outcomes: deque[dict[str, Any]] = deque(maxlen=120)
+        self._cloud_capture_attempt: dict[str, Any] = {
+            "status": "not_attempted", "reason": "Waiting for capture window",
+            "attempted_at": None, "target_date": None,
+        }
         self._summary: dict[str, Any] = {
             "status": "Collecting",
             "sample_count": 0,
@@ -62,6 +73,10 @@ class PredictionAccuracyEngine:
             ("_pending", "pending", 96),
             ("_daily_pending", "daily_pending", 45),
             ("_daily_samples", "daily_samples", 120),
+            ("_forward_shadow_pending", "forward_shadow_pending", 45),
+            ("_forward_shadow_outcomes", "forward_shadow_outcomes", 120),
+            ("_cloud_pending", "cloud_pending", 45),
+            ("_cloud_outcomes", "cloud_outcomes", 120),
         ):
             values = stored.get(key)
             if isinstance(values, list):
@@ -78,6 +93,10 @@ class PredictionAccuracyEngine:
             "queued_markers": list(self._queued_markers),
             "daily_pending": list(self._daily_pending),
             "daily_samples": list(self._daily_samples),
+            "forward_shadow_pending": list(self._forward_shadow_pending),
+            "forward_shadow_outcomes": list(self._forward_shadow_outcomes),
+            "cloud_pending": list(self._cloud_pending),
+            "cloud_outcomes": list(self._cloud_outcomes),
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
@@ -277,6 +296,153 @@ class PredictionAccuracyEngine:
         if matured:
             self._schedule_save()
 
+    def _capture_cloud_comparison(self, now: datetime) -> None:
+        """Capture the existing synchronized forecast, with explicit diagnostics."""
+        local = dt_util.as_local(now)
+        if not (22 <= local.hour <= 23):
+            return
+        target = (local.date() + timedelta(days=1)).isoformat()
+        status = {
+            "attempted_at": now.isoformat(), "target_date": target,
+            "status": "pending", "reason": None,
+        }
+        if any(item.get("target_date") == target for item in self._cloud_pending):
+            status.update(status="already_captured", reason="Pending snapshot exists")
+            self._cloud_capture_attempt = status
+            return
+        if any(item.get("target_date") == target for item in self._cloud_outcomes):
+            status.update(status="already_matched", reason="Completed snapshot exists")
+            self._cloud_capture_attempt = status
+            return
+        try:
+            # Read the same published forecast attributes used by the Zeus
+            # frontend, rather than relying solely on the engine summary,
+            # which can lag behind the published sensor after refreshes.
+            published = self.core.hass.states.get("sensor.aion_ems_zeus_forecast")
+            published_days = (published.attributes.get("daily_forecast") or []) if published else []
+            engine_days = self.core.forecast.summary().get("daily_forecast") or []
+            candidates = [
+                ("published_forecast_sensor", published_days),
+                ("forecast_engine_summary", engine_days),
+            ]
+            valid = None
+            evidence = {}
+            for source_name, days in candidates:
+                if not isinstance(days, list):
+                    evidence[source_name] = "Daily forecast data is not a list"
+                    continue
+                # Match the Forecast page: it prefers the Tomorrow-labelled
+                # daily row, falling back to the second row. Do not silently
+                # select a different duplicate date row with empty candidates.
+                labelled = [r for r in days if isinstance(r, dict) and r.get("label") == "Tomorrow"]
+                dated = [r for r in days if isinstance(r, dict) and r.get("date") == target]
+                fallback = [days[1]] if len(days) > 1 and isinstance(days[1], dict) else []
+                rows = []
+                for row in labelled + fallback + dated:
+                    if not any(existing is row for existing in rows):
+                        rows.append(row)
+                failures = []
+                for row in rows:
+                    diag = row.get("solar_forecast_diagnostics") or {}
+                    shadow = diag.get("shadow_cloud_comparison") or {}
+                    if not shadow:
+                        failures.append(f"{row.get('label', '?')}: no cloud comparison")
+                        continue
+                    if shadow.get("target_date") != target or row.get("date") != target:
+                        failures.append(f"{row.get('label', '?')}: target date mismatch")
+                        continue
+                    forecasts = {
+                        "current": self._num(shadow.get("current_production_forecast_kwh")),
+                        "candidate_a": self._num(shadow.get("moderate_cloud_kwh")),
+                        "candidate_b": self._num(shadow.get("lighter_cloud_kwh")),
+                    }
+                    missing = [
+                        key for key, value in forecasts.items()
+                        if value is None or not math.isfinite(value) or value < 0
+                    ]
+                    if missing:
+                        failures.append(
+                            f"{row.get('label', '?')}: missing/invalid {', '.join(missing)} "
+                            f"(comparison status: {shadow.get('cloud_comparison_status', 'unknown')})"
+                        )
+                        continue
+                    valid = (source_name, shadow, forecasts)
+                    break
+                if valid is not None:
+                    break
+                evidence[source_name] = "; ".join(failures[:4]) or "No target-date row"
+            if valid is None:
+                status.update(
+                    status="waiting",
+                    reason="No complete synchronized comparison available",
+                    source_diagnostics=evidence,
+                )
+                return
+            source_name, shadow, forecasts = valid
+            status["source"] = source_name
+            self._cloud_pending.append({
+                "target_date": target, "captured_at": now.isoformat(),
+                "forecasts_kwh": forecasts,
+                "weather_evidence": shadow.get("cloud_comparison_status"),
+                "source": source_name,
+            })
+            status.update(status="captured", reason="Synchronized forecast stored")
+            self._schedule_save()
+        except (AttributeError, TypeError, ValueError) as exc:
+            status.update(status="error", reason=f"Forecast evidence read failed: {type(exc).__name__}")
+        finally:
+            self._cloud_capture_attempt = status
+
+    def capture_cloud_snapshot_tick(self) -> None:
+        """Independent lightweight capture attempt; never recalculates forecasts."""
+        now = datetime.now(timezone.utc)
+        self._mature_cloud_comparisons(now)
+        self._capture_cloud_comparison(now)
+        # Refresh the exposed summary without running the full forecasting engine.
+        if self._summary:
+            self._summary["cloud_model_accuracy"] = self._cloud_comparison_summary()
+            self._summary["updated_at"] = now.isoformat()
+
+    def _mature_cloud_comparisons(self, now: datetime) -> None:
+        today = dt_util.as_local(now).date().isoformat()
+        actual_rows = {str(r.get("date")): r for r in self._canonical_daily_rows()}
+        remaining = deque(maxlen=self._cloud_pending.maxlen)
+        changed = False
+        for snapshot in self._cloud_pending:
+            target = snapshot.get("target_date")
+            if not target or target >= today:
+                remaining.append(snapshot)
+                continue
+            row = actual_rows.get(target)
+            actual = self._num(row.get("solar_energy_kwh")) if row else None
+            if actual is None or actual < 0:
+                remaining.append(snapshot)
+                continue
+            predictions = snapshot.get("forecasts_kwh") or {}
+            errors = {k: round(v - actual, 3) for k, v in predictions.items() if isinstance(v, (int, float))}
+            self._cloud_outcomes.append({**snapshot, "actual_kwh": round(actual, 3),
+                "errors_kwh": errors, "absolute_errors_kwh": {k: abs(v) for k, v in errors.items()}})
+            changed = True
+        self._cloud_pending = remaining
+        if changed:
+            self._schedule_save()
+
+    def _cloud_comparison_summary(self) -> dict[str, Any]:
+        result = {}
+        for model in ("current", "candidate_a", "candidate_b"):
+            errors = [float(o["errors_kwh"][model]) for o in self._cloud_outcomes if model in (o.get("errors_kwh") or {})]
+            result[model] = {"matched_days": len(errors),
+                "mean_absolute_error_kwh": round(sum(map(abs, errors))/len(errors), 3) if errors else None,
+                "mean_signed_error_kwh": round(sum(errors)/len(errors), 3) if errors else None}
+        return {"models": result, "pending_count": len(self._cloud_pending),
+            "matched_count": len(self._cloud_outcomes),
+            "pending": list(self._cloud_pending)[-3:],
+            "recent_outcomes": list(self._cloud_outcomes)[-14:],
+            "status": "Read-only; no production correction",
+            "capture_window": "22:00–23:59 Home Assistant local time",
+            "actual_source": "canonical_completed_day_recorder_solar_energy",
+            "last_capture_attempt": dict(self._cloud_capture_attempt)}
+
     def _daily_accuracy_summary(self) -> dict[str, Any]:
         result={}
         for key in ("solar_kwh","home_kwh","grid_import_kwh","grid_export_kwh"):
@@ -286,6 +452,166 @@ class PredictionAccuracyEngine:
             result[key]={"accuracy_percent":round(sum(vals)/len(vals),1) if vals else None,"matched_days":len(vals),"mean_error_kwh":round(mean,3) if mean is not None else None,"mean_absolute_error_kwh":round(sum(abs(x) for x in errs)/len(errs),3) if errs else None,"bias_direction":"balanced" if mean is None or abs(mean)<0.15 else "under_forecast" if mean>0 else "over_forecast"}
         return result
 
+    def _adaptive_shadow_summary(self) -> dict[str, Any]:
+        """Read-only bias calibration from pre-day matched forecasts.
+
+        Diagnostic only. Historical solar actuals are not independently verified
+        against inverter counters; therefore the model is never control-eligible.
+        """
+        records = []
+        for row in self._daily_samples:
+            predicted = self._num((row.get("predicted") or {}).get("solar_kwh"))
+            actual = self._num((row.get("actual") or {}).get("solar_kwh"))
+            created = self._parse_time(row.get("forecast_created_at"))
+            target = row.get("target_date")
+            if predicted is None or actual is None or predicted <= 0 or actual < 0:
+                continue
+            if not created or not isinstance(target, str):
+                continue
+            try:
+                target_start = datetime.fromisoformat(target).replace(tzinfo=dt_util.DEFAULT_TIME_ZONE).astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            if created >= target_start:
+                continue
+            records.append((target, predicted, actual))
+        # One observation per completed day; avoid double-counting duplicates.
+        by_day = {day: (forecast, actual) for day, forecast, actual in records}
+        recent = [(day, *values) for day, values in sorted(by_day.items())[-14:]]
+        n = len(recent)
+        # Median actual/forecast ratio is robust against single extreme days.
+        ratios = sorted(max(0.65, min(1.35, actual / forecast)) for _, forecast, actual in recent)
+        if n >= 7:
+            mid = n // 2
+            median = ratios[mid] if n % 2 else (ratios[mid - 1] + ratios[mid]) / 2
+            # Conservative shrinkage, max +/- 20% shadow adjustment.
+            multiplier = round(max(0.8, min(1.2, 1.0 + (median - 1.0) * min(1.0, n / 14.0))), 4)
+        else:
+            multiplier = None
+        baseline_mae = round(sum(abs(forecast - actual) for _, forecast, actual in recent) / n, 3) if n else None
+        shadow_mae = round(sum(abs(forecast * multiplier - actual) for _, forecast, actual in recent) / n, 3) if multiplier is not None else None
+        return {
+            "status": "shadow_only" if multiplier is not None else "insufficient_history",
+            "matched_days": n,
+            "minimum_days": 7,
+            "bias_multiplier": multiplier,
+            "baseline_mae_kwh": baseline_mae,
+            "in_sample_shadow_mae_kwh": shadow_mae,
+            "validation": "In-sample diagnostic only; not out-of-sample proof",
+            "actual_source_verified": False,
+            "blocking_reason": "Canonical Recorder daily solar totals must be reconciled with combined inverter counters before training or activation",
+            "production_applied": False,
+            "control_permission": False,
+        }
+
+    def _capture_forward_shadow(self, now: datetime) -> None:
+        """Freeze a multiplier before the target day; never use target-day actuals."""
+        today = dt_util.as_local(now).date().isoformat()
+        existing = {x.get("target_date") for x in self._forward_shadow_pending}
+        existing.update(x.get("target_date") for x in self._forward_shadow_outcomes)
+        changed = False
+        for pending in self._daily_pending:
+            target = pending.get("target_date")
+            if not isinstance(target, str) or target <= today or target in existing:
+                continue
+            created = self._parse_time(pending.get("created_at"))
+            if created is None or created > now:
+                continue
+            pred = self._num((pending.get("predicted") or {}).get("solar_kwh"))
+            if pred is None or not math.isfinite(pred) or pred <= 0:
+                continue
+            # Train only on earlier completed days. Exclude the target date
+            # and any future dates, even if a corrupt record exists.
+            historical = []
+            for row in self._daily_samples:
+                day = row.get("target_date")
+                fc = self._num((row.get("predicted") or {}).get("solar_kwh"))
+                actual = self._num((row.get("actual") or {}).get("solar_kwh"))
+                stamp = self._parse_time(row.get("forecast_created_at"))
+                if (not isinstance(day, str) or day >= target or
+                        fc is None or not math.isfinite(fc) or fc <= 0 or
+                        actual is None or not math.isfinite(actual) or actual < 0 or
+                        stamp is None):
+                    continue
+                try:
+                    day_start = datetime.fromisoformat(day).replace(tzinfo=dt_util.DEFAULT_TIME_ZONE).astimezone(timezone.utc)
+                except (TypeError, ValueError):
+                    continue
+                if stamp >= day_start:
+                    continue
+                historical.append((day, fc, actual))
+            by_day = {day: (fc, actual) for day, fc, actual in historical}
+            recent = [by_day[day] for day in sorted(by_day)[-14:]]
+            if len(recent) < 7:
+                multiplier = None
+            else:
+                ratios = sorted(max(0.65, min(1.35, actual / fc)) for fc, actual in recent)
+                n = len(ratios)
+                mid = n // 2
+                median = ratios[mid] if n % 2 else (ratios[mid - 1] + ratios[mid]) / 2
+                multiplier = round(max(0.8, min(1.2, 1.0 + (median - 1.0) * min(1.0, n / 14.0))), 4)
+            self._forward_shadow_pending.append({
+                "target_date": target,
+                "captured_at": now.isoformat(),
+                "original_forecast_created_at": pending.get("created_at"),
+                "current_kwh": pred,
+                "shadow_kwh": round(pred * multiplier, 3) if multiplier is not None else None,
+                "frozen_multiplier": multiplier,
+                "training_days": len(recent),
+                "status": "frozen" if multiplier is not None else "insufficient_history",
+            })
+            existing.add(target)
+            changed = True
+        if changed:
+            self._schedule_save()
+
+    def _mature_forward_shadow(self, now: datetime) -> None:
+        """Score frozen snapshots only against completed-day Recorder totals."""
+        today = dt_util.as_local(now).date().isoformat()
+        actual_rows = {str(row.get("date")): row for row in self._canonical_daily_rows()}
+        remaining = deque(maxlen=45)
+        changed = False
+        for row in self._forward_shadow_pending:
+            target = row.get("target_date")
+            if not isinstance(target, str) or target >= today:
+                remaining.append(row)
+                continue
+            actual_row = actual_rows.get(target)
+            actual = self._num(actual_row.get("solar_energy_kwh")) if actual_row else None
+            if actual is None or not math.isfinite(actual) or actual < 0:
+                remaining.append(row)
+                continue
+            current = row["current_kwh"]
+            shadow = row.get("shadow_kwh")
+            self._forward_shadow_outcomes.append({
+                **row, "actual_kwh": actual,
+                "current_absolute_error_kwh": round(abs(current - actual), 3),
+                "shadow_absolute_error_kwh": round(abs(shadow - actual), 3) if shadow is not None else None,
+                "scored_at": now.isoformat(),
+            })
+            changed = True
+        if changed:
+            self._forward_shadow_pending = remaining
+            self._schedule_save()
+
+    def _forward_shadow_summary(self) -> dict[str, Any]:
+        valid = [r for r in self._forward_shadow_outcomes if r.get("shadow_absolute_error_kwh") is not None]
+        n = len(valid)
+        return {
+            "status": "forward_testing" if n else "collecting_forward_outcomes",
+            "matched_days": n,
+            "pending_count": len(self._forward_shadow_pending),
+            "current_forward_mae_kwh": round(sum(r["current_absolute_error_kwh"] for r in valid) / n, 3) if n else None,
+            "shadow_forward_mae_kwh": round(sum(r["shadow_absolute_error_kwh"] for r in valid) / n, 3) if n else None,
+            "pending": list(self._forward_shadow_pending)[-5:],
+            "recent_outcomes": list(self._forward_shadow_outcomes)[-10:],
+            "actual_source": "canonical_completed_day_recorder_solar_energy",
+            "actual_source_verified_against_inverters": False,
+            "production_applied": False,
+            "control_permission": False,
+            "validation": "Chronological forward holdout: multiplier frozen before target date",
+        }
+
     def refresh(self) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
         actual = self._actual()
@@ -293,6 +619,10 @@ class PredictionAccuracyEngine:
         self._mature_daily_forecasts(now)
         self._capture_forward_forecasts(now)
         self._capture_daily_forecast(now)
+        self._mature_forward_shadow(now)
+        self._capture_forward_shadow(now)
+        self._mature_cloud_comparisons(now)
+        self._capture_cloud_comparison(now)
 
         metric_history: dict[str, list[float]] = {key: [] for key in self.METRICS}
         metric_errors: dict[str, list[float]] = {key: [] for key in self.METRICS}
@@ -350,6 +680,9 @@ class PredictionAccuracyEngine:
             "minimum_samples_for_high_trust": 12,
             "forecast_capture_horizons_hours": list(self.LEAD_HOURS),
             "daily_forecast_accuracy": self._daily_accuracy_summary(),
+            "cloud_model_accuracy": self._cloud_comparison_summary(),
+            "adaptive_forecast_shadow": self._adaptive_shadow_summary(),
+            "adaptive_forward_validation": self._forward_shadow_summary(),
             "daily_matched_forecast_count": len(self._daily_samples),
             "daily_pending_forecast_count": len(self._daily_pending),
             "recent_daily_forecast_outcomes": list(self._daily_samples)[-14:],

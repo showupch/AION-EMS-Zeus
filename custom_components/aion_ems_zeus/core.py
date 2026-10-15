@@ -238,6 +238,7 @@ class AionCore:
         )
         self._unsub_auto_capture = None
         self._unsub_planning_capture = None
+        self._unsub_cloud_capture = None
         self._unsub_smart_control_keepalive = None
         self._unsub_smart_control_listener = None
         self._unsub_switch_hub_tick = None
@@ -372,6 +373,22 @@ class AionCore:
             self.hass, _capture_plan, timedelta(minutes=30)
         )
 
+        # Capture the evening cloud-model evidence independently of the normal
+        # forecast refresh cadence. Never trigger a forecast recalculation here.
+        async def _cloud_capture_tick(_now=None):
+            self.prediction_accuracy.capture_cloud_snapshot_tick()
+            if self.hass.services.has_service("homeassistant", "update_entity"):
+                await self.hass.services.async_call(
+                    "homeassistant", "update_entity",
+                    {"entity_id": "sensor.aion_ems_zeus_prediction_accuracy"},
+                    blocking=False,
+                )
+
+        self._unsub_cloud_capture = async_track_time_interval(
+            self.hass, _cloud_capture_tick, timedelta(minutes=5)
+        )
+        await _cloud_capture_tick()
+
         elapsed_ms = round((perf_counter() - started) * 1000.0, 1)
         self.performance["startup_warmup_ms"] = elapsed_ms
         self.performance["startup_phase"] = "ready"
@@ -411,6 +428,9 @@ class AionCore:
         if self._unsub_planning_capture:
             self._unsub_planning_capture()
             self._unsub_planning_capture = None
+        if self._unsub_cloud_capture:
+            self._unsub_cloud_capture()
+            self._unsub_cloud_capture = None
         if self._unsub_smart_control_keepalive:
             self._unsub_smart_control_keepalive()
             self._unsub_smart_control_keepalive = None
