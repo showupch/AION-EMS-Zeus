@@ -1295,6 +1295,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "cop_history_status": row.get("cop_history_status"),
                 "cop_today_average": row.get("cop_today_average"),
                 "cop_week_average": row.get("cop_week_average"),
+                "cop_month_energy_ratio": row.get("cop_month_energy_ratio"),
+                "cop_year_energy_ratio": row.get("cop_year_energy_ratio"),
                 "cop_month_average": row.get("cop_month_average"),
                 "cop_year_average": row.get("cop_year_average"),
                 "cop_today_bucket_count": row.get("cop_today_bucket_count"),

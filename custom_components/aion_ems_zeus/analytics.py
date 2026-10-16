@@ -3124,6 +3124,56 @@ class ForecastEngine:
                     if isinstance(value, (int, float)):
                         target[name].append(float(value))
 
+        # v16.0.268: read-only baseline sampling audit. The production
+        # snapshot-trimmed baseline above remains entirely unchanged.
+        # Per-day hourly means prevent a high-frequency day from dominating.
+        solar_by_day_hour = {}
+        for snap in snapshots[-30240:]:
+            try:
+                stamp = datetime.fromisoformat(str(snap["timestamp"]).replace("Z", "+00:00"))
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                local_stamp = dt_util.as_local(stamp)
+                value = (snap.get("flows") or {}).get("solar_power_w")
+                if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                    continue
+                key = (local_stamp.date(), local_stamp.hour)
+                solar_by_day_hour.setdefault(key, []).append((local_stamp, float(value)))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+
+        # Equal-day means and a capped, interval-weighted variant are both
+        # diagnostics. Never interpolate across long outages or across hours.
+        solar_day_means = {}
+        solar_day_weighted = {}
+        for key, samples in solar_by_day_hour.items():
+            samples.sort(key=lambda pair: pair[0])
+            solar_day_means[key] = sum(v for _, v in samples) / len(samples)
+            weights = []
+            for idx, (stamp, value) in enumerate(samples):
+                if idx + 1 < len(samples):
+                    duration = (samples[idx + 1][0] - stamp).total_seconds()
+                else:
+                    duration = 60.0
+                duration = max(1.0, min(duration, 900.0))
+                weights.append((value, duration))
+            solar_day_weighted[key] = sum(v * w for v, w in weights) / sum(w for _, w in weights)
+
+        def solar_baseline_audit(target_date, hour):
+            weekday = [(day, h) for day, h in solar_day_means
+                       if h == hour and day.weekday() == target_date.weekday()]
+            all_days = [(day, h) for day, h in solar_day_means if h == hour]
+            chosen = weekday if weekday else all_days
+            if not chosen:
+                return None
+            equal = sum(solar_day_means[k] for k in chosen) / len(chosen)
+            weighted = sum(solar_day_weighted[k] for k in chosen) / len(chosen)
+            return {"equal_day_w": round(equal, 1),
+                    "interval_weighted_w": round(weighted, 1),
+                    "historical_days": len(chosen),
+                    "snapshots": sum(len(solar_by_day_hour[k]) for k in chosen),
+                    "weekday_only": bool(weekday)}
+
         weather = self.weather.summary() if self.weather else {}
         forecast_rows = weather.get("forecast", []) if isinstance(weather.get("forecast"), list) else []
         forecast_granularity = str(weather.get("forecast_granularity") or "hourly").lower()
@@ -3599,6 +3649,276 @@ class ForecastEngine:
                 "method": "read_only_counterfactual_from_applied_weather_factor",
                 "note": "Non-numeric weather uses applied production weather factor, not estimated cloud percentage. No production/control changes.",
             }
+            # v16.0.267: read-only attenuation sensitivity test. These are
+            # counterfactuals, not new production forecasts. Reuse the exact
+            # existing hourly baselines and calibration multipliers. Historical
+            # solar samples already contain weather variability, so compare
+            # attenuation strengths without claiming a physical irradiance model.
+            sensitivity = {"production_factor": 0.0, "moderate_factor": 0.0,
+                           "lighter_factor": 0.0, "very_light_factor": 0.0,
+                           "unattenuated_baseline": 0.0}
+            sensitivity_hours = {"numeric_cloud": 0, "condition_only": 0,
+                                 "missing_weather": 0, "invalid_rows": 0}
+            sensitivity_daylight = []
+            for sr in rows:
+                try:
+                    base = float(sr.get("baseline_solar_power_w"))
+                    cal = float(sr.get("shadow_calibration_multiplier") or 1.0)
+                    original = float(sr.get("weather_factor"))
+                    if not all(math.isfinite(v) for v in (base, cal, original)):
+                        raise ValueError("nonfinite")
+                    base = max(0.0, base)
+                    original = max(0.0, min(1.0, original))
+                except (TypeError, ValueError, OverflowError):
+                    sensitivity_hours["invalid_rows"] += 1
+                    continue
+                cloud = None
+                if sr.get("weather_forecast_applied"):
+                    try:
+                        raw_cloud = sr.get("cloud_coverage")
+                        cloud = float(raw_cloud) if raw_cloud is not None else None
+                        if cloud is not None and not math.isfinite(cloud):
+                            cloud = None
+                    except (TypeError, ValueError, OverflowError):
+                        cloud = None
+                    if cloud is None:
+                        sensitivity_hours["condition_only"] += 1
+                    else:
+                        sensitivity_hours["numeric_cloud"] += 1
+                        cloud = max(0.0, min(100.0, cloud))
+                else:
+                    sensitivity_hours["missing_weather"] += 1
+                # No fabricated cloud values: rescale the observed applied
+                # factor for condition-only rows; missing weather stays neutral.
+                if cloud is not None:
+                    moderate = max(0.08, 1.0 - cloud / 150.0)
+                    lighter = max(0.08, 1.0 - cloud / 200.0)
+                    very_light = max(0.08, 1.0 - cloud / 250.0)
+                elif sr.get("weather_forecast_applied"):
+                    loss = max(0.0, 1.0 - original)
+                    moderate = max(0.08, 1.0 - loss * 115.0 / 150.0)
+                    lighter = max(0.08, 1.0 - loss * 115.0 / 200.0)
+                    very_light = max(0.08, 1.0 - loss * 115.0 / 250.0)
+                else:
+                    moderate = lighter = very_light = 1.0
+                values = {
+                    "production_factor": original,
+                    "moderate_factor": moderate,
+                    "lighter_factor": lighter,
+                    "very_light_factor": very_light,
+                    "unattenuated_baseline": 1.0,
+                }
+                for key, factor in values.items():
+                    sensitivity[key] += base * cal * factor / 1000.0
+                if base >= 100.0:
+                    sensitivity_daylight.append({
+                        "hour": sr.get("hour"),
+                        "cloud_percent": round(cloud, 1) if cloud is not None else None,
+                        "production_factor": round(original, 3),
+                        "moderate_factor": round(moderate, 3),
+                        "lighter_factor": round(lighter, 3),
+                        "very_light_factor": round(very_light, 3),
+                        "baseline_w": round(base, 1),
+                    })
+            attenuation_sensitivity = {
+                "target_date": target_date.isoformat(),
+                "status": "available" if sensitivity_hours["numeric_cloud"] or sensitivity_hours["condition_only"] else "no_weather_evidence",
+                "weather_factor_formula": "max(0.08, 1 - cloud_percent / 115)",
+                "method": "read_only_same_hourly_baseline_and_calibration",
+                "numeric_cloud_hours": sensitivity_hours["numeric_cloud"],
+                "condition_only_hours": sensitivity_hours["condition_only"],
+                "missing_weather_hours": sensitivity_hours["missing_weather"],
+                "invalid_rows": sensitivity_hours["invalid_rows"],
+                "production_pipeline_kwh": round(sensitivity["production_factor"], 2),
+                "moderate_kwh": round(sensitivity["moderate_factor"], 2),
+                "lighter_kwh": round(sensitivity["lighter_factor"], 2),
+                "very_light_kwh": round(sensitivity["very_light_factor"], 2),
+                "unattenuated_kwh": round(sensitivity["unattenuated_baseline"], 2),
+                "daylight_sample": sensitivity_daylight[:24],
+                "warning": "Sensitivity only, not validated against actual irradiance or future production; does not replace the production forecast.",
+                "production_applied": False,
+                "control_permission": False,
+            }
+            # v16.0.269: compare alternate baselines using EXACTLY the
+            # same target-hour weather factors and calibration as production.
+            # Diagnostic only; no production forecast or control changes.
+            baseline_counterfactual_rows = []
+            baseline_counterfactual_totals = {
+                "current_kwh": 0.0, "equal_day_kwh": 0.0,
+                "interval_weighted_kwh": 0.0,
+            }
+            missing_alternative_hours = []
+            invalid_pipeline_hours = []
+            for forecast_row in rows[:24]:
+                hour = forecast_row.get("hour")
+                try:
+                    hour = int(hour)
+                    baseline = float(forecast_row["baseline_solar_power_w"])
+                    weather_factor = float(forecast_row["weather_factor"])
+                    cal_value = forecast_row.get("shadow_calibration_multiplier")
+                    calibration = float(cal_value) if cal_value is not None else 1.0
+                    if not all(math.isfinite(v) for v in (baseline, weather_factor, calibration)):
+                        raise ValueError("nonfinite forecast inputs")
+                except (TypeError, ValueError, OverflowError, KeyError):
+                    invalid_pipeline_hours.append(hour)
+                    continue
+                audit = solar_baseline_audit(target_date, hour)
+                if audit is None:
+                    missing_alternative_hours.append(hour)
+                current = max(0.0, baseline) * weather_factor * calibration / 1000.0
+                equal = (max(0.0, float(audit["equal_day_w"])) * weather_factor * calibration / 1000.0
+                         if audit is not None else None)
+                weighted = (max(0.0, float(audit["interval_weighted_w"])) * weather_factor * calibration / 1000.0
+                            if audit is not None else None)
+                baseline_counterfactual_totals["current_kwh"] += current
+                if equal is not None:
+                    baseline_counterfactual_totals["equal_day_kwh"] += equal
+                if weighted is not None:
+                    baseline_counterfactual_totals["interval_weighted_kwh"] += weighted
+                baseline_counterfactual_rows.append({
+                    "hour": hour,
+                    "weather_factor": round(weather_factor, 3),
+                    "calibration_multiplier": round(calibration, 3),
+                    "current_kwh": round(current, 4),
+                    "equal_day_kwh": round(equal, 4) if equal is not None else None,
+                    "interval_weighted_kwh": round(weighted, 4) if weighted is not None else None,
+                    "historical_days": audit["historical_days"] if audit else 0,
+                    "snapshots": audit["snapshots"] if audit else 0,
+                })
+            baseline_counterfactual = {
+                "target_date": target_date.isoformat(),
+                "status": ("available" if len(baseline_counterfactual_rows) == 24
+                           and not missing_alternative_hours and not invalid_pipeline_hours
+                           else "incomplete_evidence"),
+                "method": "same_hourly_weather_and_calibration_read_only",
+                "current_kwh": round(baseline_counterfactual_totals["current_kwh"], 3)
+                    if len(baseline_counterfactual_rows) == 24 else None,
+                "equal_day_kwh": round(baseline_counterfactual_totals["equal_day_kwh"], 3)
+                    if not missing_alternative_hours and not invalid_pipeline_hours
+                    and len(baseline_counterfactual_rows) == 24 else None,
+                "interval_weighted_kwh": round(baseline_counterfactual_totals["interval_weighted_kwh"], 3)
+                    if not missing_alternative_hours and not invalid_pipeline_hours
+                    and len(baseline_counterfactual_rows) == 24 else None,
+                "missing_alternative_hours": missing_alternative_hours,
+                "invalid_pipeline_hours": invalid_pipeline_hours,
+                "hourly": baseline_counterfactual_rows,
+                "warning": ("Sensitivity to historical sample weighting only. Not a validated "
+                            "production forecast. Same hourly weather and calibration; "
+                            "interval weighting caps gaps at 15 minutes."),
+                "production_applied": False,
+                "control_permission": False,
+            }
+            # v16.0.270: read-only cross-product of historical baseline methods
+            # and observed cloud attenuation scenarios. Production untouched.
+            combined_models = ("current_snapshot", "equal_day", "interval_weighted")
+            combined_scenarios = ("current_weather", "moderate_150", "lighter_200", "very_light_250")
+            combined_totals = {model: {scenario: 0.0 for scenario in combined_scenarios}
+                               for model in combined_models}
+            combined_hours = []
+            combined_missing = []
+            combined_invalid = []
+            for cr in rows[:24]:
+                hour = cr.get("hour")
+                try:
+                    hour = int(hour)
+                    base = float(cr["baseline_solar_power_w"])
+                    applied = float(cr["weather_factor"])
+                    cal_raw = cr.get("shadow_calibration_multiplier")
+                    cal = float(cal_raw) if cal_raw is not None else 1.0
+                    if not all(math.isfinite(v) for v in (base, applied, cal)):
+                        raise ValueError("nonfinite")
+                    if base < 0 or not 0 <= applied <= 1 or cal < 0:
+                        raise ValueError("invalid range")
+                except (ValueError, TypeError, OverflowError, KeyError):
+                    combined_invalid.append(hour)
+                    continue
+                audit = solar_baseline_audit(target_date, hour)
+                if audit is None:
+                    combined_missing.append(hour)
+                    continue
+                cloud = None
+                if cr.get("weather_forecast_applied"):
+                    try:
+                        raw_cloud = cr.get("cloud_coverage")
+                        if raw_cloud is not None:
+                            cloud = float(raw_cloud)
+                            if not math.isfinite(cloud):
+                                cloud = None
+                    except (TypeError, ValueError, OverflowError):
+                        cloud = None
+                if cloud is not None:
+                    cloud = max(0.0, min(100.0, cloud))
+                    factors = {"current_weather": applied,
+                               "moderate_150": max(0.08, 1.0-cloud/150.0),
+                               "lighter_200": max(0.08, 1.0-cloud/200.0),
+                               "very_light_250": max(0.08, 1.0-cloud/250.0)}
+                elif cr.get("weather_forecast_applied"):
+                    loss = max(0.0, 1.0-applied)
+                    factors = {"current_weather": applied,
+                               "moderate_150": max(0.08, 1.0-loss*115.0/150.0),
+                               "lighter_200": max(0.08, 1.0-loss*115.0/200.0),
+                               "very_light_250": max(0.08, 1.0-loss*115.0/250.0)}
+                else:
+                    factors = {scenario: 1.0 for scenario in combined_scenarios}
+                baselines = {"current_snapshot": base,
+                             "equal_day": float(audit["equal_day_w"]),
+                             "interval_weighted": float(audit["interval_weighted_w"])}
+                if not all(math.isfinite(v) and v >= 0 for v in baselines.values()):
+                    combined_invalid.append(hour)
+                    continue
+                for model, power in baselines.items():
+                    for scenario, factor in factors.items():
+                        combined_totals[model][scenario] += power*factor*cal/1000.0
+                combined_hours.append({"hour": hour,
+                                       "cloud_percent": round(cloud,1) if cloud is not None else None,
+                                       "weather_matched": bool(cr.get("weather_forecast_applied")),
+                                       "historical_days": audit["historical_days"],
+                                       "snapshots": audit["snapshots"]})
+            combined_complete = (len(combined_hours) == 24 and not combined_missing and not combined_invalid)
+            combined_baseline_weather = {
+                "status": "available" if combined_complete else "incomplete_evidence",
+                "target_date": target_date.isoformat(),
+                "method": "same_hourly_inputs_and_calibration_cross_product_read_only",
+                "matrix_kwh": ({model: {scenario: round(value,3) for scenario,value in scenarios.items()}
+                                for model,scenarios in combined_totals.items()} if combined_complete else None),
+                "missing_baseline_hours": combined_missing,
+                "invalid_hours": combined_invalid,
+                "hours_evaluated": len(combined_hours),
+                "numeric_cloud_hours": sum(row["cloud_percent"] is not None for row in combined_hours),
+                "condition_only_hours": sum(row["weather_matched"] and row["cloud_percent"] is None for row in combined_hours),
+                "missing_weather_hours": sum(not row["weather_matched"] for row in combined_hours),
+                "production_applied": False,
+                "control_permission": False,
+                "warning": "Sensitivity comparison, not validated irradiance or a recommended production forecast."
+            }
+            # v16.0.271: one coherent experimental forecast candidate.
+            # Equal historical day means + moderate cloud attenuation (÷200).
+            # Do not apply historical adaptive bias without verified training
+            # outcomes; retain it separately as a shadow diagnostic.
+            candidate_energy = None
+            if combined_complete:
+                candidate_energy = round(combined_totals["equal_day"]["lighter_200"], 3)
+            forecast_correction_candidate = {
+                "status": "ready_for_forward_validation" if candidate_energy is not None else "incomplete_evidence",
+                "target_date": target_date.isoformat(),
+                "candidate_kwh": candidate_energy,
+                "current_pipeline_kwh": (
+                    round(combined_totals["current_snapshot"]["current_weather"], 3)
+                    if combined_complete else None
+                ),
+                "historical_baseline_method": "equal_weight_per_historical_day",
+                "cloud_attenuation_method": "max(0.08, 1 - cloud_percent / 200)",
+                "site_bias_multiplier": 1.0,
+                "bias_calibration_status": "disabled_pending_verified_out_of_sample_evidence",
+                "historical_days_minimum": min(
+                    (h["historical_days"] for h in combined_hours), default=0
+                ),
+                "weather_hours": sum(h["weather_matched"] for h in combined_hours),
+                "numeric_cloud_hours": sum(h["cloud_percent"] is not None for h in combined_hours),
+                "warning": "Unvalidated shadow candidate; no production or control changes.",
+                "production_applied": False,
+                "control_permission": False,
+            }
             # v16.0.256: read-only hourly forecast pipeline evidence. This is
             # derived from the existing rows; no second forecast is calculated.
             hourly_pipeline_audit = []
@@ -3647,6 +3967,23 @@ class ForecastEngine:
                 # None means that Zeus has no explicit evidence for that field.
                 "solar_forecast_diagnostics": {
                     "shadow_cloud_comparison": shadow_diagnostics,
+                    "attenuation_sensitivity": attenuation_sensitivity,
+                    "baseline_counterfactual": baseline_counterfactual,
+                    "combined_baseline_weather": combined_baseline_weather,
+                    "forecast_correction_candidate": forecast_correction_candidate,
+                    "baseline_sampling_audit": {
+                        "method": "read_only_equal_day_and_capped_interval_weights",
+                        "current_snapshot_trimmed_kwh": baseline_trace,
+                        "equal_day_kwh": round(sum((solar_baseline_audit(target_date, h) or {}).get("equal_day_w", 0) for h in range(24)) / 1000.0, 3),
+                        "interval_weighted_kwh": round(sum((solar_baseline_audit(target_date, h) or {}).get("interval_weighted_w", 0) for h in range(24)) / 1000.0, 3),
+                        "hourly": [
+                            {"hour": h,
+                             "current_w": next((r.get("baseline_solar_power_w") for r in rows if r.get("hour") == h), None),
+                             **(solar_baseline_audit(target_date, h) or {"equal_day_w": None, "interval_weighted_w": None, "historical_days": 0, "snapshots": 0, "weekday_only": False})}
+                            for h in range(24)
+                        ],
+                        "notes": "Read-only; capped 15-minute interval weighting, not full Recorder time integration. No change to production.",
+                    },
                     "hourly_pipeline_audit": hourly_pipeline_evidence,
                     "historical_baseline_kwh": energy(rows, "baseline_solar_power_w"),
                     "weather_adjusted_raw_kwh": energy(rows, "raw_solar_power_w"),
@@ -7058,6 +7395,16 @@ class DeviceAnalyticsEngine:
                     "cycle_starts_today": compressor_power_evidence.get("starts_today") if compressor_power_evidence.get("status") == "Ready" else (cycle_evidence.get("starts_today") if cycle_evidence.get("starts_today") is not None else compressor_counter_evidence.get("starts_today")),
                     "compressor_runtime_today_minutes": compressor_power_evidence.get("runtime_today_minutes") if compressor_power_evidence.get("status") == "Ready" else compressor_counter_evidence.get("runtime_today_minutes"),
                     "compressor_runtime_today_source": compressor_power_evidence.get("source") if compressor_power_evidence.get("status") == "Ready" else compressor_counter_evidence.get("runtime_entity"),
+                    "compressor_runtime_power_minutes": compressor_power_evidence.get("runtime_today_minutes") if compressor_power_evidence.get("status") == "Ready" else None,
+                    "compressor_runtime_counter_minutes": compressor_counter_evidence.get("runtime_today_minutes"),
+                    "compressor_runtime_counter_source": compressor_counter_evidence.get("runtime_entity"),
+                    "compressor_runtime_disagreement_minutes": (
+                        round(abs(float(compressor_power_evidence["runtime_today_minutes"]) -
+                                  float(compressor_counter_evidence["runtime_today_minutes"])), 1)
+                        if compressor_power_evidence.get("status") == "Ready"
+                        and compressor_power_evidence.get("runtime_today_minutes") is not None
+                        and compressor_counter_evidence.get("runtime_today_minutes") is not None else None
+                    ),
                     "compressor_starts_today_source": compressor_power_evidence.get("source") if compressor_power_evidence.get("status") == "Ready" else (cycle_evidence.get("source") or compressor_counter_evidence.get("starts_entity")),
                     "compressor_power_diagnostic": dict(self._compressor_power_debug.get(device_evidence_key) or {}),
                     "cycle_stops_today": compressor_power_evidence.get("stops_today") if compressor_power_evidence.get("status") == "Ready" else cycle_evidence.get("stops_today"),
@@ -7176,6 +7523,25 @@ class DeviceAnalyticsEngine:
                         "ha_recorder_statistics_delta" if _period is not None else None
                     )
 
+            # v16.0.272: ratio-of-energy COP from classified circuit
+            # Recorder deltas, never an average of inactive hourly COP=0.
+            hp_energy_cop = {}
+            if heat_pump_intelligence is not None:
+                for _period_name in ("month", "year"):
+                    _vals = []
+                    for _key in ("heating_electrical", "dhw_electrical",
+                                 "heating_thermal", "dhw_thermal"):
+                        _value = heat_pump_intelligence.get(f"{_key}_energy_{_period_name}_kwh")
+                        _vals.append(_value if isinstance(_value, (int, float))
+                                     and math.isfinite(_value) and _value >= 0 else None)
+                    if all(v is not None for v in _vals) and (_vals[0] + _vals[1]) > 0:
+                        hp_energy_cop[_period_name] = round((_vals[2] + _vals[3]) / (_vals[0] + _vals[1]), 3)
+                    else:
+                        hp_energy_cop[_period_name] = None
+                heat_pump_intelligence["energy_cop_month"] = hp_energy_cop["month"]
+                heat_pump_intelligence["energy_cop_year"] = hp_energy_cop["year"]
+                heat_pump_intelligence["energy_cop_method"] = "classified_split_recorder_energy_ratio"
+                heat_pump_intelligence["energy_cop_warning"] = "Requires complete heating and DHW electrical/thermal period statistics."
             hp_dhw_period = None
             hp_dhw_energy_entity = ""
             if str(device.get("type") or "") == "heat_pump":
@@ -7201,6 +7567,8 @@ class DeviceAnalyticsEngine:
                 "cop_history_status": dict(self._cop_statistics_status) if cop_entity else None,
                 "cop_today_average": ((self._cop_statistics.get(cop_entity) or {}).get("today") or {}).get("average") if cop_entity else None,
                 "cop_week_average": ((self._cop_statistics.get(cop_entity) or {}).get("week") or {}).get("average") if cop_entity else None,
+                "cop_month_energy_ratio": hp_energy_cop.get("month"),
+                "cop_year_energy_ratio": hp_energy_cop.get("year"),
                 "cop_month_average": ((self._cop_statistics.get(cop_entity) or {}).get("month") or {}).get("average") if cop_entity else None,
                 "cop_year_average": ((self._cop_statistics.get(cop_entity) or {}).get("year") or {}).get("average") if cop_entity else None,
                 "cop_today_bucket_count": ((self._cop_statistics.get(cop_entity) or {}).get("today") or {}).get("bucket_count") if cop_entity else 0,

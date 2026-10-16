@@ -500,13 +500,34 @@ async def _websocket_heat_pump_monthly_energy(hass, connection, msg) -> None:
         boundaries.append(datetime(y, m, min(start_day, monthrange(y, m)[1]), tzinfo=prev.tzinfo))
     epoch = trusted_data_epoch()
     devices = [d for d in core.registry.data.get("devices", []) if str(d.get("type") or "") == "heat_pump"]
-    # Do not sum classified circuit counters or substitute thermal energy.
-    ids = list(dict.fromkeys(str(d.get("energy_entity") or "").strip() for d in devices if d.get("energy_entity")))
+    # Whole-unit counter is authoritative; otherwise use exactly two distinct
+    # classified electrical circuit counters for split heat pumps.
+    ids = []
+    source_status = []
+    for d in devices:
+        whole = str(d.get("energy_entity") or "").strip()
+        if whole:
+            ids.append(whole)
+            source_status.append("whole_unit")
+            continue
+        heating = str(d.get("heating_electrical_energy_entity") or "").strip()
+        dhw = str(d.get("dhw_electrical_energy_entity") or "").strip()
+        if d.get("separate_heating_dhw_measurements") is True and heating and dhw and heating != dhw:
+            ids.extend((heating, dhw))
+            source_status.append("split_heating_dhw")
+        else:
+            source_status.append("incomplete")
     rows = [{"month": boundaries[i].strftime("%Y-%m"), "label": boundaries[i].strftime("%b %Y"), "consumption_kwh": None,
              "self_sufficiency": None, "pv_share": None, "grid_share": None, "cost": None} for i in range(12)]
-    if not ids:
-        connection.send_result(msg["id"], {"rows": rows, "status": "No mapped whole-unit electrical energy entity", "year_start": start_local.date().isoformat()})
+    if not ids or len(ids) != len(set(ids)) or "incomplete" in source_status:
+        connection.send_result(msg["id"], {"rows": rows, "status": "Missing or overlapping electrical energy sources", "year_start": start_local.date().isoformat()})
         return
+    for eid in ids:
+        state = hass.states.get(eid)
+        unit = str((state.attributes.get("unit_of_measurement") if state else "") or "")
+        if unit not in ("kWh", "Wh", "MWh"):
+            connection.send_result(msg["id"], {"rows": rows, "status": f"Invalid energy unit for {eid}", "year_start": start_local.date().isoformat()})
+            return
     try:
         response = await hass.services.async_call("recorder", "get_statistics", {
             "statistic_ids": ids, "start_time": dt_util.as_utc(boundaries[0]),
@@ -525,6 +546,7 @@ async def _websocket_heat_pump_monthly_energy(hass, connection, msg) -> None:
             continue
         total = 0.0
         found = False
+        found_ids = set()
         for eid in ids:
             for point in (raw or {}).get(eid, []) or []:
                 try:
@@ -540,9 +562,10 @@ async def _websocket_heat_pump_monthly_energy(hass, connection, msg) -> None:
                         continue
                     total += change
                     found = True
+                    found_ids.add(eid)
                 except (ValueError, TypeError, KeyError):
                     continue
-        if found:
+        if found and len(found_ids) == len(ids):
             rows[i]["consumption_kwh"] = round(total, 3)
     # Monthly consumption must be returned independently of optional attribution.
     # This guard protects the working Recorder table from optional mapping errors.
