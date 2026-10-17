@@ -3315,6 +3315,14 @@ class ForecastEngine:
 
         canonical_today = dict(((analytics_summary.get("periods") or {}).get("today") or {}))
 
+        # v16.0.277 opt-in only. Legacy remains the default and is
+        # restored immediately by selecting legacy in Zeus Forecast.
+        forecast_mode = str(home_settings.get("solar_forecast_engine_mode") or "legacy")
+        if forecast_mode not in ("legacy", "v2"):
+            forecast_mode = "legacy"
+        pv_capacity_kwp = self._number(home_settings.get("pv_capacity_kwp") or home_settings.get("pv_capacity"), 0.0)
+        pv_capacity_w = pv_capacity_kwp * 1000.0 if pv_capacity_kwp > 0 else None
+
         hourly = []
         projected_soc = soc if 0 <= soc <= 100 else None
         for offset in range(168):
@@ -3333,6 +3341,29 @@ class ForecastEngine:
             raw_solar = round(max((baseline_solar or 0) * factor, 0), 1) if baseline_solar is not None else None
             learned_factor, calibration_context, contextual_correction_percent, calibration_source = contextual_factor(condition)
             adjusted_solar = round(max((raw_solar or 0) * learned_factor, 0), 1) if raw_solar is not None else None
+            legacy_solar = adjusted_solar
+            v2_solar = None
+            if forecast_mode == "v2":
+                alternative = solar_baseline_audit(dt.date(), dt.hour)
+                if alternative is not None and alternative["historical_days"] >= 2:
+                    cloud_num = None
+                    try:
+                        cloud_num = float(cloud) if cloud is not None else None
+                        if cloud_num is not None and not math.isfinite(cloud_num):
+                            cloud_num = None
+                    except (ValueError, TypeError):
+                        cloud_num = None
+                    if weather_forecast_applied and cloud_num is not None:
+                        v2_factor = max(0.08, 1.0 - max(0.0, min(100.0, cloud_num)) / 150.0)
+                    elif weather_forecast_applied:
+                        v2_factor = max(0.08, 1.0 - max(0.0, 1.0 - factor) * 115.0 / 150.0)
+                    else:
+                        v2_factor = 1.0
+                    v2_solar = max(0.0, alternative["equal_day_w"] * v2_factor * learned_factor)
+                    if pv_capacity_w is not None:
+                        v2_solar = min(v2_solar, pv_capacity_w)
+                    v2_solar = round(v2_solar, 1)
+                    adjusted_solar = v2_solar
             net_w = (adjusted_solar or 0) - (house or 0)
             charge_w = max(net_w, 0)
             discharge_w = max(-net_w, 0)
@@ -3363,6 +3394,9 @@ class ForecastEngine:
                 "baseline_solar_power_w": baseline_solar,
                 "raw_solar_power_w": raw_solar,
                 "solar_power_w": adjusted_solar,
+                "legacy_solar_power_w": legacy_solar,
+                "v2_solar_power_w": v2_solar,
+                "forecast_engine_mode": forecast_mode,
                 "adaptive_correction_percent": round(contextual_correction_percent, 1),
                 "calibration_context": calibration_context,
                 "calibration_source": calibration_source,
@@ -3897,9 +3931,9 @@ class ForecastEngine:
             # outcomes; retain it separately as a shadow diagnostic.
             candidate_energy = None
             if combined_complete:
-                candidate_energy = round(combined_totals["equal_day"]["lighter_200"], 3)
+                candidate_energy = round(combined_totals["equal_day"]["moderate_150"], 3)
             forecast_correction_candidate = {
-                "status": "ready_for_forward_validation" if candidate_energy is not None else "incomplete_evidence",
+                "status": "production_candidate_opt_in" if candidate_energy is not None else "incomplete_evidence",
                 "target_date": target_date.isoformat(),
                 "candidate_kwh": candidate_energy,
                 "current_pipeline_kwh": (
@@ -3907,15 +3941,16 @@ class ForecastEngine:
                     if combined_complete else None
                 ),
                 "historical_baseline_method": "equal_weight_per_historical_day",
-                "cloud_attenuation_method": "max(0.08, 1 - cloud_percent / 200)",
+                "cloud_attenuation_method": "max(0.08, 1 - cloud_percent / 150)",
                 "site_bias_multiplier": 1.0,
                 "bias_calibration_status": "disabled_pending_verified_out_of_sample_evidence",
                 "historical_days_minimum": min(
                     (h["historical_days"] for h in combined_hours), default=0
                 ),
+                "active_engine_mode": forecast_mode,
                 "weather_hours": sum(h["weather_matched"] for h in combined_hours),
                 "numeric_cloud_hours": sum(h["cloud_percent"] is not None for h in combined_hours),
-                "warning": "Unvalidated shadow candidate; no production or control changes.",
+                "warning": "Experimental V2 requires explicit opt-in; legacy is default and rollback.",
                 "production_applied": False,
                 "control_permission": False,
             }

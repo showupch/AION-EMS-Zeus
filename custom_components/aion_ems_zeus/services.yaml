@@ -666,3 +666,15 @@ set_energy_prices:
 clear_dynamic_tariff:
   name: Clear Dynamic Tariff
   description: Remove the imported dynamic price schedule. Existing fixed export tariff settings are preserved.
+
+set_solar_forecast_engine:
+  name: Set solar forecast engine
+  description: Select legacy or opt-in V2 solar forecast. Legacy is the default and rollback.
+  fields:
+    mode:
+      required: true
+      selector:
+        select:
+          options:
+            - legacy
+            - v2

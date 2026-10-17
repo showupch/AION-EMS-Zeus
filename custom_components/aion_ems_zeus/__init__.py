@@ -684,7 +684,7 @@ async def _websocket_heat_pump_monthly_energy(hass, connection, msg) -> None:
     complete = bool(values) and len(attributed) == len(values) and total_consumption > 0
     totals = {}
     if complete:
-        for field in ("pv_share", "grid_share", "self_sufficiency", "battery_share"):
+        for field in ("pv_share", "grid_share", "self_sufficiency", "battery_share", "unallocated_share"):
             totals[field] = round(sum(r["consumption_kwh"] * r[field] for r in attributed) / total_consumption, 1)
         if all(r.get("cost") is not None for r in attributed):
             totals["cost"] = round(sum(r["cost"] for r in attributed), 2)

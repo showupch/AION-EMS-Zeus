@@ -656,6 +656,11 @@ class RegistryEngine:
                 "story_style": str((self.data.get("home_settings") or {}).get("story_style") or "friendly"),
                 "briefing_length": str((self.data.get("home_settings") or {}).get("briefing_length") or "normal"),
                 "data_epoch": (self.data.get("home_settings") or {}).get("data_epoch"),
+                "solar_forecast_engine_mode": (
+                    (self.data.get("home_settings") or {}).get("solar_forecast_engine_mode")
+                    if (self.data.get("home_settings") or {}).get("solar_forecast_engine_mode") in ("legacy", "v2")
+                    else "legacy"
+                ),
             },
             "safety": "No device control.",
         }
