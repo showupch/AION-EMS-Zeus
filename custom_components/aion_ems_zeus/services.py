@@ -1381,8 +1381,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             core.registry.data.setdefault("mapping_options", {})["battery_power_sign"] = battery_convention
         core.registry.data.setdefault("audit", []).append({"action": "save_entity_mapping", "field": call.data["field"], "entity_id": call.data["entity_id"], "sign_convention": call.data.get("sign_convention")})
         await core.registry.async_save()
+        # Refresh the published mapping snapshot immediately after persistence.
+        # Otherwise the frontend's energy_mapping sensor can retain a stale
+        # mapping even though the registry has already saved the change.
+        core.energy_mapping.refresh()
         core.update_engine.refresh_tracked_entities()
         core.refresh_pipeline()
+        # Notify the Energy Mapping entity directly: its Recorder-efficient
+        # attribute cache must not delay explicit user configuration changes.
+        hass.bus.async_fire(f"{DOMAIN}_mapping_changed")
         core.device_import_manager.last_validation = {"status": "Mapping Saved", "message": f"Saved {call.data['field']} -> {call.data['entity_id']}.", "issues": []}
         await _refresh_aion_entities(hass)
 
@@ -1400,8 +1407,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             core.registry.data.setdefault("mapping_options", {}).pop("battery_mode", None)
         core.registry.data.setdefault("audit", []).append({"action": "clear_entity_mapping", "field": call.data["field"]})
         await core.registry.async_save()
+        # Refresh the published mapping snapshot immediately after persistence.
+        # Otherwise the frontend's energy_mapping sensor can retain a stale
+        # mapping even though the registry has already saved the change.
+        core.energy_mapping.refresh()
         core.update_engine.refresh_tracked_entities()
         core.refresh_pipeline()
+        # Notify the Energy Mapping entity directly: its Recorder-efficient
+        # attribute cache must not delay explicit user configuration changes.
+        hass.bus.async_fire(f"{DOMAIN}_mapping_changed")
         core.device_import_manager.last_validation = {"status": "Mapping Cleared", "message": f"Cleared {call.data['field']}.", "issues": []}
         await _refresh_aion_entities(hass)
 

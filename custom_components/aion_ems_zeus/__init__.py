@@ -587,12 +587,34 @@ async def _websocket_heat_pump_monthly_energy(hass, connection, msg) -> None:
         "charge": str(mapping.get("battery_charge_power") or "").strip(),
         "discharge": str(mapping.get("battery_discharge_power") or "").strip(),
     }
-    required = list(source_ids.values())
-    if all(required) and len(set(required)) == len(required):
+    # A single signed meter is sufficient when separate grid channels are absent.
+    # Explicit import/export mappings take priority. The signed Recorder mean is
+    # split into import=max(mean,0), export=max(-mean,0) (positive = import).
+    signed_grid_id = str(mapping.get("grid_power") or "").strip()
+    derived_grid = {key for key in ("import", "export") if not source_ids[key] and signed_grid_id}
+    for key in derived_grid:
+        source_ids[key] = signed_grid_id
+    required = list(dict.fromkeys(source_ids.values()))
+    # The signed source can legitimately back both derived channels; all other
+    # duplicate mappings are still rejected.
+    allowed_overlap = (len(set(source_ids.values())) == len(source_ids) or
+                       (derived_grid == {"import", "export"} and
+                        len(set(source_ids.values())) == len(source_ids) - 1 and
+                        source_ids["import"] == source_ids["export"] == signed_grid_id))
+    allocation_diagnostics = {r["month"]: {"status": "not_checked"} for r in rows if r["consumption_kwh"] is not None}
+    if not all(required):
+        for detail in allocation_diagnostics.values():
+            detail.update(status="missing_mapping", missing_sources=[k for k, v in source_ids.items() if not v])
+    elif not allowed_overlap:
+        for detail in allocation_diagnostics.values(): detail.update(status="overlapping_source_mappings")
+    if all(source_ids.values()) and allowed_overlap:
         units = {}
         for key, entity_id in source_ids.items():
             state = hass.states.get(entity_id)
             units[key] = state.attributes.get("unit_of_measurement") if state else None
+        if not all(unit in ("W", "kW") for unit in units.values()):
+            for detail in allocation_diagnostics.values():
+                detail.update(status="invalid_source_unit", invalid_units={k: v for k, v in units.items() if v not in ("W", "kW")})
         if all(unit in ("W", "kW") for unit in units.values()):
             try:
                 power_response = await hass.services.async_call("recorder", "get_statistics", {
@@ -603,6 +625,26 @@ async def _websocket_heat_pump_monthly_energy(hass, connection, msg) -> None:
                     "units": {"power": "W"},
                 }, blocking=True, return_response=True)
                 power_data = (power_response or {}).get("statistics", power_response or {})
+                if derived_grid:
+                    from math import isfinite
+                    # Derive nonnegative virtual hourly series. Never overwrite
+                    # actual Recorder evidence or invent missing hours.
+                    for key in derived_grid:
+                        virtual_id = f"__derived_signed_grid_{key}__"
+                        points = []
+                        for point in (power_data.get(signed_grid_id) or []):
+                            try:
+                                mean = float(point["mean"])
+                            except (ValueError, TypeError, KeyError):
+                                continue
+                            if not isfinite(mean):
+                                continue
+                            points.append({**point, "mean": max(0.0, mean if key == "import" else -mean)})
+                        power_data[virtual_id] = points
+                        source_ids[key] = virtual_id
+                    for detail in allocation_diagnostics.values():
+                        detail["derived_grid_channels"] = sorted(derived_grid)
+                        detail["grid_derivation"] = "positive import / negative export from signed hourly mean; intra-hour direction changes may cancel"
                 # Recorder statistics requested in W regardless of entity units.
                 normalized_units = {key: "W" for key in source_ids}
                 for i, row in enumerate(rows):
@@ -614,8 +656,9 @@ async def _websocket_heat_pump_monthly_energy(hass, connection, msg) -> None:
                     finish = finish.replace(minute=0, second=0, microsecond=0)
                     if finish <= begin:
                         continue
+                    detail = allocation_diagnostics[row["month"]]
                     result = allocate_month(power_data, source_ids, normalized_units,
-                                            begin, finish, row["consumption_kwh"])
+                                            begin, finish, row["consumption_kwh"], diagnostics=detail)
                     if result:
                         row.update(result)
                         # This is a *modelled* tariff-equivalent amount, not a
@@ -676,9 +719,12 @@ async def _websocket_heat_pump_monthly_energy(hass, connection, msg) -> None:
                                 row["cost_status"] = f"Unavailable: {mode} tariff missing historical hourly coverage"
                         else:
                             row["cost_status"] = "Unknown tariff mode"
-            except Exception:
-                # The consumption evidence must remain usable if power LTS is absent.
-                pass
+            except Exception as err:
+                # Preserve measured consumption and surface a bounded error category.
+                for detail in allocation_diagnostics.values():
+                    if detail.get("status") in ("not_checked", "checking"):
+                        detail["status"] = "recorder_power_query_failed"
+                        detail["error_type"] = type(err).__name__
     values = [r["consumption_kwh"] for r in rows if r["consumption_kwh"] is not None]
     attributed = [r for r in rows if r.get("grid_share") is not None]
     complete = bool(values) and len(attributed) == len(values) and total_consumption > 0
@@ -700,6 +746,7 @@ async def _websocket_heat_pump_monthly_energy(hass, connection, msg) -> None:
         "year_start": start_local.date().isoformat(),
         "currency": str((core.registry.data.get("sources", {}) or {}).get("tariffs", {}).get("currency") or "CHF").upper()[:4],
         "cost_diagnostics": cost_diagnostics,
+        "allocation_diagnostics": allocation_diagnostics,
         "status": "Measured monthly Recorder consumption. Source shares are modelled, not directly metered. Cost uses the canonical Finance Engine fixed tariff when available, and is not historical billed cost."})
 
 

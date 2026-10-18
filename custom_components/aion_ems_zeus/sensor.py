@@ -2056,6 +2056,16 @@ class RecorderStateOnlySimpleSensor(SimpleSensor):
         # event-driven at the Home Assistant state-machine boundary.
         await SensorEntity.async_added_to_hass(self)
         self.async_on_remove(self.coordinator.async_add_listener(self._handle_coordinator_update))
+        # Mapping configuration is user-driven, not a high-frequency diagnostic.
+        # Publish it immediately on Save/Clear rather than waiting for the
+        # diagnostic keepalive (which can be 15 minutes).
+        if self._attr_unique_id == f"{DOMAIN}_energy_mapping":
+            self.async_on_remove(
+                self.hass.bus.async_listen(
+                    f"{DOMAIN}_mapping_changed",
+                    lambda event: self._handle_coordinator_update(force=True),
+                )
+            )
         self._handle_coordinator_update()
 
     @property
@@ -2067,7 +2077,7 @@ class RecorderStateOnlySimpleSensor(SimpleSensor):
         # and refresh it only on the bounded diagnostic publish cadence.
         return self._zeus_cached_diag_attrs
 
-    def _handle_coordinator_update(self) -> None:
+    def _handle_coordinator_update(self, force: bool = False) -> None:
         now = monotonic()
         current_state = self.native_value
         changed = (
@@ -2079,7 +2089,7 @@ class RecorderStateOnlySimpleSensor(SimpleSensor):
             or now - self._zeus_last_diag_publish_monotonic
             >= self._ZEUS_DIAGNOSTIC_KEEPALIVE_SECONDS
         )
-        if not changed and not keepalive_due:
+        if not force and not changed and not keepalive_due:
             return
         self._zeus_cached_diag_attrs = _apply_recorder_guard(self, self.attrs_fn(self.core) or {})
         self._zeus_last_diag_publish_monotonic = now
