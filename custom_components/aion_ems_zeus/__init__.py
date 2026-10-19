@@ -106,6 +106,7 @@ async def _websocket_export_configuration(hass, connection, msg) -> None:
     vol.Required("backup"): dict,
     vol.Optional("apply", default=False): bool,
 })
+@websocket_api.require_admin
 @websocket_api.async_response
 async def _websocket_restore_configuration(hass, connection, msg) -> None:
     import copy
