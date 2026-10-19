@@ -1500,7 +1500,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     async_register_admin_service(hass, DOMAIN, SERVICE_RESTORE_LATEST_BACKUP, restore_latest_backup)
     async_register_admin_service(hass, DOMAIN, SERVICE_RELOAD_REGISTRY, reload_registry)
 
-    hass.services.async_register(DOMAIN, SERVICE_REFRESH_ENTITY_DISCOVERY, refresh_entity_discovery)
+    async_register_admin_service(hass, DOMAIN, SERVICE_REFRESH_ENTITY_DISCOVERY, refresh_entity_discovery)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_ENERGY_MAPPING, refresh_energy_mapping)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_INTEGRATION_HUB, refresh_integration_hub)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_DATA_BUS, refresh_data_bus)
@@ -1628,7 +1628,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("overwrite_existing", default=False): cv.boolean,
     }))
 
-    hass.services.async_register(DOMAIN, SERVICE_REFRESH_DEVICE_IMPORT_REVIEW, refresh_device_import_review, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_REFRESH_DEVICE_IMPORT_REVIEW, refresh_device_import_review, schema=vol.Schema({
         vol.Optional("include_system_devices", default=True): cv.boolean,
         vol.Optional("include_appliances", default=True): cv.boolean,
         vol.Optional("overwrite_existing", default=False): cv.boolean,
@@ -1641,7 +1641,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("overwrite_existing", default=False): cv.boolean,
     }))
 
-    hass.services.async_register(DOMAIN, SERVICE_DEVICE_MANAGER_BUILD_REVIEW, device_manager_build_review, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_DEVICE_MANAGER_BUILD_REVIEW, device_manager_build_review, schema=vol.Schema({
         vol.Optional("include_system_devices", default=True): cv.boolean,
         vol.Optional("include_appliances", default=False): cv.boolean,
         vol.Optional("overwrite_existing", default=False): cv.boolean,
@@ -1825,7 +1825,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("cooldown_minutes"): vol.All(vol.Coerce(int),vol.Range(min=1,max=1440)),
         **{vol.Optional("category_"+k):cv.boolean for k in ("recommendation","battery","scheduler","high_grid_import","solar_surplus","tariff","daily_report","system_health")}
     }))
-    hass.services.async_register(DOMAIN, SERVICE_TEST_NOTIFICATION, test_notification)
+    async_register_admin_service(hass, DOMAIN, SERVICE_TEST_NOTIFICATION, test_notification)
     async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_PLUGIN_SETTINGS, save_plugin_settings, schema=vol.Schema({
         vol.Required("plugin_id"): vol.In(["email","pushover","shelly","zigbee","mqtt","nas_backup","inverter_adapters"]),
         vol.Optional("enabled"): cv.boolean, vol.Optional("service"): cv.string, vol.Optional("path"): cv.string,
@@ -1833,9 +1833,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("remote_path"): cv.string, vol.Optional("share"): cv.string, vol.Optional("folder"): cv.string, vol.Optional("username"): cv.string,
         vol.Optional("retention"): vol.All(vol.Coerce(int),vol.Range(min=1,max=100)), vol.Optional("schedule"): cv.string,
     }))
-    hass.services.async_register(DOMAIN, SERVICE_TEST_PLUGIN, test_plugin, schema=vol.Schema({vol.Required("plugin_id"): cv.string}))
+    async_register_admin_service(hass, DOMAIN, SERVICE_TEST_PLUGIN, test_plugin, schema=vol.Schema({vol.Required("plugin_id"): cv.string}))
     async_register_admin_service(hass, DOMAIN, SERVICE_CREATE_NAS_BACKUP, create_nas_backup)
-    hass.services.async_register(DOMAIN, SERVICE_REFRESH_PLUGIN_DISCOVERY, refresh_plugin_discovery, schema=vol.Schema({vol.Optional("plugin_id"): vol.In(["email","pushover","shelly","zigbee","mqtt","nas_backup","inverter_adapters"])}))
+    async_register_admin_service(hass, DOMAIN, SERVICE_REFRESH_PLUGIN_DISCOVERY, refresh_plugin_discovery, schema=vol.Schema({vol.Optional("plugin_id"): vol.In(["email","pushover","shelly","zigbee","mqtt","nas_backup","inverter_adapters"])}))
     hass.services.async_register(DOMAIN, SERVICE_RUN_QA_HEALTH_CHECK, run_qa_health_check)
     REGISTERED = True
 
