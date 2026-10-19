@@ -1593,10 +1593,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             vol.Optional("vat_included", default=True): cv.boolean,
         }),
     )
-    async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS,
-    SERVICE_SAVE_BATTERY_CAPACITY,
-    SERVICE_SAVE_HOME_PROFILE,
-    SERVICE_CLEAR_BATTERY_CAPACITY, clear_tariff_settings)
+    async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS, clear_tariff_settings)
     async_register_admin_service(hass, 
         DOMAIN,
         SERVICE_SAVE_PAYBACK_SETTINGS,
@@ -1739,10 +1736,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             vol.Optional("vat_included", default=True): cv.boolean,
         }))
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS):
-        async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS,
-    SERVICE_SAVE_BATTERY_CAPACITY,
-    SERVICE_SAVE_HOME_PROFILE,
-    SERVICE_CLEAR_BATTERY_CAPACITY, clear_tariff_settings)
+        async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS, clear_tariff_settings)
     if not hass.services.has_service(DOMAIN, SERVICE_SET_ENERGY_PRICES):
         async_register_admin_service(hass, DOMAIN, SERVICE_SET_ENERGY_PRICES, set_energy_prices, schema=dynamic_price_schema)
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_DYNAMIC_TARIFF):
