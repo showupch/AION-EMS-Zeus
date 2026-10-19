@@ -5,6 +5,7 @@ from __future__ import annotations
 import voluptuous as vol
 
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.core import HomeAssistant, ServiceCall
 
 from .const import (
@@ -1494,23 +1495,23 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         )
 
     # Register services explicitly, once.
-    hass.services.async_register(DOMAIN, SERVICE_EXPORT_REGISTRY, export_registry)
-    hass.services.async_register(DOMAIN, SERVICE_BACKUP_REGISTRY, backup_registry)
-    hass.services.async_register(DOMAIN, SERVICE_RESTORE_LATEST_BACKUP, restore_latest_backup)
-    hass.services.async_register(DOMAIN, SERVICE_RELOAD_REGISTRY, reload_registry)
+    async_register_admin_service(hass, DOMAIN, SERVICE_EXPORT_REGISTRY, export_registry)
+    async_register_admin_service(hass, DOMAIN, SERVICE_BACKUP_REGISTRY, backup_registry)
+    async_register_admin_service(hass, DOMAIN, SERVICE_RESTORE_LATEST_BACKUP, restore_latest_backup)
+    async_register_admin_service(hass, DOMAIN, SERVICE_RELOAD_REGISTRY, reload_registry)
 
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_ENTITY_DISCOVERY, refresh_entity_discovery)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_ENERGY_MAPPING, refresh_energy_mapping)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_INTEGRATION_HUB, refresh_integration_hub)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_DATA_BUS, refresh_data_bus)
-    hass.services.async_register(DOMAIN, SERVICE_CAPTURE_DATA_LAKE_SNAPSHOT, capture_data_lake_snapshot)
+    async_register_admin_service(hass, DOMAIN, SERVICE_CAPTURE_DATA_LAKE_SNAPSHOT, capture_data_lake_snapshot)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_DATA_LAKE_SUMMARY, refresh_data_lake_summary)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_KNOWLEDGE_ENGINE, refresh_knowledge_engine)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_BRIEFING_CENTER, refresh_briefing_center)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_QUESTION_LIBRARY, refresh_question_library)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_CAPABILITY_REPORT, refresh_capability_report)
     hass.services.async_register(DOMAIN, SERVICE_PREVIEW_HA_ENERGY_IMPORT, preview_home_assistant_energy_import)
-    hass.services.async_register(
+    async_register_admin_service(hass, 
         DOMAIN,
         SERVICE_APPLY_HA_ENERGY_IMPORT,
         apply_home_assistant_energy_import,
@@ -1521,7 +1522,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         }),
     )
 
-    hass.services.async_register(
+    async_register_admin_service(hass, 
         DOMAIN,
         SERVICE_REGISTER_BATTERY_PROFILE,
         register_battery_profile,
@@ -1538,15 +1539,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             vol.Optional("round_trip_efficiency"): vol.Coerce(float),
         }),
     )
-    hass.services.async_register(DOMAIN, SERVICE_CLEAR_BATTERY_PROFILE, clear_battery_profile)
+    async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_BATTERY_PROFILE, clear_battery_profile)
     hass.services.async_register(DOMAIN, SERVICE_LIFECYCLE_STATUS, lifecycle_status)
     mapping_schema = vol.Schema({vol.Required("field"): vol.In(list(_core(hass).energy_mapping.FIELD_RULES)), vol.Required("entity_id"): cv.entity_id, vol.Optional("sign_convention"): vol.In(["positive_import", "positive_export"]), vol.Optional("grid_mode"): vol.In(["bidirectional", "separate"]), vol.Optional("battery_mode"): vol.In(["bidirectional", "separate"]), vol.Optional("battery_sign_convention"): vol.In(["positive_discharge", "positive_charge", "unsigned_magnitude"])})
     hass.services.async_register(DOMAIN, SERVICE_TEST_ENTITY_MAPPING, test_entity_mapping, schema=mapping_schema)
-    hass.services.async_register(DOMAIN, SERVICE_SAVE_ENTITY_MAPPING, save_entity_mapping, schema=mapping_schema)
-    hass.services.async_register(DOMAIN, SERVICE_CLEAR_ENTITY_MAPPING, clear_entity_mapping, schema=vol.Schema({vol.Required("field"): vol.In(list(_core(hass).energy_mapping.FIELD_RULES))}))
-    hass.services.async_register(DOMAIN, SERVICE_SAVE_WEATHER_SOURCE, save_weather_source, schema=vol.Schema({vol.Required("entity_id"): cv.entity_id}))
-    hass.services.async_register(DOMAIN, SERVICE_CLEAR_WEATHER_SOURCE, clear_weather_source)
-    hass.services.async_register(
+    async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_ENTITY_MAPPING, save_entity_mapping, schema=mapping_schema)
+    async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_ENTITY_MAPPING, clear_entity_mapping, schema=vol.Schema({vol.Required("field"): vol.In(list(_core(hass).energy_mapping.FIELD_RULES))}))
+    async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_WEATHER_SOURCE, save_weather_source, schema=vol.Schema({vol.Required("entity_id"): cv.entity_id}))
+    async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_WEATHER_SOURCE, clear_weather_source)
+    async_register_admin_service(hass, 
         DOMAIN,
         SERVICE_SAVE_LOCAL_WEATHER_STATION,
         save_local_weather_station,
@@ -1565,19 +1566,19 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             vol.Optional("uv_index"): cv.entity_id,
         }),
     )
-    hass.services.async_register(DOMAIN, SERVICE_CLEAR_LOCAL_WEATHER_STATION, clear_local_weather_station)
+    async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_LOCAL_WEATHER_STATION, clear_local_weather_station)
     hass.services.async_register(
         DOMAIN, "set_solar_forecast_engine", set_solar_forecast_engine,
         schema=vol.Schema({vol.Required("mode"): vol.In(["legacy", "v2"])}),
     )
-    hass.services.async_register(DOMAIN, SERVICE_SAVE_HOME_PROFILE, save_home_profile, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_HOME_PROFILE, save_home_profile, schema=vol.Schema({
         vol.Optional("owner_name", default=""): cv.string,
         vol.Optional("home_name", default="Home"): cv.string,
         vol.Optional("use_owner_name", default=True): cv.boolean,
         vol.Optional("story_style", default="friendly"): vol.In(["professional", "friendly", "technical", "concise"]),
         vol.Optional("briefing_length", default="normal"): vol.In(["short", "normal", "detailed"]),
     }))
-    hass.services.async_register(
+    async_register_admin_service(hass, 
         DOMAIN,
         SERVICE_SAVE_TARIFF_SETTINGS,
         save_tariff_settings,
@@ -1592,11 +1593,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             vol.Optional("vat_included", default=True): cv.boolean,
         }),
     )
-    hass.services.async_register(DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS,
+    async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS,
     SERVICE_SAVE_BATTERY_CAPACITY,
     SERVICE_SAVE_HOME_PROFILE,
     SERVICE_CLEAR_BATTERY_CAPACITY, clear_tariff_settings)
-    hass.services.async_register(
+    async_register_admin_service(hass, 
         DOMAIN,
         SERVICE_SAVE_PAYBACK_SETTINGS,
         save_payback_settings,
@@ -1607,7 +1608,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             vol.Optional("commissioning_date", default=""): cv.string,
         }),
     )
-    hass.services.async_register(DOMAIN, SERVICE_CLEAR_PAYBACK_SETTINGS, clear_payback_settings)
+    async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_PAYBACK_SETTINGS, clear_payback_settings)
     dynamic_price_schema = vol.Schema({
         vol.Required("prices"): vol.All(cv.ensure_list, [vol.Schema({
             vol.Required("start"): cv.string,
@@ -1618,12 +1619,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("price_unit", default="MWh"): cv.string,
         vol.Optional("source", default="Home Assistant automation"): cv.string,
     })
-    hass.services.async_register(DOMAIN, SERVICE_SET_ENERGY_PRICES, set_energy_prices, schema=dynamic_price_schema)
-    hass.services.async_register(DOMAIN, SERVICE_CLEAR_DYNAMIC_TARIFF, clear_dynamic_tariff)
+    async_register_admin_service(hass, DOMAIN, SERVICE_SET_ENERGY_PRICES, set_energy_prices, schema=dynamic_price_schema)
+    async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_DYNAMIC_TARIFF, clear_dynamic_tariff)
 
-    hass.services.async_register(DOMAIN, SERVICE_IMPORT_DISCOVERY_CANDIDATE, import_discovery_candidate, schema=_device_schema())
+    async_register_admin_service(hass, DOMAIN, SERVICE_IMPORT_DISCOVERY_CANDIDATE, import_discovery_candidate, schema=_device_schema())
 
-    hass.services.async_register(DOMAIN, SERVICE_IMPORT_RECOMMENDED_DEVICES, import_recommended_devices, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_IMPORT_RECOMMENDED_DEVICES, import_recommended_devices, schema=vol.Schema({
         vol.Optional("dry_run", default=True): cv.boolean,
         vol.Optional("include_system_devices", default=True): cv.boolean,
         vol.Optional("include_appliances", default=True): cv.boolean,
@@ -1636,7 +1637,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("overwrite_existing", default=False): cv.boolean,
     }))
 
-    hass.services.async_register(DOMAIN, SERVICE_IMPORT_REVIEWED_DEVICES, import_reviewed_devices, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_IMPORT_REVIEWED_DEVICES, import_reviewed_devices, schema=vol.Schema({
         vol.Optional("dry_run", default=True): cv.boolean,
         vol.Optional("include_system_devices", default=True): cv.boolean,
         vol.Optional("include_appliances", default=True): cv.boolean,
@@ -1649,29 +1650,29 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("overwrite_existing", default=False): cv.boolean,
     }))
 
-    hass.services.async_register(DOMAIN, SERVICE_DEVICE_MANAGER_IMPORT_READY, device_manager_import_ready, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_DEVICE_MANAGER_IMPORT_READY, device_manager_import_ready, schema=vol.Schema({
         vol.Optional("dry_run", default=True): cv.boolean,
         vol.Optional("include_system_devices", default=True): cv.boolean,
         vol.Optional("include_appliances", default=False): cv.boolean,
         vol.Optional("overwrite_existing", default=False): cv.boolean,
     }))
 
-    hass.services.async_register(DOMAIN, SERVICE_DEVICE_MANAGER_REMOVE_DEVICE, device_manager_remove_device, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_DEVICE_MANAGER_REMOVE_DEVICE, device_manager_remove_device, schema=vol.Schema({
         vol.Required("device_id"): cv.string,
     }))
 
-    hass.services.async_register(DOMAIN, SERVICE_REMOVE_AUTO_IMPORTED_DEVICES, remove_auto_imported_devices, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_REMOVE_AUTO_IMPORTED_DEVICES, remove_auto_imported_devices, schema=vol.Schema({
         vol.Optional("dry_run", default=True): cv.boolean,
     }))
 
-    hass.services.async_register(DOMAIN, SERVICE_ADD_DEVICE, add_device, schema=_device_schema())
-    hass.services.async_register(DOMAIN, SERVICE_UPDATE_DEVICE, update_device, schema=_device_update_schema())
-    hass.services.async_register(DOMAIN, SERVICE_REMOVE_DEVICE, remove_device, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_ADD_DEVICE, add_device, schema=_device_schema())
+    async_register_admin_service(hass, DOMAIN, SERVICE_UPDATE_DEVICE, update_device, schema=_device_update_schema())
+    async_register_admin_service(hass, DOMAIN, SERVICE_REMOVE_DEVICE, remove_device, schema=vol.Schema({
         vol.Required("device_id"): cv.string,
     }))
-    hass.services.async_register(DOMAIN, SERVICE_ADD_DEVICE_PREVIEW, add_device, schema=_device_schema())
+    async_register_admin_service(hass, DOMAIN, SERVICE_ADD_DEVICE_PREVIEW, add_device, schema=_device_schema())
 
-    hass.services.async_register(DOMAIN, SERVICE_ADD_ROOM, add_room, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_ADD_ROOM, add_room, schema=vol.Schema({
         vol.Required("room_id"): cv.string,
         vol.Required("name"): cv.string,
         vol.Optional("icon", default="mdi:home"): cv.icon,
@@ -1679,7 +1680,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("hybrid_inverter", default=False): cv.boolean,
         vol.Optional("solar_power_entity"): cv.entity_id,
     }))
-    hass.services.async_register(DOMAIN, SERVICE_UPDATE_ROOM, update_room, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_UPDATE_ROOM, update_room, schema=vol.Schema({
         vol.Required("room_id"): cv.string,
         vol.Required("name"): cv.string,
         vol.Optional("icon", default="mdi:home"): cv.icon,
@@ -1687,11 +1688,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("hybrid_inverter", default=False): cv.boolean,
         vol.Optional("solar_power_entity"): cv.entity_id,
     }))
-    hass.services.async_register(DOMAIN, SERVICE_REMOVE_ROOM, remove_room, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_REMOVE_ROOM, remove_room, schema=vol.Schema({
         vol.Required("room_id"): cv.string,
     }))
 
-    hass.services.async_register(DOMAIN, SERVICE_ADD_GROUP, add_group, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_ADD_GROUP, add_group, schema=vol.Schema({
         vol.Required("group_id"): cv.string,
         vol.Required("name"): cv.string,
         vol.Optional("category", default="other"): cv.string,
@@ -1701,7 +1702,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("hybrid_inverter", default=False): cv.boolean,
         vol.Optional("solar_power_entity"): cv.entity_id,
     }))
-    hass.services.async_register(DOMAIN, SERVICE_UPDATE_GROUP, update_group, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_UPDATE_GROUP, update_group, schema=vol.Schema({
         vol.Required("group_id"): cv.string,
         vol.Required("name"): cv.string,
         vol.Optional("category", default="other"): cv.string,
@@ -1711,14 +1712,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("hybrid_inverter", default=False): cv.boolean,
         vol.Optional("solar_power_entity"): cv.entity_id,
     }))
-    hass.services.async_register(DOMAIN, SERVICE_REMOVE_GROUP, remove_group, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_REMOVE_GROUP, remove_group, schema=vol.Schema({
         vol.Required("group_id"): cv.string,
     }))
 
     hass.services.async_register(DOMAIN, SERVICE_HELIOS_MIGRATION_ANALYZE, helios_migration_analyze)
     hass.services.async_register(DOMAIN, SERVICE_HELIOS_MIGRATION_PREVIEW, helios_migration_preview)
     hass.services.async_register(DOMAIN, SERVICE_HELIOS_SMART_IMPORT_REPORT, helios_smart_import_report)
-    hass.services.async_register(DOMAIN, SERVICE_APPLY_HELIOS_MIGRATION_PREVIEW, apply_helios_migration_preview)
+    async_register_admin_service(hass, DOMAIN, SERVICE_APPLY_HELIOS_MIGRATION_PREVIEW, apply_helios_migration_preview)
 
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_FORECAST, refresh_preview)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_OPTIMIZER_PREVIEW, refresh_preview)
@@ -1727,7 +1728,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     # Verify the finance services explicitly; these are required by Sources → Tariffs.
     if not hass.services.has_service(DOMAIN, SERVICE_SAVE_TARIFF_SETTINGS):
-        hass.services.async_register(DOMAIN, SERVICE_SAVE_TARIFF_SETTINGS, save_tariff_settings, schema=vol.Schema({
+        async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_TARIFF_SETTINGS, save_tariff_settings, schema=vol.Schema({
             vol.Required("currency"): cv.string,
             vol.Optional("tariff_mode", default="fixed"): cv.string,
             vol.Optional("import_tariff", default=0.0): vol.Coerce(float),
@@ -1738,31 +1739,31 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             vol.Optional("vat_included", default=True): cv.boolean,
         }))
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS):
-        hass.services.async_register(DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS,
+        async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS,
     SERVICE_SAVE_BATTERY_CAPACITY,
     SERVICE_SAVE_HOME_PROFILE,
     SERVICE_CLEAR_BATTERY_CAPACITY, clear_tariff_settings)
     if not hass.services.has_service(DOMAIN, SERVICE_SET_ENERGY_PRICES):
-        hass.services.async_register(DOMAIN, SERVICE_SET_ENERGY_PRICES, set_energy_prices, schema=dynamic_price_schema)
+        async_register_admin_service(hass, DOMAIN, SERVICE_SET_ENERGY_PRICES, set_energy_prices, schema=dynamic_price_schema)
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_DYNAMIC_TARIFF):
-        hass.services.async_register(DOMAIN, SERVICE_CLEAR_DYNAMIC_TARIFF, clear_dynamic_tariff)
+        async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_DYNAMIC_TARIFF, clear_dynamic_tariff)
 
 
     if not hass.services.has_service(DOMAIN, SERVICE_SAVE_BATTERY_CAPACITY):
-        hass.services.async_register(DOMAIN, SERVICE_SAVE_BATTERY_CAPACITY, save_battery_capacity, schema=vol.Schema({
+        async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_BATTERY_CAPACITY, save_battery_capacity, schema=vol.Schema({
             vol.Required("capacity_kwh"): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=10000)),
         }))
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_BATTERY_CAPACITY):
-        hass.services.async_register(DOMAIN, SERVICE_CLEAR_BATTERY_CAPACITY, clear_battery_capacity)
+        async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_BATTERY_CAPACITY, clear_battery_capacity)
 
 
     if not hass.services.has_service(DOMAIN, SERVICE_SET_DATA_EPOCH):
-        hass.services.async_register(DOMAIN, SERVICE_SET_DATA_EPOCH, set_data_epoch, schema=vol.Schema({
+        async_register_admin_service(hass, DOMAIN, SERVICE_SET_DATA_EPOCH, set_data_epoch, schema=vol.Schema({
             vol.Optional("mode", default="today"): vol.In(["today", "date"]),
             vol.Optional("date"): cv.string,
         }))
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_DATA_EPOCH):
-        hass.services.async_register(DOMAIN, SERVICE_CLEAR_DATA_EPOCH, clear_data_epoch)
+        async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_DATA_EPOCH, clear_data_epoch)
 
     async def save_switch_hub_device(call: ServiceCall) -> None:
         core = _core(hass)
@@ -1807,7 +1808,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         await core.switch_hub.async_evaluate()
         await _refresh_aion_entities(hass)
 
-    hass.services.async_register(DOMAIN, SERVICE_SAVE_SWITCH_HUB_DEVICE, save_switch_hub_device, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_SWITCH_HUB_DEVICE, save_switch_hub_device, schema=vol.Schema({
         vol.Required("device_id"): cv.string,
         vol.Required("name"): cv.string,
         vol.Required("switch_entity"): cv.entity_id,
@@ -1819,11 +1820,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("on_time", default="22:00"): cv.string,
         vol.Optional("off_time", default="06:00"): cv.string,
     }))
-    hass.services.async_register(DOMAIN, SERVICE_REMOVE_SWITCH_HUB_DEVICE, remove_switch_hub_device, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_REMOVE_SWITCH_HUB_DEVICE, remove_switch_hub_device, schema=vol.Schema({
         vol.Required("device_id"): cv.string,
     }))
 
-    hass.services.async_register(DOMAIN, SERVICE_SAVE_NOTIFICATION_SETTINGS, save_notification_settings, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_NOTIFICATION_SETTINGS, save_notification_settings, schema=vol.Schema({
         vol.Optional("enabled"): cv.boolean, vol.Optional("persistent_enabled"): cv.boolean, vol.Optional("mobile_enabled"): cv.boolean,
         vol.Optional("mobile_targets"): vol.All(cv.ensure_list,[cv.string]), vol.Optional("quiet_hours_enabled"): cv.boolean,
         vol.Optional("quiet_start"): cv.string, vol.Optional("quiet_end"): cv.string, vol.Optional("confidence_threshold"): vol.All(vol.Coerce(int),vol.Range(min=0,max=100)),
@@ -1831,7 +1832,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         **{vol.Optional("category_"+k):cv.boolean for k in ("recommendation","battery","scheduler","high_grid_import","solar_surplus","tariff","daily_report","system_health")}
     }))
     hass.services.async_register(DOMAIN, SERVICE_TEST_NOTIFICATION, test_notification)
-    hass.services.async_register(DOMAIN, SERVICE_SAVE_PLUGIN_SETTINGS, save_plugin_settings, schema=vol.Schema({
+    async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_PLUGIN_SETTINGS, save_plugin_settings, schema=vol.Schema({
         vol.Required("plugin_id"): vol.In(["email","pushover","shelly","zigbee","mqtt","nas_backup","inverter_adapters"]),
         vol.Optional("enabled"): cv.boolean, vol.Optional("service"): cv.string, vol.Optional("path"): cv.string,
         vol.Optional("server"): cv.string, vol.Optional("protocol"): vol.In(["smb","nfs"]), vol.Optional("nas_type"): vol.In(["synology","qnap","truenas","unraid","generic"]),
@@ -1839,7 +1840,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("retention"): vol.All(vol.Coerce(int),vol.Range(min=1,max=100)), vol.Optional("schedule"): cv.string,
     }))
     hass.services.async_register(DOMAIN, SERVICE_TEST_PLUGIN, test_plugin, schema=vol.Schema({vol.Required("plugin_id"): cv.string}))
-    hass.services.async_register(DOMAIN, SERVICE_CREATE_NAS_BACKUP, create_nas_backup)
+    async_register_admin_service(hass, DOMAIN, SERVICE_CREATE_NAS_BACKUP, create_nas_backup)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_PLUGIN_DISCOVERY, refresh_plugin_discovery, schema=vol.Schema({vol.Optional("plugin_id"): vol.In(["email","pushover","shelly","zigbee","mqtt","nas_backup","inverter_adapters"])}))
     hass.services.async_register(DOMAIN, SERVICE_RUN_QA_HEALTH_CHECK, run_qa_health_check)
     REGISTERED = True

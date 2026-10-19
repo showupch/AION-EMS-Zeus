@@ -1013,11 +1013,29 @@ class IntegrationHub:
         return self.refresh()
 
     def _nas_target_path(self, cfg):
-        """Return selected HA mount plus optional Zeus backup subfolder."""
+        """Validate the NAS destination before writing or pruning backups."""
         from pathlib import Path
-        mount = Path(str(cfg.get("path", "") or "").strip()).expanduser()
-        folder = str(cfg.get("folder", "") or "").strip().strip("/\\")
-        return mount / folder if folder else mount
+
+        raw = str(cfg.get("path", "") or "").strip()
+        folder = str(cfg.get("folder", "") or "").strip()
+        if not raw:
+            raise ValueError("Select an approved Home Assistant storage location")
+        relative = Path(folder)
+        if (relative.is_absolute() or ".." in relative.parts or
+                "\\\\" in folder or "\\" in folder or folder.startswith(("/", "\\"))):
+            raise ValueError("Backup folder must be relative and cannot contain '..' or backslashes")
+        mount = Path(raw).expanduser().resolve()
+        discovered = any(
+            Path(str(item.get("path", "") or "")).expanduser().resolve() == mount
+            and item.get("available", False) and item.get("writable", False)
+            for item in self._ha_mount_candidates if item.get("path")
+        )
+        if not discovered and not self.hass.config.is_allowed_path(str(mount)):
+            raise ValueError("Backup destination is not a discovered writable mount or allowed Home Assistant path")
+        target = (mount / relative).resolve()
+        if not target.is_relative_to(mount):
+            raise ValueError("Backup folder escapes the selected storage location")
+        return target
 
     def _candidate_registry_state(self, candidate):
         """Classify a discovered candidate against the Zeus Registry.
@@ -1212,6 +1230,9 @@ class IntegrationHub:
         if not raw:
             raise ValueError("Discover and select Home Assistant network storage first")
 
+        # Validate the stored path and folder before either Supervisor or direct backups.
+        # The same target is used for writing and retention deletion.
+        validated_target = self._nas_target_path(cfg)
         candidate = self._selected_ha_storage(cfg)
         if candidate and str(candidate.get("usage", "") or "").lower() == "backup":
             if not candidate.get("available", False):
@@ -1222,7 +1243,7 @@ class IntegrationHub:
         exists = await self.hass.async_add_executor_job(lambda: mount.exists() and mount.is_dir())
         if not exists:
             raise ValueError("The selected Home Assistant storage mount is unavailable. Refresh storage and select it again.")
-        path = self._nas_target_path(cfg)
+        path = validated_target
         await self.hass.async_add_executor_job(path.mkdir, parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         out = path / f"aion_ems_zeus_backup_{stamp}.json"
