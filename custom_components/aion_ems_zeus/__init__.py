@@ -379,6 +379,89 @@ async def _websocket_solar_irradiance_learning(hass, connection, msg) -> None:
     })
 
 
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/solar_irradiance_daily_calibration"})
+@websocket_api.async_response
+async def _websocket_solar_irradiance_daily_calibration(hass, connection, msg) -> None:
+    """Read-only daily paired Recorder irradiance/PV measurements, no forecast correction."""
+    from datetime import timedelta
+    from collections import defaultdict
+    from homeassistant.components.recorder import get_instance, history
+    from homeassistant.components.recorder.util import session_scope
+    from homeassistant.util import dt as dt_util
+
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        connection.send_error(msg["id"], "not_ready", "Zeus is not ready")
+        return
+    station = (core.registry.data.get("sources") or {}).get("local_weather_station") or {}
+    irradiance = str((station.get("entities") or {}).get("solar_radiation") or "").strip()
+    pv = str(core.energy_mapping.mappings.get("solar_power") or "").strip()
+    if not station.get("enabled") or not irradiance or not pv or irradiance == pv:
+        connection.send_result(msg["id"], {"status":"unavailable","reason":"Independent mapped irradiance and PV power sources required","days":[]})
+        return
+    now = dt_util.utcnow()
+    start = now - timedelta(days=21)
+    def query():
+        with session_scope(hass=hass, read_only=True) as session:
+            return history.get_significant_states_with_session(
+                hass, session, start, now, [irradiance,pv], None, False, False, False, True
+            )
+    try:
+        raw = await get_instance(hass).async_add_executor_job(query)
+    except Exception:
+        connection.send_result(msg["id"], {"status":"unavailable","reason":"Recorder history unavailable","days":[]})
+        return
+    bins = {}
+    counts = {}
+    for key, eid in (("irr",irradiance),("pv",pv)):
+        states = (raw or {}).get(eid,[]) or []
+        counts[key] = len(states)
+        current = hass.states.get(eid)
+        fallback = str(current.attributes.get("unit_of_measurement") or "") if current else ""
+        for state in states:
+            try:
+                value = float(state.state)
+                unit = str(state.attributes.get("unit_of_measurement") or fallback)
+                if key == "irr":
+                    if unit not in ("W/m²","W/m2"): continue
+                elif unit == "kW": value *= 1000
+                elif unit != "W": continue
+                if not 0 <= value < 100000: continue
+                stamp = getattr(state,"last_updated",None) or getattr(state,"last_changed",None)
+                if stamp is None: continue
+                stamp = dt_util.as_utc(stamp).replace(minute=(stamp.minute//30)*30,second=0,microsecond=0)
+                bins.setdefault(stamp,{}).setdefault(key,[]).append(value)
+            except (TypeError,ValueError,OverflowError):
+                continue
+    daily = defaultdict(list)
+    for stamp, row in sorted(bins.items()):
+        if not row.get("irr") or not row.get("pv"): continue
+        irradiance_wm2 = sum(row["irr"])/len(row["irr"])
+        pv_w = sum(row["pv"])/len(row["pv"])
+        if irradiance_wm2 < 20: continue
+        day = dt_util.as_local(stamp).date().isoformat()
+        daily[day].append((irradiance_wm2,pv_w))
+    days=[]
+    for day, rows in sorted(daily.items()):
+        morning=[x for x in rows if x[0]>=20]
+        n=len(morning)
+        days.append({
+            "date":day, "paired_daylight_buckets":n,
+            "peak_irradiance_w_m2":round(max(x[0] for x in rows),1),
+            "mean_irradiance_w_m2":round(sum(x[0] for x in rows)/n,1),
+            "mean_pv_kw":round(sum(x[1] for x in rows)/n/1000,2),
+            "pv_kw_per_100_w_m2":round(sum(x[1] for x in rows)/sum(x[0] for x in rows)/10,3),
+            "coverage":"limited" if n < 8 else "sampled",
+        })
+    connection.send_result(msg["id"],{
+        "status":"ready" if days else "unavailable",
+        "days":days, "period":"Last 21 days",
+        "source_irradiance":irradiance,"source_pv":pv,
+        "irradiance_records":counts.get("irr",0),"pv_records":counts.get("pv",0),
+        "note":"Paired 30-minute samples only; daily means are not daily kWh and no forecast adjustment is applied.",
+    })
+
+
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/heat_pump_day_history"})
 @websocket_api.async_response
 async def _websocket_heat_pump_day_history(hass, connection, msg) -> None:
@@ -883,6 +966,37 @@ async def _websocket_grid_day_history(hass, connection, msg) -> None:
     connection.send_result(msg["id"],{"series":rows,"mappings":{"grid":grid_id,"import":import_id,"export":export_id,"house":house_id},"options":options,"source":"Home Assistant Recorder"})
 
 
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/forecast_v2_hourly_diagnostics"})
+@websocket_api.async_response
+async def _websocket_forecast_v2_hourly_diagnostics(hass, connection, msg) -> None:
+    """Return compact read-only hourly evidence for tomorrow."""
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        connection.send_error(msg["id"], "not_ready", "Zeus is not ready")
+        return
+    tomorrow = (dt_util.now() + timedelta(days=1)).date().isoformat()
+    rows = []
+    for row in (core.forecast.summary() or {}).get("planning_hourly", []):
+        stamp = str(row.get("time") or "")
+        if stamp[:10] == tomorrow:
+            rows.append({
+                "time": stamp, "condition": row.get("condition"),
+                "baseline_w": row.get("baseline_solar_power_w"),
+                "legacy_w": row.get("legacy_solar_power_w"),
+                "v2_w": row.get("v2_solar_power_w"),
+                "final_w": row.get("solar_power_w"),
+                "baseline_days": row.get("v2_baseline_days"),
+                "cloud_factor": row.get("v2_cloud_factor"),
+                "guards": row.get("v2_guard_reasons") or [],
+            })
+    connection.send_result(msg["id"], {
+        "date": tomorrow, "hours": rows[:24],
+        "status": "ready" if rows else "unavailable",
+    })
+
+
 async def _async_register_frontend(hass: HomeAssistant, version: str) -> None:
     """Serve and register the Device Manager as a native Home Assistant panel."""
     if not hass.data.get(_FRONTEND_REGISTERED):
@@ -965,6 +1079,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, _websocket_restore_configuration)
         websocket_api.async_register_command(hass, _websocket_entity_authority_recorder_evidence)
         websocket_api.async_register_command(hass, _websocket_solar_irradiance_learning)
+        websocket_api.async_register_command(hass, _websocket_forecast_v2_hourly_diagnostics)
+        websocket_api.async_register_command(hass, _websocket_solar_irradiance_daily_calibration)
         websocket_api.async_register_command(hass, _websocket_heat_pump_day_history)
         websocket_api.async_register_command(hass, _websocket_heat_pump_monthly_energy)
         websocket_api.async_register_command(hass, _websocket_solar_day_history)

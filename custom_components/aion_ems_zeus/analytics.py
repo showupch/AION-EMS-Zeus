@@ -3137,6 +3137,10 @@ class ForecastEngine:
                 value = (snap.get("flows") or {}).get("solar_power_w")
                 if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                     continue
+                # Only completed historical days: partial current-day readings
+                # otherwise bias an equal-day baseline toward morning hours.
+                if local_stamp.date() >= now.date():
+                    continue
                 key = (local_stamp.date(), local_stamp.hour)
                 solar_by_day_hour.setdefault(key, []).append((local_stamp, float(value)))
             except (KeyError, TypeError, ValueError, OverflowError):
@@ -3163,7 +3167,9 @@ class ForecastEngine:
             weekday = [(day, h) for day, h in solar_day_means
                        if h == hour and day.weekday() == target_date.weekday()]
             all_days = [(day, h) for day, h in solar_day_means if h == hour]
-            chosen = weekday if weekday else all_days
+            # A single matching weekday is not representative. Prefer at
+            # least three complete matching weekdays, otherwise all days.
+            chosen = weekday if len(weekday) >= 3 else all_days
             if not chosen:
                 return None
             equal = sum(solar_day_means[k] for k in chosen) / len(chosen)
@@ -3323,6 +3329,28 @@ class ForecastEngine:
         pv_capacity_kwp = self._number(home_settings.get("pv_capacity_kwp") or home_settings.get("pv_capacity"), 0.0)
         pv_capacity_w = pv_capacity_kwp * 1000.0 if pv_capacity_kwp > 0 else None
 
+        # Detect persistent overcast from timestamped hourly forecast evidence.
+        # Do not infer a whole-day condition from one fog/rain icon, and do not
+        # apply this guard to days without enough weather coverage.
+        persistent_overcast_days = set()
+        for day_offset in range(8):
+            day = (forecast_start + timedelta(days=day_offset)).date()
+            observed = []
+            for hour in range(8, 18):
+                sample = forecast_start.replace(hour=hour, minute=0, second=0, microsecond=0)
+                sample += timedelta(days=(day - sample.date()).days)
+                _, sample_condition, sample_cloud, matched = weather_for(sample)
+                if not matched:
+                    continue
+                try:
+                    cloud_pct = float(sample_cloud)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(cloud_pct):
+                    observed.append((cloud_pct, str(sample_condition or '').lower()))
+            if len(observed) >= 8 and sum(cloud >= 80 for cloud, _ in observed) >= 8:
+                persistent_overcast_days.add(day)
+
         hourly = []
         projected_soc = soc if 0 <= soc <= 100 else None
         for offset in range(168):
@@ -3343,9 +3371,13 @@ class ForecastEngine:
             adjusted_solar = round(max((raw_solar or 0) * learned_factor, 0), 1) if raw_solar is not None else None
             legacy_solar = adjusted_solar
             v2_solar = None
+            v2_guard_reasons = []
+            v2_baseline_days = None
+            v2_cloud_factor = None
             if forecast_mode == "v2":
                 alternative = solar_baseline_audit(dt.date(), dt.hour)
                 if alternative is not None and alternative["historical_days"] >= 2:
+                    v2_baseline_days = alternative["historical_days"]
                     cloud_num = None
                     try:
                         cloud_num = float(cloud) if cloud is not None else None
@@ -3359,7 +3391,46 @@ class ForecastEngine:
                         v2_factor = max(0.08, 1.0 - max(0.0, 1.0 - factor) * 115.0 / 150.0)
                     else:
                         v2_factor = 1.0
+                    v2_cloud_factor = round(v2_factor, 4)
+                    # Explicit fog/precipitation conditions provide information
+                    # about opacity beyond cloud percentage. Reuse existing
+                    # WeatherEngine condition factors as a ceiling for V2;
+                    # ordinary "cloudy" hours retain the numeric cloud model.
+                    condition_key = str(condition or "").strip().lower()
+                    adverse_condition_factors = {
+                        "fog": 0.28, "rainy": 0.22, "pouring": 0.12,
+                        "lightning-rainy": 0.10, "snowy": 0.18,
+                        "snowy-rainy": 0.12,
+                    }
+                    if weather_forecast_applied and condition_key in adverse_condition_factors:
+                        if v2_factor > adverse_condition_factors[condition_key]:
+                            v2_guard_reasons.append("adverse_weather")
+                        v2_factor = min(v2_factor, adverse_condition_factors[condition_key])
                     v2_solar = max(0.0, alternative["equal_day_w"] * v2_factor * learned_factor)
+                    # Conservative weather guard: under heavy clouds, V2 may
+                    # not greatly exceed the already weather-adjusted Legacy
+                    # estimate. This is a safety bound, NOT learned accuracy.
+                    # Missing cloud evidence is never treated as clear sky.
+                    if weather_forecast_applied and cloud_num is not None and legacy_solar is not None:
+                        if cloud_num >= 80.0:
+                            ceiling = max(0.0, legacy_solar) * 1.25
+                            if v2_solar > ceiling:
+                                v2_guard_reasons.append("heavy_cloud_legacy_ceiling")
+                            v2_solar = min(v2_solar, ceiling)
+                        elif cloud_num >= 60.0:
+                            ceiling = max(0.0, legacy_solar) * 1.50
+                            if v2_solar > ceiling:
+                                v2_guard_reasons.append("cloud_legacy_ceiling")
+                            v2_solar = min(v2_solar, ceiling)
+                    # Persistent overcast: the V2 lighter-cloud candidate
+                    # must not exceed the weather-adjusted Legacy estimate.
+                    # This is a conservative upper bound, not a calibrated
+                    # forecast or a replacement for site irradiance learning.
+                    if dt.date() in persistent_overcast_days and legacy_solar is not None:
+                        ceiling = max(0.0, legacy_solar)
+                        if v2_solar > ceiling:
+                            v2_guard_reasons.append("persistent_overcast_ceiling")
+                        v2_solar = min(v2_solar, ceiling)
                     if pv_capacity_w is not None:
                         v2_solar = min(v2_solar, pv_capacity_w)
                     v2_solar = round(v2_solar, 1)
@@ -3397,6 +3468,9 @@ class ForecastEngine:
                 "legacy_solar_power_w": legacy_solar,
                 "v2_solar_power_w": v2_solar,
                 "forecast_engine_mode": forecast_mode,
+                "v2_guard_reasons": v2_guard_reasons,
+                "v2_baseline_days": v2_baseline_days,
+                "v2_cloud_factor": v2_cloud_factor,
                 "adaptive_correction_percent": round(contextual_correction_percent, 1),
                 "calibration_context": calibration_context,
                 "calibration_source": calibration_source,
@@ -3930,7 +4004,10 @@ class ForecastEngine:
             # Do not apply historical adaptive bias without verified training
             # outcomes; retain it separately as a shadow diagnostic.
             candidate_energy = None
-            if combined_complete:
+            candidate_rows = [r for r in hourly if datetime.fromisoformat(r["time"]).date() == target_date]
+            if forecast_mode == "v2" and len(candidate_rows) == 24 and all(r.get("v2_solar_power_w") is not None for r in candidate_rows):
+                candidate_energy = round(sum(r["v2_solar_power_w"] for r in candidate_rows) / 1000.0, 3)
+            elif combined_complete:
                 candidate_energy = round(combined_totals["equal_day"]["moderate_150"], 3)
             forecast_correction_candidate = {
                 "status": "production_candidate_opt_in" if candidate_energy is not None else "incomplete_evidence",
@@ -3941,7 +4018,7 @@ class ForecastEngine:
                     if combined_complete else None
                 ),
                 "historical_baseline_method": "equal_weight_per_historical_day",
-                "cloud_attenuation_method": "max(0.08, 1 - cloud_percent / 150)",
+                "cloud_attenuation_method": "moderate_150_with_heavy_cloud_legacy_guard",
                 "site_bias_multiplier": 1.0,
                 "bias_calibration_status": "disabled_pending_verified_out_of_sample_evidence",
                 "historical_days_minimum": min(
@@ -3950,7 +4027,7 @@ class ForecastEngine:
                 "active_engine_mode": forecast_mode,
                 "weather_hours": sum(h["weather_matched"] for h in combined_hours),
                 "numeric_cloud_hours": sum(h["cloud_percent"] is not None for h in combined_hours),
-                "warning": "Experimental V2 requires explicit opt-in; legacy is default and rollback.",
+                "warning": "V2 is unvalidated; heavy-cloud guard limits upward divergence from Legacy. Explicit opt-in only.",
                 "production_applied": False,
                 "control_permission": False,
             }
@@ -6060,8 +6137,10 @@ class DeviceAnalyticsEngine:
                     duration=(nxt[0]-cur[0]).total_seconds()
                     if prev[1] == nxt[1] and cur[1] != prev[1] and duration < persistence:
                         # Momentary 0 W / telemetry dip inside one continuous run.
+                        # Remove only the glitch; process the following
+                        # transition on the next iteration.
                         changed=True
-                        i += 2
+                        i += 1
                         continue
                     cleaned.append(cur); i += 1
                 if i == len(states)-1:

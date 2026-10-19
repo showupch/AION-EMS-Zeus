@@ -504,6 +504,39 @@ class PredictionAccuracyEngine:
             "control_permission": False,
         }
 
+    def _solar_outcome_conflicts(self) -> list[dict[str, Any]]:
+        """Flag dates where stored completed-day solar totals disagree.
+
+        Different accounting sources must never silently become training truth.
+        This is diagnostic only and does not rewrite existing history.
+        """
+        daily = {}
+        for row in self._daily_samples:
+            date = row.get("target_date")
+            value = self._num((row.get("actual") or {}).get("solar_kwh"))
+            if isinstance(date, str) and value is not None and math.isfinite(value):
+                daily[date] = value
+        conflicts = []
+        for source, outcomes in (
+            ("cloud", self._cloud_outcomes),
+            ("forward_shadow", self._forward_shadow_outcomes),
+        ):
+            for row in outcomes:
+                date = row.get("target_date")
+                value = self._num(row.get("actual_kwh"))
+                if date not in daily or value is None or not math.isfinite(value):
+                    continue
+                expected = daily[date]
+                tolerance = max(0.5, 0.02 * max(expected, value))
+                if abs(expected - value) > tolerance:
+                    conflicts.append({
+                        "date": date, "source": source,
+                        "daily_actual_kwh": round(expected, 3),
+                        "other_actual_kwh": round(value, 3),
+                        "difference_kwh": round(abs(expected - value), 3),
+                    })
+        return conflicts
+
     def _capture_forward_shadow(self, now: datetime) -> None:
         """Freeze a multiplier before the target day; never use target-day actuals."""
         today = dt_util.as_local(now).date().isoformat()
@@ -520,6 +553,8 @@ class PredictionAccuracyEngine:
             pred = self._num((pending.get("predicted") or {}).get("solar_kwh"))
             if pred is None or not math.isfinite(pred) or pred <= 0:
                 continue
+            # Exclude known inconsistent completed-day outcomes from training.
+            conflicted_dates = {item["date"] for item in self._solar_outcome_conflicts()}
             # Train only on earlier completed days. Exclude the target date
             # and any future dates, even if a corrupt record exists.
             historical = []
@@ -529,6 +564,7 @@ class PredictionAccuracyEngine:
                 actual = self._num((row.get("actual") or {}).get("solar_kwh"))
                 stamp = self._parse_time(row.get("forecast_created_at"))
                 if (not isinstance(day, str) or day >= target or
+                        day in conflicted_dates or
                         fc is None or not math.isfinite(fc) or fc <= 0 or
                         actual is None or not math.isfinite(actual) or actual < 0 or
                         stamp is None):
@@ -609,6 +645,7 @@ class PredictionAccuracyEngine:
             "actual_source_verified_against_inverters": False,
             "production_applied": False,
             "control_permission": False,
+            "solar_outcome_conflicts": self._solar_outcome_conflicts(),
             "validation": "Chronological forward holdout: multiplier frozen before target date",
         }
 
