@@ -1511,9 +1511,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_QUESTION_LIBRARY, refresh_question_library)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH_CAPABILITY_REPORT, refresh_capability_report)
     hass.services.async_register(DOMAIN, SERVICE_PREVIEW_HA_ENERGY_IMPORT, preview_home_assistant_energy_import)
-    async_register_admin_service(hass, 
-        DOMAIN,
-        SERVICE_APPLY_HA_ENERGY_IMPORT,
+    async_register_admin_service(hass, DOMAIN, SERVICE_APPLY_HA_ENERGY_IMPORT,
         apply_home_assistant_energy_import,
         schema=vol.Schema({
             vol.Optional("import_whole_home", default=True): cv.boolean,
@@ -1522,9 +1520,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         }),
     )
 
-    async_register_admin_service(hass, 
-        DOMAIN,
-        SERVICE_REGISTER_BATTERY_PROFILE,
+    async_register_admin_service(hass, DOMAIN, SERVICE_REGISTER_BATTERY_PROFILE,
         register_battery_profile,
         schema=vol.Schema({
             vol.Optional("device_id", default="canonical_battery"): cv.string,
@@ -1547,9 +1543,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_ENTITY_MAPPING, clear_entity_mapping, schema=vol.Schema({vol.Required("field"): vol.In(list(_core(hass).energy_mapping.FIELD_RULES))}))
     async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_WEATHER_SOURCE, save_weather_source, schema=vol.Schema({vol.Required("entity_id"): cv.entity_id}))
     async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_WEATHER_SOURCE, clear_weather_source)
-    async_register_admin_service(hass, 
-        DOMAIN,
-        SERVICE_SAVE_LOCAL_WEATHER_STATION,
+    async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_LOCAL_WEATHER_STATION,
         save_local_weather_station,
         schema=vol.Schema({
             vol.Optional("name", default="Local Weather Station"): cv.string,
@@ -1578,9 +1572,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         vol.Optional("story_style", default="friendly"): vol.In(["professional", "friendly", "technical", "concise"]),
         vol.Optional("briefing_length", default="normal"): vol.In(["short", "normal", "detailed"]),
     }))
-    async_register_admin_service(hass, 
-        DOMAIN,
-        SERVICE_SAVE_TARIFF_SETTINGS,
+    async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_TARIFF_SETTINGS,
         save_tariff_settings,
         schema=vol.Schema({
             vol.Required("currency"): cv.string,
@@ -1594,9 +1586,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         }),
     )
     async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_TARIFF_SETTINGS, clear_tariff_settings)
-    async_register_admin_service(hass, 
-        DOMAIN,
-        SERVICE_SAVE_PAYBACK_SETTINGS,
+    async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_PAYBACK_SETTINGS,
         save_payback_settings,
         schema=vol.Schema({
             vol.Required("gross_investment"): vol.Coerce(float),

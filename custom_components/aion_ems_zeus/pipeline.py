@@ -1013,7 +1013,7 @@ class IntegrationHub:
         return self.refresh()
 
     def _nas_target_path(self, cfg):
-        """Validate the NAS destination before writing or pruning backups."""
+        """Accept only a discovered writable mount or HA-allowed base path."""
         from pathlib import Path
 
         raw = str(cfg.get("path", "") or "").strip()
@@ -1021,8 +1021,7 @@ class IntegrationHub:
         if not raw:
             raise ValueError("Select an approved Home Assistant storage location")
         relative = Path(folder)
-        if (relative.is_absolute() or ".." in relative.parts or
-                "\\\\" in folder or "\\" in folder or folder.startswith(("/", "\\"))):
+        if relative.is_absolute() or ".." in relative.parts or chr(92) in folder or folder.startswith("/"):
             raise ValueError("Backup folder must be relative and cannot contain '..' or backslashes")
         mount = Path(raw).expanduser().resolve()
         discovered = any(
@@ -1146,6 +1145,13 @@ class IntegrationHub:
     async def async_save_settings(self, plugin_id, values):
         if plugin_id not in self.PLUGINS: raise ValueError("Unknown plugin")
         safe=dict(values); safe.pop("control",None); safe["control_permission"]=False
+        if plugin_id == "nas_backup" and ("path" in safe or "folder" in safe):
+            proposed = dict(self._settings().get(plugin_id, {}))
+            proposed.update(safe)
+            if proposed.get("path"):
+                self._nas_target_path(proposed)
+            elif proposed.get("folder"):
+                raise ValueError("Select an approved storage path before specifying a backup folder")
         self._settings().setdefault(plugin_id,{}).update(safe)
         await self.registry.async_save(); return self.refresh()
 
@@ -1230,8 +1236,6 @@ class IntegrationHub:
         if not raw:
             raise ValueError("Discover and select Home Assistant network storage first")
 
-        # Validate the stored path and folder before either Supervisor or direct backups.
-        # The same target is used for writing and retention deletion.
         validated_target = self._nas_target_path(cfg)
         candidate = self._selected_ha_storage(cfg)
         if candidate and str(candidate.get("usage", "") or "").lower() == "backup":
@@ -1306,6 +1310,7 @@ class IntegrationHub:
         if not raw:
             raise ValueError("NAS server is reachable. Discover and select Home Assistant storage")
 
+        validated_target = self._nas_target_path(cfg)
         candidate = self._selected_ha_storage(cfg)
         if candidate and str(candidate.get("usage", "") or "").lower() == "backup":
             if not candidate.get("available", False):
