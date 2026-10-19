@@ -8258,6 +8258,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
 
     <article class="panel spaced zf-week"><div class="section-title"><div><span>7-DAY OUTLOOK</span><h2>Production, demand and grid direction</h2></div><small>Calendar-aligned local days</small></div><div class="zf-days">${dayHtml}</div></article>
 
+
     <details class="zi-advanced" ${this._forecastAdvancedOpen?'open':''}>
       <summary>Advanced forecast evidence and learning</summary>
       <div class="zi-advanced-body">
