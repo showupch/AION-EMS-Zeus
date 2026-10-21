@@ -3194,37 +3194,54 @@ class ForecastEngine:
             return round(sum(sample) / len(sample), 1)
 
         def weather_for(dt):
-            best = None
+            # A timestamp match alone does not prove usable cloud evidence.
+            # Exact hourly matching also prevents one provider row from being
+            # spread over multiple missing forecast hours.
             target_local = dt_util.as_local(dt)
+            target_utc = target_local.astimezone(timezone.utc)
+            best = None
             for row in forecast_rows:
+                if not isinstance(row, dict):
+                    continue
                 raw = row.get("datetime") or row.get("time")
                 try:
                     candidate = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
                 if candidate.tzinfo is None:
                     candidate = candidate.replace(tzinfo=timezone.utc)
                 candidate_local = dt_util.as_local(candidate)
 
+                condition = str(row.get("condition") or "").strip().lower()
+                cloud = row.get("cloud_coverage")
+                try:
+                    cloud_num = float(cloud) if cloud is not None else None
+                    if cloud_num is not None and (not math.isfinite(cloud_num) or not 0 <= cloud_num <= 100):
+                        cloud_num = None
+                except (TypeError, ValueError, OverflowError):
+                    cloud_num = None
+                # Temperature, precipitation and a timestamp alone do not
+                # determine solar attenuation. Unknown conditions are excluded.
+                known_conditions = getattr(self.weather, "CONDITION_FACTORS", {}) if self.weather else {}
+                has_condition = condition in known_conditions
+                if cloud_num is None and not has_condition:
+                    continue
                 if forecast_granularity == "daily":
                     if candidate_local.date() != target_local.date():
                         continue
-                    # A daily forecast represents the complete local day.
-                    row_factor = self.weather.factor_for(row.get("condition"), row.get("cloud_coverage")) if self.weather else 1.0
-                    return row_factor, row.get("condition"), row.get("cloud_coverage"), True
+                    factor = self.weather.factor_for(condition if has_condition else None, cloud_num) if self.weather else 1.0
+                    return factor, condition if has_condition else None, cloud_num, True
 
-                distance = abs((candidate_local - target_local).total_seconds())
+                distance = abs((candidate_local.astimezone(timezone.utc) - target_utc).total_seconds())
                 if best is None or distance < best[0]:
-                    best = (distance, row)
+                    best = (distance, condition if has_condition else None, cloud_num)
 
-            if best and best[0] <= 3 * 3600:
-                row = best[1]
-                factor = self.weather.factor_for(row.get("condition"), row.get("cloud_coverage")) if self.weather else 1.0
-                return factor, row.get("condition"), row.get("cloud_coverage"), True
+            if best and best[0] <= 30 * 60:
+                _, condition, cloud = best
+                factor = self.weather.factor_for(condition, cloud) if self.weather else 1.0
+                return factor, condition, cloud, True
 
-            # Historical solar profiles already contain normal weather variation.
-            # Current weather is never copied into future days when no timestamped
-            # future forecast row exists.
+            # No source-supported weather evidence at this hour: Legacy fallback.
             return 1.0, None, None, False
 
         flow_summary = self.energy_flow.summary() or {}
@@ -3368,6 +3385,13 @@ class ForecastEngine:
             factor, condition, cloud, weather_forecast_applied = weather_for(dt)
             raw_solar = round(max((baseline_solar or 0) * factor, 0), 1) if baseline_solar is not None else None
             learned_factor, calibration_context, contextual_correction_percent, calibration_source = contextual_factor(condition)
+            if forecast_mode == "v2":
+                # V2 outcomes are not yet consistently tied to authoritative
+                # measured PV energy. Planning's Legacy-trained correction must
+                # not calibrate V2 until chronological forward trust is proven.
+                learned_factor = 1.0
+                contextual_correction_percent = 0.0
+                calibration_source = "v2_unverified_calibration_disabled"
             adjusted_solar = round(max((raw_solar or 0) * learned_factor, 0), 1) if raw_solar is not None else None
             legacy_solar = adjusted_solar
             v2_solar = None
@@ -3390,8 +3414,11 @@ class ForecastEngine:
                     elif weather_forecast_applied:
                         v2_factor = max(0.08, 1.0 - max(0.0, 1.0 - factor) * 115.0 / 150.0)
                     else:
-                        v2_factor = 1.0
-                    v2_cloud_factor = round(v2_factor, 4)
+                        # Missing weather evidence is not evidence of clear sky.
+                        # Preserve the existing Legacy estimate for this hour.
+                        v2_factor = None
+                        v2_guard_reasons.append("weather_unavailable_legacy_fallback")
+                    v2_cloud_factor = round(v2_factor, 4) if v2_factor is not None else None
                     # Explicit fog/precipitation conditions provide information
                     # about opacity beyond cloud percentage. Reuse existing
                     # WeatherEngine condition factors as a ceiling for V2;
@@ -3406,7 +3433,8 @@ class ForecastEngine:
                         if v2_factor > adverse_condition_factors[condition_key]:
                             v2_guard_reasons.append("adverse_weather")
                         v2_factor = min(v2_factor, adverse_condition_factors[condition_key])
-                    v2_solar = max(0.0, alternative["equal_day_w"] * v2_factor * learned_factor)
+                    v2_solar = (max(0.0, alternative["equal_day_w"] * v2_factor * learned_factor)
+                                if v2_factor is not None else legacy_solar)
                     # Conservative weather guard: under heavy clouds, V2 may
                     # not greatly exceed the already weather-adjusted Legacy
                     # estimate. This is a safety bound, NOT learned accuracy.
@@ -4131,8 +4159,8 @@ class ForecastEngine:
                 },
                 "raw_expected_solar_kwh": energy(rows, "raw_solar_power_w"),
                 "expected_solar_kwh": round(max(expected_solar, 0.0), 2),
-                "adaptive_correction_percent": adaptive.get("applied_correction_percent", 0.0),
-                "adaptive_correction_applied": bool(adaptive.get("applied")),
+                "adaptive_correction_percent": (0.0 if forecast_mode == "v2" else adaptive.get("applied_correction_percent", 0.0)),
+                "adaptive_correction_applied": bool(adaptive.get("applied")) and forecast_mode != "v2",
                 "expected_consumption_kwh": round(max(expected_load, 0.0), 2),
                 "expected_grid_import_kwh": round(max(expected_import, 0.0), 2),
                 "expected_grid_export_kwh": round(max(expected_export, 0.0), 2),
