@@ -1,0 +1,19 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "AION EMS Zeus",
+        "description": "Set up AION EMS Zeus. After adding the integration, open the Zeus panel to configure your energy sources and devices.",
+        "data": {
+          "developer_mode": "Developer mode"
+        },
+        "data_description": {
+          "developer_mode": "Enable additional developer features (optional)."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "AION EMS Zeus is already configured."
+    }
+  }
+}
