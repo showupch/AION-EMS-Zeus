@@ -92,6 +92,7 @@ def _entity_references(value, path="configuration"):
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/export_configuration"})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def _websocket_export_configuration(hass, connection, msg) -> None:
     core = hass.data.get(DOMAIN, {}).get("core")

@@ -1561,8 +1561,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         }),
     )
     async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_LOCAL_WEATHER_STATION, clear_local_weather_station)
-    hass.services.async_register(
-        DOMAIN, "set_solar_forecast_engine", set_solar_forecast_engine,
+    async_register_admin_service(
+        hass, DOMAIN, "set_solar_forecast_engine", set_solar_forecast_engine,
         schema=vol.Schema({vol.Required("mode"): vol.In(["legacy", "v2"])}),
     )
     async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_HOME_PROFILE, save_home_profile, schema=vol.Schema({
