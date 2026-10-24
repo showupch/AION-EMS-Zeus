@@ -403,6 +403,20 @@ class PredictionAccuracyEngine:
             self._summary["cloud_model_accuracy"] = self._cloud_comparison_summary()
             self._summary["updated_at"] = now.isoformat()
 
+    def _frozen_completed_day_solar_actual(self, target: str, rows: dict) -> tuple[float | None, str]:
+        """Reuse the canonical daily actual frozen before later Recorder revisions."""
+        for sample in self._daily_samples:
+            if sample.get("target_date") != target:
+                continue
+            value = self._num((sample.get("actual") or {}).get("solar_kwh"))
+            if value is not None and math.isfinite(value) and value >= 0:
+                return value, "frozen_daily_sample"
+        row = rows.get(target)
+        value = self._num(row.get("solar_energy_kwh")) if row else None
+        if value is None or not math.isfinite(value) or value < 0:
+            return None, "missing_canonical_daily_total"
+        return value, "canonical_completed_day"
+
     def _mature_cloud_comparisons(self, now: datetime) -> None:
         today = dt_util.as_local(now).date().isoformat()
         actual_rows = {str(r.get("date")): r for r in self._canonical_daily_rows()}
@@ -413,14 +427,13 @@ class PredictionAccuracyEngine:
             if not target or target >= today:
                 remaining.append(snapshot)
                 continue
-            row = actual_rows.get(target)
-            actual = self._num(row.get("solar_energy_kwh")) if row else None
-            if actual is None or actual < 0:
+            actual, actual_source = self._frozen_completed_day_solar_actual(target, actual_rows)
+            if actual is None:
                 remaining.append(snapshot)
                 continue
             predictions = snapshot.get("forecasts_kwh") or {}
             errors = {k: round(v - actual, 3) for k, v in predictions.items() if isinstance(v, (int, float))}
-            self._cloud_outcomes.append({**snapshot, "actual_kwh": round(actual, 3),
+            self._cloud_outcomes.append({**snapshot, "actual_kwh": round(actual, 3), "actual_source": actual_source,
                 "errors_kwh": errors, "absolute_errors_kwh": {k: abs(v) for k, v in errors.items()}})
             changed = True
         self._cloud_pending = remaining
@@ -612,15 +625,14 @@ class PredictionAccuracyEngine:
             if not isinstance(target, str) or target >= today:
                 remaining.append(row)
                 continue
-            actual_row = actual_rows.get(target)
-            actual = self._num(actual_row.get("solar_energy_kwh")) if actual_row else None
-            if actual is None or not math.isfinite(actual) or actual < 0:
+            actual, actual_source = self._frozen_completed_day_solar_actual(target, actual_rows)
+            if actual is None:
                 remaining.append(row)
                 continue
             current = row["current_kwh"]
             shadow = row.get("shadow_kwh")
             self._forward_shadow_outcomes.append({
-                **row, "actual_kwh": actual,
+                **row, "actual_kwh": actual, "actual_source": actual_source,
                 "current_absolute_error_kwh": round(abs(current - actual), 3),
                 "shadow_absolute_error_kwh": round(abs(shadow - actual), 3) if shadow is not None else None,
                 "scored_at": now.isoformat(),

@@ -135,7 +135,7 @@ class WeatherEngine:
             "wind_speed": attrs.get("wind_speed"),
             "precipitation": attrs.get("precipitation", attrs.get("precipitation_amount", attrs.get("rainfall"))),
             "forecast_available": bool(forecast),
-            "forecast": forecast[:168],
+            "forecast": forecast[:169],
             "forecast_granularity": (
                 "legacy"
                 if legacy_forecast
@@ -216,17 +216,50 @@ class WeatherEngine:
             self.last["forecast_diagnostics"] = diagnostics
             return self.last
 
-        normalized = []
-        limit = 168 if kind == "hourly" else 14
-        for row in rows[:limit]:
-            if not isinstance(row, dict):
-                continue
-            item = dict(row)
-            if item.get("cloud_coverage") is None:
-                item["cloud_coverage"] = item.get("cloud_cover", item.get("cloudiness"))
-            if item.get("precipitation") is None:
-                item["precipitation"] = item.get("precipitation_amount", item.get("rainfall"))
-            normalized.append(item)
+        def _normalize(source_rows, granularity):
+            # Preserve distinct UTC instants across a repeated local hour.
+            by_instant = {}
+            rejected = duplicates = 0
+            for source_row in source_rows:
+                if not isinstance(source_row, dict):
+                    continue
+                item = dict(source_row)
+                raw = item.get("datetime") or item.get("time")
+                try:
+                    stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    if stamp.tzinfo is None or stamp.utcoffset() is None:
+                        raise ValueError("timezone missing")
+                    instant = stamp.astimezone(timezone.utc)
+                except (ValueError, TypeError, OverflowError):
+                    rejected += 1
+                    continue
+                if instant in by_instant:
+                    duplicates += 1
+                    continue
+                if item.get("cloud_coverage") is None:
+                    item["cloud_coverage"] = item.get("cloud_cover", item.get("cloudiness"))
+                if item.get("precipitation") is None:
+                    item["precipitation"] = item.get("precipitation_amount", item.get("rainfall"))
+                by_instant[instant] = item
+            limit = 169 if granularity == "hourly" else 14
+            return ([item for _, item in sorted(by_instant.items())[:limit]],
+                    rejected, duplicates)
+
+        normalized, rejected_timestamps, duplicate_timestamps = _normalize(rows, kind)
+        diagnostics[kind]["invalid_or_naive_timestamp_rows"] = rejected_timestamps
+        diagnostics[kind]["duplicate_timestamp_rows"] = duplicate_timestamps
+        diagnostics[kind]["normalized_rows"] = len(normalized)
+
+        # An hourly response can be nonempty but entirely unusable (e.g.
+        # timezone-naive timestamps). Try daily evidence rather than retain
+        # yesterday's forecast or report a successful hourly response.
+        if kind == "hourly" and not normalized:
+            kind = "daily"
+            rows = await _request("daily")
+            normalized, rejected_timestamps, duplicate_timestamps = _normalize(rows, kind)
+            diagnostics[kind]["invalid_or_naive_timestamp_rows"] = rejected_timestamps
+            diagnostics[kind]["duplicate_timestamp_rows"] = duplicate_timestamps
+            diagnostics[kind]["normalized_rows"] = len(normalized)
 
         if normalized:
             self.last["forecast"] = normalized
@@ -240,6 +273,13 @@ class WeatherEngine:
                 self.last["cloud_coverage"] = first.get("cloud_coverage")
             if self.last.get("precipitation") is None and first.get("precipitation") is not None:
                 self.last["precipitation"] = first.get("precipitation")
+        else:
+            # Never expose stale weather forecasts as current evidence.
+            self.last["forecast"] = []
+            self.last["forecast_available"] = False
+            self.last["forecast_granularity"] = None
+            diagnostics["selected_granularity"] = None
+            self.last["forecast_diagnostics"] = diagnostics
         return self.last
 
     def summary(self) -> dict[str, Any]:
