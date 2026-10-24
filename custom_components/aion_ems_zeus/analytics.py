@@ -5,6 +5,7 @@ import math
 
 from .device_roles import is_consuming_load
 from .period_authority import canonical_period_windows, date_in_period
+from .forecast_v2_baseline import reconciled_hourly_baseline
 from .device_profiles import get_device_profile
 
 from datetime import datetime, timedelta, timezone
@@ -3100,7 +3101,9 @@ class ForecastEngine:
     def refresh(self) -> dict[str, Any]:
         snapshots = self.data_lake.data.get("snapshots", [])
         now = dt_util.now()
-        forecast_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        forecast_start = dt_util.start_of_local_day(now)
+        forecast_start_utc = dt_util.as_utc(forecast_start)
+        forecast_end_date = forecast_start.date() + timedelta(days=7)
         buckets: dict[tuple[int, int], dict[str, list[float]]] = {}
         hour_buckets: dict[int, dict[str, list[float]]] = {}
         for snap in snapshots[-30240:]:
@@ -3208,8 +3211,11 @@ class ForecastEngine:
                     candidate = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
                 except (TypeError, ValueError, OverflowError):
                     continue
-                if candidate.tzinfo is None:
-                    candidate = candidate.replace(tzinfo=timezone.utc)
+                # A naive provider timestamp has no identifiable UTC offset.
+                # Treat it as missing evidence rather than silently assuming
+                # UTC, especially around the repeated autumn 02:00 hour.
+                if candidate.tzinfo is None or candidate.utcoffset() is None:
+                    continue
                 candidate_local = dt_util.as_local(candidate)
 
                 condition = str(row.get("condition") or "").strip().lower()
@@ -3315,6 +3321,22 @@ class ForecastEngine:
             measured_days.append((day_date, row))
         measured_days = measured_days[-60:]
 
+        # V2 must not learn its production magnitude from unverified power
+        # snapshots. Reconcile complete historical hourly shapes to the same
+        # authoritative daily PV totals used by Zeus Statistics.
+        canonical_solar_by_day = {
+            day: row.get("solar_energy_kwh") for day, row in measured_days
+        }
+        hourly_solar_by_day = {}
+        for (day, hour), power in solar_day_means.items():
+            hourly_solar_by_day.setdefault(day, {})[hour] = power
+
+        def v2_reconciled_baseline(target_date, hour):
+            return reconciled_hourly_baseline(
+                target_date, hour, hourly_solar_by_day, canonical_solar_by_day
+            )
+
+
         def robust_daily_value(target_date, field):
             weekday_values = []
             fallback_values = []
@@ -3351,11 +3373,15 @@ class ForecastEngine:
         # apply this guard to days without enough weather coverage.
         persistent_overcast_days = set()
         for day_offset in range(8):
-            day = (forecast_start + timedelta(days=day_offset)).date()
+            day = forecast_start.date() + timedelta(days=day_offset)
             observed = []
             for hour in range(8, 18):
-                sample = forecast_start.replace(hour=hour, minute=0, second=0, microsecond=0)
-                sample += timedelta(days=(day - sample.date()).days)
+                # Daytime cloud guard is evaluated on local calendar dates.
+                # Construct each day's wall time directly rather than shifting
+                # an aware datetime across a DST boundary.
+                sample = dt_util.as_local(
+                    dt_util.start_of_local_day(day) + timedelta(hours=hour)
+                )
                 _, sample_condition, sample_cloud, matched = weather_for(sample)
                 if not matched:
                     continue
@@ -3370,8 +3396,10 @@ class ForecastEngine:
 
         hourly = []
         projected_soc = soc if 0 <= soc <= 100 else None
-        for offset in range(168):
-            dt = forecast_start + timedelta(hours=offset)
+        for offset in range(170):
+            dt = dt_util.as_local(forecast_start_utc + timedelta(hours=offset))
+            if dt.date() >= forecast_end_date:
+                break
             weekday_sample = buckets.get((dt.weekday(), dt.hour), {})
             fallback = hour_buckets.get(dt.hour, {})
             solar_values = weekday_sample.get("solar") or fallback.get("solar", [])
@@ -3398,26 +3426,41 @@ class ForecastEngine:
             v2_guard_reasons = []
             v2_baseline_days = None
             v2_cloud_factor = None
+            v2_baseline_power_w = None
+            v2_pre_guard_power_w = None
             if forecast_mode == "v2":
-                alternative = solar_baseline_audit(dt.date(), dt.hour)
+                alternative = v2_reconciled_baseline(dt.date(), dt.hour)
                 if alternative is not None and alternative["historical_days"] >= 2:
                     v2_baseline_days = alternative["historical_days"]
+                    v2_baseline_power_w = alternative["equal_day_w"]
                     cloud_num = None
                     try:
                         cloud_num = float(cloud) if cloud is not None else None
-                        if cloud_num is not None and not math.isfinite(cloud_num):
+                        # A cloud percentage outside 0..100 is invalid
+                        # evidence, not an instruction to assume clear or
+                        # fully overcast sky. Use the Legacy fallback.
+                        if cloud_num is not None and (
+                            not math.isfinite(cloud_num) or
+                            cloud_num < 0.0 or cloud_num > 100.0
+                        ):
                             cloud_num = None
                     except (ValueError, TypeError):
                         cloud_num = None
                     if weather_forecast_applied and cloud_num is not None:
                         v2_factor = max(0.08, 1.0 - max(0.0, min(100.0, cloud_num)) / 150.0)
-                    elif weather_forecast_applied:
-                        v2_factor = max(0.08, 1.0 - max(0.0, 1.0 - factor) * 115.0 / 150.0)
                     else:
-                        # Missing weather evidence is not evidence of clear sky.
-                        # Preserve the existing Legacy estimate for this hour.
+                        # A condition-only weather match does not provide a
+                        # measured cloud percentage. Do not reverse-engineer a
+                        # synthetic cloud fraction from Legacy's condition
+                        # factor and then apply a second V2 condition ceiling.
+                        # Retain Legacy for this hour until numeric cloud
+                        # evidence is available. Missing evidence is not zero.
                         v2_factor = None
-                        v2_guard_reasons.append("weather_unavailable_legacy_fallback")
+                        v2_guard_reasons.append(
+                            "cloud_evidence_missing_legacy_fallback"
+                            if weather_forecast_applied else
+                            "weather_unavailable_legacy_fallback"
+                        )
                     v2_cloud_factor = round(v2_factor, 4) if v2_factor is not None else None
                     # Explicit fog/precipitation conditions provide information
                     # about opacity beyond cloud percentage. Reuse existing
@@ -3429,12 +3472,13 @@ class ForecastEngine:
                         "lightning-rainy": 0.10, "snowy": 0.18,
                         "snowy-rainy": 0.12,
                     }
-                    if weather_forecast_applied and condition_key in adverse_condition_factors:
+                    if v2_factor is not None and weather_forecast_applied and condition_key in adverse_condition_factors:
                         if v2_factor > adverse_condition_factors[condition_key]:
                             v2_guard_reasons.append("adverse_weather")
                         v2_factor = min(v2_factor, adverse_condition_factors[condition_key])
                     v2_solar = (max(0.0, alternative["equal_day_w"] * v2_factor * learned_factor)
                                 if v2_factor is not None else legacy_solar)
+                    v2_pre_guard_power_w = round(v2_solar, 1) if v2_solar is not None else None
                     # Conservative weather guard: under heavy clouds, V2 may
                     # not greatly exceed the already weather-adjusted Legacy
                     # estimate. This is a safety bound, NOT learned accuracy.
@@ -3454,7 +3498,7 @@ class ForecastEngine:
                     # must not exceed the weather-adjusted Legacy estimate.
                     # This is a conservative upper bound, not a calibrated
                     # forecast or a replacement for site irradiance learning.
-                    if dt.date() in persistent_overcast_days and legacy_solar is not None:
+                    if v2_factor is not None and dt.date() in persistent_overcast_days and legacy_solar is not None:
                         ceiling = max(0.0, legacy_solar)
                         if v2_solar > ceiling:
                             v2_guard_reasons.append("persistent_overcast_ceiling")
@@ -3463,6 +3507,14 @@ class ForecastEngine:
                         v2_solar = min(v2_solar, pv_capacity_w)
                     v2_solar = round(v2_solar, 1)
                     adjusted_solar = v2_solar
+                else:
+                    # A missing canonical hourly baseline is not zero PV.
+                    # Preserve the exact Legacy planning value and mark the
+                    # fallback explicitly in the same-hour V2 evidence.
+                    v2_guard_reasons.append("historical_baseline_missing_legacy_fallback")
+                    v2_solar = legacy_solar
+                    v2_pre_guard_power_w = legacy_solar
+                    adjusted_solar = legacy_solar
             net_w = (adjusted_solar or 0) - (house or 0)
             charge_w = max(net_w, 0)
             discharge_w = max(-net_w, 0)
@@ -3499,6 +3551,8 @@ class ForecastEngine:
                 "v2_guard_reasons": v2_guard_reasons,
                 "v2_baseline_days": v2_baseline_days,
                 "v2_cloud_factor": v2_cloud_factor,
+                "v2_baseline_power_w": v2_baseline_power_w,
+                "v2_pre_guard_power_w": v2_pre_guard_power_w,
                 "adaptive_correction_percent": round(contextual_correction_percent, 1),
                 "calibration_context": calibration_context,
                 "calibration_source": calibration_source,
@@ -3540,8 +3594,8 @@ class ForecastEngine:
                 row_start = row_local_time(row)
                 if row_start is None:
                     continue
-                row_end = row_start + timedelta(hours=1)
-                if row_end > start and row_start < end:
+                row_end = dt_util.as_local(dt_util.as_utc(row_start) + timedelta(hours=1))
+                if dt_util.as_utc(row_end) > dt_util.as_utc(start) and dt_util.as_utc(row_start) < dt_util.as_utc(end):
                     selected.append(row)
             return selected
 
@@ -3555,15 +3609,15 @@ class ForecastEngine:
                 row_start = row_local_time(row)
                 if row_start is None:
                     continue
-                row_end = row_start + timedelta(hours=1)
-                overlap_start = max(start, row_start)
-                overlap_end = min(end, row_end)
-                overlap_hours = max(0.0, (overlap_end - overlap_start).total_seconds() / 3600.0)
+                row_end = dt_util.as_local(dt_util.as_utc(row_start) + timedelta(hours=1))
+                overlap_start = max((start, row_start), key=dt_util.as_utc)
+                overlap_end = min((end, row_end), key=dt_util.as_utc)
+                overlap_hours = max(0.0, (dt_util.as_utc(overlap_end) - dt_util.as_utc(overlap_start)).total_seconds() / 3600.0)
                 total_wh += (row.get(key) or 0) * overlap_hours
             return round(total_wh / 1000.0, 2)
 
-        rolling_24_end = now + timedelta(hours=24)
-        rolling_48_end = now + timedelta(hours=48)
+        rolling_24_end = dt_util.as_local(dt_util.as_utc(now) + timedelta(hours=24))
+        rolling_48_end = dt_util.as_local(dt_util.as_utc(now) + timedelta(hours=48))
         today_rows = rows_overlapping(now, rolling_24_end)
         tomorrow_rows = rows_overlapping(rolling_24_end, rolling_48_end)
         raw_today_solar = energy_between(now, rolling_24_end, "raw_solar_power_w")
@@ -3578,13 +3632,20 @@ class ForecastEngine:
         tomorrow_export = energy_between(rolling_24_end, rolling_48_end, "grid_export_power_w")
 
         rolling_valid = [h for h in rows_overlapping(now, rolling_24_end) if h.get("sample_count", 0) > 0]
-        future_window_rows = [h for h in rolling_valid if (row_local_time(h) is not None and row_local_time(h) >= now)]
+        # Compare absolute instants, not local wall times: at DST fall-back,
+        # the second 02:00 is later than the first even though both display 02:00.
+        future_window_rows = [
+            h for h in rolling_valid
+            if row_local_time(h) is not None
+            and dt_util.as_utc(row_local_time(h)) >= dt_util.as_utc(now)
+        ]
         best = max(future_window_rows, key=lambda h: h.get("surplus_power_w") or 0, default=None)
 
         daily_forecast = []
         for day_offset in range(7):
-            rows = hourly[day_offset * 24:(day_offset + 1) * 24]
-            target_date = (forecast_start + timedelta(days=day_offset)).date()
+            target_date = forecast_start.date() + timedelta(days=day_offset)
+            rows = [h for h in hourly if row_local_time(h) is not None
+                    and row_local_time(h).date() == target_date]
             peak = max(rows, key=lambda h: h.get("solar_power_w") or 0, default=None)
             conditions = [str(h.get("condition")) for h in rows if h.get("condition") and h.get("weather_forecast_applied")]
             weather_applied = any(bool(r.get("weather_forecast_applied")) for r in rows)
@@ -3617,7 +3678,7 @@ class ForecastEngine:
             # Home Assistant has already measured. Future calendar days retain the
             # existing weather-first / robust canonical-history fallback contract.
             if day_offset == 0 and canonical_today:
-                day_end = forecast_start + timedelta(days=1)
+                day_end = dt_util.start_of_local_day(forecast_start.date() + timedelta(days=1))
                 future_rows = rows_overlapping(now, day_end)
                 future_weather_applied = any(bool(r.get("weather_forecast_applied")) for r in future_rows)
 
@@ -3885,7 +3946,7 @@ class ForecastEngine:
             }
             missing_alternative_hours = []
             invalid_pipeline_hours = []
-            for forecast_row in rows[:24]:
+            for forecast_row in rows:
                 hour = forecast_row.get("hour")
                 try:
                     hour = int(hour)
@@ -3923,18 +3984,18 @@ class ForecastEngine:
                 })
             baseline_counterfactual = {
                 "target_date": target_date.isoformat(),
-                "status": ("available" if len(baseline_counterfactual_rows) == 24
+                "status": ("available" if len(baseline_counterfactual_rows) == len(rows)
                            and not missing_alternative_hours and not invalid_pipeline_hours
                            else "incomplete_evidence"),
                 "method": "same_hourly_weather_and_calibration_read_only",
                 "current_kwh": round(baseline_counterfactual_totals["current_kwh"], 3)
-                    if len(baseline_counterfactual_rows) == 24 else None,
+                    if len(baseline_counterfactual_rows) == len(rows) else None,
                 "equal_day_kwh": round(baseline_counterfactual_totals["equal_day_kwh"], 3)
                     if not missing_alternative_hours and not invalid_pipeline_hours
-                    and len(baseline_counterfactual_rows) == 24 else None,
+                    and len(baseline_counterfactual_rows) == len(rows) else None,
                 "interval_weighted_kwh": round(baseline_counterfactual_totals["interval_weighted_kwh"], 3)
                     if not missing_alternative_hours and not invalid_pipeline_hours
-                    and len(baseline_counterfactual_rows) == 24 else None,
+                    and len(baseline_counterfactual_rows) == len(rows) else None,
                 "missing_alternative_hours": missing_alternative_hours,
                 "invalid_pipeline_hours": invalid_pipeline_hours,
                 "hourly": baseline_counterfactual_rows,
@@ -3953,7 +4014,7 @@ class ForecastEngine:
             combined_hours = []
             combined_missing = []
             combined_invalid = []
-            for cr in rows[:24]:
+            for cr in rows:
                 hour = cr.get("hour")
                 try:
                     hour = int(hour)
@@ -4010,7 +4071,12 @@ class ForecastEngine:
                                        "weather_matched": bool(cr.get("weather_forecast_applied")),
                                        "historical_days": audit["historical_days"],
                                        "snapshots": audit["snapshots"]})
-            combined_complete = (len(combined_hours) == 24 and not combined_missing and not combined_invalid)
+            combined_day_hours = int((
+                dt_util.as_utc(dt_util.start_of_local_day(target_date + timedelta(days=1))) -
+                dt_util.as_utc(dt_util.start_of_local_day(target_date))
+            ).total_seconds() / 3600)
+            combined_complete = (combined_day_hours == 24 and len(combined_hours) == 24
+                                 and not combined_missing and not combined_invalid)
             combined_baseline_weather = {
                 "status": "available" if combined_complete else "incomplete_evidence",
                 "target_date": target_date.isoformat(),
@@ -4032,29 +4098,113 @@ class ForecastEngine:
             # Do not apply historical adaptive bias without verified training
             # outcomes; retain it separately as a shadow diagnostic.
             candidate_energy = None
-            candidate_rows = [r for r in hourly if datetime.fromisoformat(r["time"]).date() == target_date]
-            if forecast_mode == "v2" and len(candidate_rows) == 24 and all(r.get("v2_solar_power_w") is not None for r in candidate_rows):
+            candidate_source = "unavailable"
+            candidate_rows = [r for r in hourly if row_local_time(r) is not None
+                              and row_local_time(r).date() == target_date]
+            # Compare the two forecast paths on the same complete local calendar
+            # day, which can contain 23, 24, or 25 physical hours.
+            target_start_utc = dt_util.as_utc(dt_util.start_of_local_day(target_date))
+            target_end_utc = dt_util.as_utc(dt_util.start_of_local_day(target_date + timedelta(days=1)))
+            expected_target_hours = int((target_end_utc - target_start_utc).total_seconds() / 3600)
+            candidate_hours_complete = (
+                len(candidate_rows) == expected_target_hours
+                and len({dt_util.as_utc(row_local_time(r)) for r in candidate_rows}) == expected_target_hours
+            )
+            # The historical cross-product's current_snapshot total is a
+            # separate counterfactual and must not be labelled current pipeline.
+            legacy_comparison_kwh = None
+            if candidate_hours_complete and all(r.get("legacy_solar_power_w") is not None for r in candidate_rows):
+                legacy_comparison_kwh = round(sum(r["legacy_solar_power_w"] for r in candidate_rows) / 1000.0, 3)
+            if forecast_mode == "v2" and candidate_hours_complete and all(r.get("v2_solar_power_w") is not None for r in candidate_rows):
                 candidate_energy = round(sum(r["v2_solar_power_w"] for r in candidate_rows) / 1000.0, 3)
-            elif combined_complete:
-                candidate_energy = round(combined_totals["equal_day"]["moderate_150"], 3)
+                candidate_source = "active_v2_hourly"
+            # Never substitute a read-only sensitivity counterfactual for
+            # the active V2 forecast. Incomplete evidence remains unavailable.
+            guard_counts = {}
+            for forecast_hour in candidate_rows:
+                for reason in forecast_hour.get("v2_guard_reasons") or []:
+                    guard_counts[reason] = guard_counts.get(reason, 0) + 1
+            baseline_fallback_hours = sum(
+                1 for forecast_hour in candidate_rows
+                if forecast_hour.get("v2_baseline_days") is None
+            )
+            # Explain the production-path gap using only already-calculated
+            # hourly rows. No new weather queries or calibration passes.
+            # This is an accounting decomposition, not an accuracy claim.
+            path_audit = {
+                "legacy_kwh": legacy_comparison_kwh,
+                "v2_kwh": candidate_energy if candidate_source == "active_v2_hourly" else None,
+                "baseline_fallback_hours": baseline_fallback_hours,
+                "local_day_hours_expected": expected_target_hours,
+                "local_day_hours_observed": len(candidate_rows),
+                "complete_local_day": candidate_hours_complete,
+                "guard_hours_by_reason": guard_counts,
+                "hourly_evidence": [],
+            }
+            for forecast_hour in candidate_rows:
+                legacy_w = forecast_hour.get("legacy_solar_power_w")
+                v2_w = forecast_hour.get("v2_solar_power_w")
+                effective_w = v2_w if v2_w is not None else legacy_w
+                path_audit["hourly_evidence"].append({
+                    "hour": forecast_hour.get("hour"),
+                    "legacy_w": legacy_w,
+                    "v2_w": v2_w,
+                    "effective_w": effective_w,
+                    "baseline_days": forecast_hour.get("v2_baseline_days"),
+                    "baseline_w": forecast_hour.get("v2_baseline_power_w"),
+                    "pre_guard_w": forecast_hour.get("v2_pre_guard_power_w"),
+                    "cloud_factor": forecast_hour.get("v2_cloud_factor"),
+                    "weather_factor": forecast_hour.get("weather_factor"),
+                    "cloud_coverage": forecast_hour.get("cloud_coverage"),
+                    "condition": forecast_hour.get("condition"),
+                    "guards": forecast_hour.get("v2_guard_reasons") or [],
+                })
+            def _audit_kwh(field):
+                values = [r.get(field) for r in candidate_rows]
+                if not candidate_hours_complete or any(v is None for v in values):
+                    return None
+                return round(sum(values) / 1000.0, 3)
+
+            path_audit["baseline_kwh"] = _audit_kwh("v2_baseline_power_w")
+            path_audit["pre_guard_kwh"] = _audit_kwh("v2_pre_guard_power_w")
+            path_audit["weather_change_kwh"] = (
+                round(path_audit["pre_guard_kwh"] - path_audit["baseline_kwh"], 3)
+                if path_audit["pre_guard_kwh"] is not None and path_audit["baseline_kwh"] is not None else None
+            )
+            path_audit["guard_change_kwh"] = (
+                round(path_audit["v2_kwh"] - path_audit["pre_guard_kwh"], 3)
+                if path_audit["v2_kwh"] is not None and path_audit["pre_guard_kwh"] is not None else None
+            )
             forecast_correction_candidate = {
-                "status": "production_candidate_opt_in" if candidate_energy is not None else "incomplete_evidence",
+                "status": "production_candidate_opt_in" if candidate_source == "active_v2_hourly" else "incomplete_evidence",
                 "target_date": target_date.isoformat(),
                 "candidate_kwh": candidate_energy,
-                "current_pipeline_kwh": (
+                "candidate_source": candidate_source,
+                "current_pipeline_kwh": legacy_comparison_kwh,
+                "current_pipeline_source": "same_local_day_legacy_path" if legacy_comparison_kwh is not None else "unavailable",
+                "v2_guard_hours_by_reason": guard_counts,
+                "v2_baseline_fallback_hours": baseline_fallback_hours,
+                "v2_calculation_path_audit": path_audit,
+                "read_only_current_snapshot_kwh": (
                     round(combined_totals["current_snapshot"]["current_weather"], 3)
                     if combined_complete else None
                 ),
-                "historical_baseline_method": "equal_weight_per_historical_day",
-                "cloud_attenuation_method": "moderate_150_with_heavy_cloud_legacy_guard",
+                "historical_baseline_method": "canonical_energy_reconciled_recent_p80_hourly_envelope",
+                "cloud_attenuation_method": "numeric_cloud_150_with_adverse_weather_and_overcast_ceilings",
                 "site_bias_multiplier": 1.0,
                 "bias_calibration_status": "disabled_pending_verified_out_of_sample_evidence",
                 "historical_days_minimum": min(
                     (h["historical_days"] for h in combined_hours), default=0
                 ),
                 "active_engine_mode": forecast_mode,
-                "weather_hours": sum(h["weather_matched"] for h in combined_hours),
-                "numeric_cloud_hours": sum(h["cloud_percent"] is not None for h in combined_hours),
+                # Use the same physical local-day rows as the V2/Legacy
+                # comparison. A DST transition can have 23 or 25 hours.
+                "weather_hours": sum(bool(h.get("weather_forecast_applied")) for h in candidate_rows),
+                "weather_hours_expected": expected_target_hours,
+                "numeric_cloud_hours": sum(
+                    bool(h.get("weather_forecast_applied")) and h.get("cloud_coverage") is not None
+                    for h in candidate_rows
+                ),
                 "warning": "V2 is unvalidated; heavy-cloud guard limits upward divergence from Legacy. Explicit opt-in only.",
                 "production_applied": False,
                 "control_permission": False,
@@ -4062,7 +4212,7 @@ class ForecastEngine:
             # v16.0.256: read-only hourly forecast pipeline evidence. This is
             # derived from the existing rows; no second forecast is calculated.
             hourly_pipeline_audit = []
-            for audit_row in rows[:24]:
+            for audit_row in rows:
                 def audit_number(value):
                     try:
                         number = float(value)
@@ -4095,7 +4245,7 @@ class ForecastEngine:
             # Home Assistant entities can expose the exact same Forecast Engine
             # evidence without creating a second forecast path.
             remaining_solar = (
-                energy_between(now, forecast_start + timedelta(days=1), "solar_power_w")
+                energy_between(now, dt_util.start_of_local_day(forecast_start.date() + timedelta(days=1)), "solar_power_w")
                 if day_offset == 0 else None
             )
             energy_balance = round(float(expected_solar) - float(expected_load), 2)
@@ -4175,6 +4325,7 @@ class ForecastEngine:
                 "weather_match_diagnostics": {
                     "forecast_granularity": forecast_granularity,
                     "matched_rows": len([r for r in rows if r.get("weather_forecast_applied")]),
+                    "expected_rows": len(rows),
                     "average_weather_factor": round(
                         sum(float(r.get("weather_factor") or 1.0) for r in rows if r.get("weather_forecast_applied"))
                         / max(1, len([r for r in rows if r.get("weather_forecast_applied")])),
@@ -4495,7 +4646,10 @@ class ForecastEngine:
         for day in daily_forecast:
             diagnostics = day.get("weather_match_diagnostics") if isinstance(day.get("weather_match_diagnostics"), dict) else {}
             matched = int(diagnostics.get("matched_rows") or 0)
-            day_weather_coverage = round(min(100.0, matched / 24.0 * 100.0), 1)
+            # A local calendar day may contain 23, 24, or 25 physical
+            # hours. Coverage must use the day's actual row count.
+            day_hours = int(diagnostics.get("expected_rows") or 0)
+            day_weather_coverage = round(min(100.0, matched / day_hours * 100.0), 1) if day_hours else 0.0
             day_quality = max(20.0, min(100.0, forecast_quality_score - max(0.0, 60.0 - day_weather_coverage) * 0.18))
             day_spread = max(12.0, min(48.0, uncertainty_percent + max(0.0, 60.0 - day_weather_coverage) * 0.10))
             expected_day_solar = max(0.0, float(day.get("expected_solar_kwh") or 0.0))
@@ -4581,7 +4735,7 @@ class ForecastEngine:
             "rolling_horizon": True,
             "rolling_horizon_started_at": now.isoformat(),
             "daily_forecast": daily_forecast,
-            "forecast_horizon_hours": 168,
+            "forecast_horizon_hours": len(hourly),
             # Backend planning evidence handoff. These are the exact hourly rows
             # already calculated above; no second forecast is created. Keep 72
             # hours so Scheduler can build a true rolling 48-hour horizon even
