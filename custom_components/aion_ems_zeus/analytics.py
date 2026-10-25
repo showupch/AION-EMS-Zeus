@@ -4436,7 +4436,20 @@ class ForecastEngine:
             if len(pair) < 2:
                 continue
             start_time = row_local_time(pair[0])
-            if start_time is None:
+            second_time = row_local_time(pair[1])
+            if start_time is None or second_time is None:
+                continue
+            # A recommendation must cover two complete, consecutive future
+            # physical hours, not a partly elapsed first hour or a DST gap.
+            start_utc = dt_util.as_utc(start_time)
+            second_utc = dt_util.as_utc(second_time)
+            now_utc = dt_util.as_utc(now)
+            if start_utc < now_utc or second_utc - start_utc != timedelta(hours=1):
+                continue
+            # A "verified solar-surplus" window needs hourly forecast
+            # weather evidence for both hours; Legacy fallback is not
+            # equivalent to verified weather coverage.
+            if not all(r.get("weather_forecast_applied") for r in pair):
                 continue
             avg_surplus = sum(float(r.get("flexible_surplus_power_w") or 0.0) for r in pair) / 2.0
             energy_kwh = sum(float(r.get("flexible_surplus_power_w") or 0.0) for r in pair) / 1000.0
@@ -4444,22 +4457,29 @@ class ForecastEngine:
             battery_avg = sum(float(r.get("expected_battery_charge_power_w") or 0.0) for r in pair) / 2.0
             candidate_windows.append({
                 "start": start_time.isoformat(),
-                "end": (start_time + timedelta(hours=2)).isoformat(),
-                "label": f"{start_time:%H:%M}–{(start_time + timedelta(hours=2)):%H:%M}",
+                "end": dt_util.as_local(start_utc + timedelta(hours=2)).isoformat(),
+                "label": f"{start_time:%H:%M}–{dt_util.as_local(start_utc + timedelta(hours=2)):%H:%M}",
                 "expected_surplus_power_w": round(avg_surplus, 1),
                 "expected_surplus_energy_kwh": round(energy_kwh, 2),
                 "gross_solar_surplus_power_w": round(gross_avg_surplus, 1),
                 "expected_battery_charge_power_w": round(battery_avg, 1),
+                "hourly_weather_evidence_hours": 2,
+                "window_duration_hours": 2,
+                "recommendation_basis": "forecast_flexible_solar_surplus",
             })
         candidate_windows.sort(key=lambda x: x["expected_surplus_power_w"], reverse=True)
         surplus_windows = []
         occupied = []
         for window in candidate_windows:
             start_time = datetime.fromisoformat(window["start"])
-            if any(abs((start_time - used).total_seconds()) < 2 * 3600 for used in occupied):
+            # Compare absolute instants, not local wall-clock datetimes:
+            # the repeated 02:00 at the autumn DST transition has two
+            # different UTC instants.
+            start_instant = dt_util.as_utc(start_time)
+            if any(abs((start_instant - used).total_seconds()) < 2 * 3600 for used in occupied):
                 continue
             surplus_windows.append(window)
-            occupied.append(start_time)
+            occupied.append(start_instant)
             if len(surplus_windows) >= 3:
                 break
 
@@ -4660,14 +4680,9 @@ class ForecastEngine:
             day["solar_range_high_kwh"] = round(expected_day_solar * (1.0 + day_spread / 100.0), 2)
 
         best_window = None
-        if best:
-            start = datetime.fromisoformat(best["time"])
-            best_window = {
-                "start": start.isoformat(),
-                "end": (start + timedelta(hours=2)).isoformat(),
-                "label": f"{start:%H:%M}–{(start + timedelta(hours=2)):%H:%M}",
-                "expected_surplus_power_w": best.get("surplus_power_w"),
-            }
+        # Only complete, weather-supported two-hour candidates are eligible
+        # for a "best surplus window". A generic single-hour peak is not a
+        # verified two-hour recommendation.
         if surplus_windows:
             best_window = dict(surplus_windows[0])
         recommendations = []
