@@ -5,6 +5,7 @@ existing Zeus history and never mutate the registry, mappings, tariffs or data l
 """
 
 from __future__ import annotations
+import math
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -793,7 +794,7 @@ class ConversationalZeusAssistant:
             flow = f"Current solar is about {solar:.0f} W against home demand of {home:.0f} W, with no meaningful grid exchange."
         scheduler = (f"Zeus also has {scheduled_count} advised scheduled load(s), so check the Scheduler for competing flexible loads."
                      if scheduled_count else "No other advised scheduled load is currently competing for that window.")
-        return f"The strongest forecast opportunity is {best_window}. {flow} {battery}. {scheduler}"
+        return f"The suggested timing is {best_window}; its suitability must be verified against forecast and device requirements. {flow} {battery}. {scheduler}"
 
     def _period_answer(self, name: str, period: dict[str, Any], fin: dict[str, Any], currency: str) -> str:
         """Summarize a canonical calendar period without creating a second accounting path."""
@@ -926,11 +927,46 @@ class ConversationalZeusAssistant:
         battery_status = "Charging" if charge_w > battery_deadband_w else ("Discharging" if discharge_w > battery_deadband_w else "Idle")
         battery_status_w = charge_w if battery_status == "Charging" else (discharge_w if battery_status == "Discharging" else 0.0)
         currency = str(fin.get("currency") or batt.get("currency") or "CHF")
-        best_window_raw = fc.get("best_surplus_window") or sched.get("best_window") or "still being calculated"
-        if isinstance(best_window_raw, dict):
-            best_window = best_window_raw.get("label") or best_window_raw.get("start") or best_window_raw.get("time") or "still being calculated"
+        # A timestamp alone is not a verified recommendation. Only a
+        # forecast window with a quantified flexible solar surplus qualifies.
+        # Scheduler-only windows remain explicitly unverified: they may refer
+        # to a tariff or a device-specific schedule rather than solar surplus.
+        forecast_window = fc.get("best_surplus_window")
+        scheduled_window = sched.get("best_window")
+        window_source = "No verified window"
+        window_purpose = ""
+        window_reason = ""
+        window_verified = False
+        window_surplus_w = None
+        window_energy_kwh = None
+        if isinstance(forecast_window, dict):
+            try:
+                window_surplus_w = float(forecast_window.get("expected_surplus_power_w"))
+                window_energy_kwh = float(forecast_window.get("expected_surplus_energy_kwh"))
+                window_verified = (math.isfinite(window_surplus_w) and
+                                   math.isfinite(window_energy_kwh) and
+                                   window_surplus_w >= 500 and window_energy_kwh >= 1.0 and
+                                   bool(forecast_window.get("start")) and
+                                   bool(forecast_window.get("end")) and
+                                   forecast_window.get("recommendation_basis") == "forecast_flexible_solar_surplus" and
+                                   forecast_window.get("hourly_weather_evidence_hours") == 2 and
+                                   forecast_window.get("window_duration_hours") == 2)
+            except (TypeError, ValueError, OverflowError):
+                window_verified = False
+        if window_verified:
+            best_window = str(forecast_window.get("label") or forecast_window["start"])
+            window_purpose = "flexible-load solar surplus"
+            window_source = "Forecast hourly flexible-surplus calculation"
+            window_reason = (f"The forecast estimates {window_surplus_w:.0f} W average flexible surplus "
+                             f"and {window_energy_kwh:.2f} kWh available over this two-hour window. "
+                             "These are predictions, not measured or guaranteed savings.")
         else:
-            best_window = str(best_window_raw)
+            raw_window = forecast_window or scheduled_window
+            if isinstance(raw_window, dict):
+                best_window = str(raw_window.get("label") or raw_window.get("start") or "No verified window")
+            else:
+                best_window = str(raw_window or "No verified window")
+            window_source = "Forecast / Scheduler (unverified)" if raw_window else "No verified window"
         devices = [d for d in self.registry.data.get("devices", []) if d.get("enabled", True)]
         device_names = [str(d.get("name") or d.get("device_name") or d.get("id") or "Device") for d in devices][:6]
         schedule = sched.get("schedule") if isinstance(sched.get("schedule"), list) else sched.get("plan")
@@ -1049,7 +1085,7 @@ class ConversationalZeusAssistant:
             "answer_count":len(qas),
             "suggested_questions":[q["question"] for q in qas[:8]],
             "answers":qas,
-            "context_summary":{"solar_w":round(solar),"home_w":round(home),"grid_import_w":round(imp),"grid_export_w":round(exp),"battery_soc_percent":None if soc<0 else round(soc,1),"battery_charge_w":round(charge_w),"battery_discharge_w":round(discharge_w),"battery_status":battery_status,"battery_status_w":round(battery_status_w),"best_window":best_window,"registered_devices":len(devices),"currency":currency,"confidence_percent":int(self._num(accounting_conf.get("percent"),0)),"confidence_label":str(accounting_conf.get("label") or "Waiting"),"confidence_limits":list(accounting_conf.get("active_limits") or [])[:3]},
+            "context_summary":{"solar_w":round(solar),"home_w":round(home),"grid_import_w":round(imp),"grid_export_w":round(exp),"battery_soc_percent":None if soc<0 else round(soc,1),"battery_charge_w":round(charge_w),"battery_discharge_w":round(discharge_w),"battery_status":battery_status,"battery_status_w":round(battery_status_w),"best_window":best_window,"best_window_verified":window_verified,"best_window_purpose":window_purpose,"best_window_reason":window_reason,"best_window_source":window_source,"best_window_expected_surplus_power_w":window_surplus_w if window_verified else None,"best_window_expected_surplus_energy_kwh":window_energy_kwh if window_verified else None,"registered_devices":len(devices),"currency":currency,"confidence_percent":int(self._num(accounting_conf.get("percent"),0)),"confidence_label":str(accounting_conf.get("label") or "Waiting"),"confidence_limits":list(accounting_conf.get("active_limits") or [])[:3]},
             "supported_topics":["live energy flow","source attribution","battery","EV charging","scheduler","planning","devices","registered-load coverage","registered-device period attribution","functional load roles","solar forecast","forecast trust","adaptive correction","tariffs and finance","finance reconciliation","period intelligence","today week month year total accounting","self-consumption","self-sufficiency","battery charge and discharge statistics","history","period authority","data epoch","accounting confidence","reconciliation diagnostics","system health","QA diagnostics","data quality","release readiness","energy performance","root cause","system story","recommendation priority","learning and seasons","weather context","weather impact","similar weather days"],
             "details_entities":{"flow":"sensor.aion_ems_zeus_energy_flow","scheduler":"sensor.aion_ems_zeus_scheduler_preview","battery":"sensor.aion_ems_zeus_predictive_battery","finance":"sensor.aion_ems_zeus_finance_summary","learning":"sensor.aion_ems_zeus_seasonal_analysis"},
             "safety":"Recommendation only. The assistant explains data and suggests actions but never calls device, battery or inverter services.",
