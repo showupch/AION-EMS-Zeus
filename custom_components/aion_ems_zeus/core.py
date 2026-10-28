@@ -571,6 +571,15 @@ class AionCore:
         for device in self.registry.data.get("devices", []):
             if not device.get("enabled", True):
                 continue
+            # EV and other registered devices can store power mappings in a
+            # nested mapping dict. Track these entities as event-driven sources
+            # instead of waiting for an unrelated periodic refresh.
+            device_mappings = device.get("mappings")
+            if isinstance(device_mappings, dict):
+                for mapped in device_mappings.values():
+                    entity_id = mapped.get("entity_id") if isinstance(mapped, dict) else mapped
+                    if isinstance(entity_id, str) and "." in entity_id:
+                        entities.add(entity_id)
             for key in (
                 "power_entity",
                 # Registered inverter activity can use a dedicated true-PV
