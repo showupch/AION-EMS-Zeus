@@ -4671,6 +4671,16 @@ class ForecastEngine:
             day_hours = int(diagnostics.get("expected_rows") or 0)
             day_weather_coverage = round(min(100.0, matched / day_hours * 100.0), 1) if day_hours else 0.0
             day_quality = max(20.0, min(100.0, forecast_quality_score - max(0.0, 60.0 - day_weather_coverage) * 0.18))
+            # Missing/partial weather must not be described as high-confidence.
+            # This changes only quality metadata, never forecast energy values.
+            if day_weather_coverage == 0:
+                day_quality = min(day_quality, 35.0)
+                day["weather_evidence_status"] = "missing_hourly_weather_fallback"
+            elif day_weather_coverage < 80:
+                day_quality = min(day_quality, 54.0)
+                day["weather_evidence_status"] = "partial_hourly_weather"
+            else:
+                day["weather_evidence_status"] = "hourly_weather_available"
             day_spread = max(12.0, min(48.0, uncertainty_percent + max(0.0, 60.0 - day_weather_coverage) * 0.10))
             expected_day_solar = max(0.0, float(day.get("expected_solar_kwh") or 0.0))
             day["quality_percent"] = round(day_quality, 1)
