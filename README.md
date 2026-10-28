@@ -1,3 +1,5 @@
+<img width="1594" height="870" alt="image" src="https://github.com/user-attachments/assets/64132a34-3e96-4343-bed7-c1633f4adab2" />
+
 # AION EMS Zeus
 
 ## Energy Management & Intelligence for Home Assistant
