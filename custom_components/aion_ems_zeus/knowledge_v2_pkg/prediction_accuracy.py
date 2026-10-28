@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..flow_access import flow_soc, flow_w
+from .forecast_v21_shadow import evaluate_shadow
 
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -236,6 +237,30 @@ class PredictionAccuracyEngine:
         rows = list(((summary.get("chart_history") or {}).get("total") or []))
         return [dict(row) for row in rows if isinstance(row, dict) and row.get("date")]
 
+    @classmethod
+    def _frozen_daily_weather_evidence(cls, row: dict[str, Any]) -> dict[str, Any]:
+        """Capture only target-day weather evidence present at snapshot time.
+
+        Do not infer coverage from current conditions, a later forecast, or
+        a generic next-24-hour quality score. None means unverified.
+        """
+        raw = cls._num(row.get("weather_coverage_percent"))
+        diagnostics = row.get("weather_match_diagnostics")
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
+        matched = cls._num(diagnostics.get("matched_rows"))
+        expected = cls._num(diagnostics.get("expected_rows"))
+        if matched is not None and expected is not None and expected > 0 and 0 <= matched <= expected:
+            return {"weather_coverage": round(matched / expected, 6),
+                    "weather_coverage_source": "target_day_hourly_match",
+                    "weather_matched_hours": int(matched),
+                    "weather_expected_hours": int(expected)}
+        if raw is not None and 0 <= raw <= 100:
+            return {"weather_coverage": round(raw / 100, 6),
+                    "weather_coverage_source": "target_day_forecast_percent"}
+        return {"weather_coverage": None,
+                "weather_coverage_source": "missing_at_snapshot"}
+
     def _capture_daily_forecast(self, now: datetime) -> None:
         forecast = getattr(self.core, "forecast", None)
         if forecast is None or not callable(getattr(forecast, "summary", None)):
@@ -258,7 +283,10 @@ class PredictionAccuracyEngine:
             "grid_export_kwh": self._num(row.get("expected_grid_export_kwh")),
         }
         if any(v is not None for v in predicted.values()):
-            self._daily_pending.append({"created_at": now.isoformat(), "target_date": tomorrow, "predicted": predicted, "evidence_method": row.get("evidence_method")})
+            weather_evidence = self._frozen_daily_weather_evidence(row)
+            self._daily_pending.append({"created_at": now.isoformat(), "target_date": tomorrow,
+                "predicted": predicted, "evidence_method": row.get("evidence_method"),
+                **weather_evidence})
             self._schedule_save()
 
     def _mature_daily_forecasts(self, now: datetime) -> None:
@@ -288,7 +316,11 @@ class PredictionAccuracyEngine:
                 scale=max(abs(act),abs(pred),0.25)
                 metrics[key]=round(max(0.0,100.0-abs(act-pred)/scale*100.0),1)
                 errors[key]=round(act-pred,3)
-            self._daily_samples.append({"target_date":target,"forecast_created_at":pending.get("created_at"),"predicted":predicted,"actual":actual,"metrics":metrics,"errors":errors,"evidence_method":pending.get("evidence_method")})
+            self._daily_samples.append({"target_date":target,"forecast_created_at":pending.get("created_at"),"predicted":predicted,"actual":actual,"metrics":metrics,"errors":errors,"evidence_method":pending.get("evidence_method"),
+                "weather_coverage":pending.get("weather_coverage"),
+                "weather_coverage_source":pending.get("weather_coverage_source"),
+                "weather_matched_hours":pending.get("weather_matched_hours"),
+                "weather_expected_hours":pending.get("weather_expected_hours")})
             matured = True
         if len(keep) != len(self._daily_pending):
             matured = True
@@ -455,6 +487,88 @@ class PredictionAccuracyEngine:
             "capture_window": "22:00–23:59 Home Assistant local time",
             "actual_source": "canonical_completed_day_recorder_solar_energy",
             "last_capture_attempt": dict(self._cloud_capture_attempt)}
+
+    def v21_shadow_summary(self) -> dict[str, Any]:
+        """Read-only V2 vs V2.1 candidate, never used for production planning."""
+        from homeassistant.util import dt as dt_util
+        now = dt_util.now()
+        target = (now.date() + timedelta(days=1)).isoformat()
+        try:
+            forecast = self.core.forecast.summary() or {}
+            days = forecast.get("daily_forecast") or forecast.get("days") or []
+            row = next((d for d in days if isinstance(d, dict) and str(d.get("date")) == target), None)
+            if row is None:
+                return {"status":"forecast_unavailable", "target_date":target, "production_applied":False}
+            current = self._num(row.get("expected_solar_kwh"))
+            coverage = self._num(row.get("weather_coverage_percent"))
+            if current is None or not math.isfinite(current) or current < 0:
+                return {"status":"forecast_unavailable", "target_date":target, "production_applied":False}
+            # Read-only provenance audit: never backfill missing historical
+            # weather coverage from today's weather or a later forecast.
+            audit = {"stored_daily_samples": len(self._daily_samples),
+                     "pending_daily_forecasts": len(self._daily_pending),
+                     "rejections": {"missing_forecast": 0, "missing_actual": 0,
+                                    "missing_weather_coverage": 0,
+                                    "invalid_forecast_timestamp": 0,
+                                    "not_pre_day_snapshot": 0,
+                                    "low_weather_coverage": 0},
+                     "qualified_pre_day_days": 0,
+                     "history_source": "prediction_accuracy_daily_samples",
+                     "legacy_samples_without_coverage": sum(
+                         1 for sample in self._daily_samples
+                         if self._num(sample.get("weather_coverage")) is None),
+                     "weather_qualified_samples": sum(
+                         1 for sample in self._daily_samples
+                         if self._num(sample.get("weather_coverage")) is not None),
+                     "pending_with_frozen_weather_evidence": sum(
+                         1 for pending in self._daily_pending
+                         if self._num(pending.get("weather_coverage")) is not None)}
+            history = []
+            from homeassistant.util import dt as dt_util
+            qualified_dates = set()
+            for sample in self._daily_samples:
+                predicted = self._num((sample.get("predicted") or {}).get("solar_kwh"))
+                actual = self._num((sample.get("actual") or {}).get("solar_kwh"))
+                wc = self._num(sample.get("weather_coverage"))
+                if predicted is None:
+                    audit["rejections"]["missing_forecast"] += 1
+                    continue
+                if actual is None:
+                    audit["rejections"]["missing_actual"] += 1
+                    continue
+                if wc is None:
+                    audit["rejections"]["missing_weather_coverage"] += 1
+                    continue
+                created = self._parse_time(sample.get("forecast_created_at"))
+                if created is None:
+                    audit["rejections"]["invalid_forecast_timestamp"] += 1
+                    continue
+                try:
+                    day_start = datetime.fromisoformat(str(sample.get("target_date"))).replace(
+                        tzinfo=dt_util.DEFAULT_TIME_ZONE).astimezone(timezone.utc)
+                except (ValueError, TypeError):
+                    audit["rejections"]["invalid_forecast_timestamp"] += 1
+                    continue
+                if created >= day_start:
+                    audit["rejections"]["not_pre_day_snapshot"] += 1
+                    continue
+                if wc < 0.8:
+                    audit["rejections"]["low_weather_coverage"] += 1
+                    continue
+                qualified_dates.add(sample.get("target_date"))
+                history.append({"date":sample.get("target_date"), "forecast_kwh":predicted,
+                                "actual_kwh":actual, "weather_coverage":wc, "verified":True})
+            audit["qualified_pre_day_days"] = len(qualified_dates)
+            result = evaluate_shadow(target, current, history,
+                                     coverage / 100.0 if coverage is not None and 0 <= coverage <= 100 else None)
+            result["evidence_audit"] = audit
+            result["baseline_v2_kwh"] = round(current, 3)
+            result["source"] = "existing_daily_forecast_and_frozen_recorder_outcomes"
+            result["note"] = "Shadow only: no control or production forecast changes. Missing historical weather evidence is never invented."
+            return result
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            return {"status":"invalid_evidence", "reason":type(exc).__name__,
+                    "target_date":target, "production_applied":False}
 
     def _daily_accuracy_summary(self) -> dict[str, Any]:
         result={}
@@ -729,6 +843,7 @@ class PredictionAccuracyEngine:
             "minimum_samples_for_high_trust": 12,
             "forecast_capture_horizons_hours": list(self.LEAD_HOURS),
             "daily_forecast_accuracy": self._daily_accuracy_summary(),
+            "forecast_v21_shadow": self.v21_shadow_summary(),
             "cloud_model_accuracy": self._cloud_comparison_summary(),
             "adaptive_forecast_shadow": self._adaptive_shadow_summary(),
             "adaptive_forward_validation": self._forward_shadow_summary(),
