@@ -55,8 +55,19 @@ class WeatherEngine:
         configured = self._configured_entity()
         if configured and self.hass.states.get(configured):
             return configured
-        candidates = sorted(state.entity_id for state in self.hass.states.async_all("weather"))
-        return candidates[0] if candidates else None
+        # When no weather entity is explicitly configured, prefer one that
+        # advertises hourly forecasts over a measurement-only weather station.
+        # HA WeatherEntityFeature: FORECAST_DAILY=1, FORECAST_HOURLY=2.
+        candidates = sorted(self.hass.states.async_all("weather"), key=lambda state: state.entity_id)
+        usable = [state for state in candidates if state.state not in ("unknown", "unavailable")]
+        for feature in (2, 1):
+            for state in usable:
+                try:
+                    if int(state.attributes.get("supported_features") or 0) & feature:
+                        return state.entity_id
+                except (TypeError, ValueError):
+                    continue
+        return usable[0].entity_id if usable else (candidates[0].entity_id if candidates else None)
 
     @classmethod
     def factor_for(cls, condition: str | None, cloud_coverage: Any = None) -> float:
@@ -170,6 +181,8 @@ class WeatherEngine:
             "hourly": {"status": "not_requested", "rows": 0, "error": None, "sample": []},
             "daily": {"status": "not_requested", "rows": 0, "error": None, "sample": []},
             "selected_granularity": None,
+            "configured_entity": self._configured_entity(),
+            "available_weather_entities": self.candidates(),
         }
 
         async def _request(kind: str) -> list[dict[str, Any]]:
@@ -205,6 +218,16 @@ class WeatherEngine:
 
         kind = "hourly"
         rows = await _request("hourly")
+        if rows and not any(
+            isinstance(row, dict) and (
+                str(row.get("condition") or "").strip().lower() in self.CONDITION_FACTORS
+                or any(row.get(key) is not None for key in ("cloud_coverage", "cloud_cover", "cloudiness"))
+            ) for row in rows
+        ):
+            # A provider may return valid hourly temperatures but no solar
+            # condition/cloud evidence. Such rows cannot attenuate PV output.
+            diagnostics["hourly"]["status"] = "no_solar_weather_evidence"
+            rows = []
         if not rows:
             kind = "daily"
             rows = await _request("daily")

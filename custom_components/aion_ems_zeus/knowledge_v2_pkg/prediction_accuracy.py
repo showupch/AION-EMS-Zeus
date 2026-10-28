@@ -522,7 +522,14 @@ class PredictionAccuracyEngine:
                          if self._num(sample.get("weather_coverage")) is not None),
                      "pending_with_frozen_weather_evidence": sum(
                          1 for pending in self._daily_pending
-                         if self._num(pending.get("weather_coverage")) is not None)}
+                         if self._num(pending.get("weather_coverage")) is not None),
+                     "pending_weather_coverage_below_80_percent": sum(
+                         1 for pending in self._daily_pending
+                         if self._num(pending.get("weather_coverage")) is not None
+                         and self._num(pending.get("weather_coverage")) < 0.8),
+                     "pending_missing_weather_evidence": sum(
+                         1 for pending in self._daily_pending
+                         if self._num(pending.get("weather_coverage")) is None)}
             history = []
             from homeassistant.util import dt as dt_util
             qualified_dates = set()
