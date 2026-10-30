@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from homeassistant.util import dt as dt_util
 from typing import Any
 
 
@@ -90,6 +91,8 @@ class WeatherEngine:
 
     def refresh(self) -> dict[str, Any]:
         entity_id = self._select_entity()
+        if not self._configured_entity() and self.last.get("forecast_available") and self.last.get("entity_id"):
+            entity_id = self.last["entity_id"]
         state = self.hass.states.get(entity_id) if entity_id else None
 
         # Modern HA forecasts are fetched separately via weather.get_forecasts.
@@ -216,8 +219,72 @@ class WeatherEngine:
             ]
             return rows
 
+        # Auto-select by actual next-day hourly coverage, not alphabetical
+        # entity order. Explicit user-selected sources are never overridden.
+        preselected_rows = None
+        if not self._configured_entity():
+            target_day = dt_util.as_local(dt_util.utcnow()).date() + timedelta(days=1)
+            source_audit = []
+            best = None
+            for candidate in self.candidates():
+                source_id = candidate["entity_id"]
+                if not candidate.get("available"):
+                    continue
+                try:
+                    if not (int(candidate.get("supported_features") or 0) & 2):
+                        continue
+                    response = await self.hass.services.async_call(
+                        "weather", "get_forecasts", {"type": "hourly"},
+                        blocking=True, return_response=True,
+                        target={"entity_id": source_id},
+                    )
+                    raw = ((response or {}).get(source_id) or {}).get("forecast") or []
+                    unique = set()
+                    for row in raw:
+                        if not isinstance(row, dict):
+                            continue
+                        try:
+                            stamp = datetime.fromisoformat(str(row.get("datetime") or row.get("time") or "").replace("Z", "+00:00"))
+                            if stamp.tzinfo is None or stamp.utcoffset() is None:
+                                continue
+                            if not (str(row.get("condition") or "").lower() in self.CONDITION_FACTORS or
+                                    any(row.get(k) is not None for k in ("cloud_coverage", "cloud_cover", "cloudiness"))):
+                                continue
+                            unique.add(stamp.astimezone(timezone.utc))
+                        except (ValueError, TypeError, OverflowError):
+                            continue
+                    matched = sum(dt_util.as_local(t).date() == target_day for t in unique)
+                    source_audit.append({"entity_id": source_id, "valid_hourly_rows": len(unique),
+                                         "tomorrow_matched_hours": matched})
+                    score = (matched, len(unique))
+                    if best is None or score > best[0]:
+                        best = (score, source_id, raw)
+                except Exception as err:
+                    source_audit.append({"entity_id": source_id, "error": type(err).__name__})
+            diagnostics["auto_source_comparison"] = source_audit
+            if best is not None and best[0][0] > 0:
+                entity_id, preselected_rows = best[1], best[2]
+                diagnostics["entity_id"] = entity_id
+                diagnostics["auto_selected_target_date"] = target_day.isoformat()
+                diagnostics["auto_selection_reason"] = "best next-day hourly coverage"
+                if self.last.get("entity_id") != entity_id:
+                    state = self.hass.states.get(entity_id)
+                    self.last["entity_id"] = entity_id
+                    if state:
+                        self.last["condition"] = state.state
+                        self.last["temperature"] = state.attributes.get("temperature")
+                        self.last["cloud_coverage"] = state.attributes.get("cloud_coverage")
+                        self.last["solar_factor"] = self.factor_for(state.state, self.last.get("cloud_coverage"))
         kind = "hourly"
-        rows = await _request("hourly")
+        rows = preselected_rows if preselected_rows is not None else await _request("hourly")
+        if preselected_rows is not None:
+            diagnostics["hourly"]["status"] = "ok"
+            diagnostics["hourly"]["rows"] = len(rows)
+            diagnostics["hourly"]["sample"] = [
+                {"datetime": row.get("datetime") or row.get("time"),
+                 "condition": row.get("condition"), "cloud_coverage": row.get("cloud_coverage")}
+                for row in rows[:7] if isinstance(row, dict)
+            ]
         if rows and not any(
             isinstance(row, dict) and (
                 str(row.get("condition") or "").strip().lower() in self.CONDITION_FACTORS
