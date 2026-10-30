@@ -9899,6 +9899,46 @@ th,td{padding:11px 12px;vertical-align:top;overflow-wrap:anywhere}
 }
 
 
+/* v16.0.396: Setup Wizard always uses a dark surface. Pin its text palette
+   locally so HA light-mode theme variables cannot turn its labels black. */
+.wizard-v2{
+  --text:#edf5ff!important;
+  --muted:#b4c6d9!important;
+  --primary-text-color:#edf5ff!important;
+  --secondary-text-color:#b4c6d9!important;
+  --disabled-text-color:#93a6b9!important;
+  --surface:#142332;
+  --surface2:#1b3044;
+  color:#edf5ff!important;
+  color-scheme:dark;
+}
+.wizard-v2 .wizard-body,.wizard-v2 .wizard-heading,
+.wizard-v2 .wizard-welcome,.wizard-v2 .wizard-ready,
+.wizard-v2 .wizard-summary-row article,
+.wizard-v2 .wizard-device-row,.wizard-v2 .wizard-check-list article,
+.wizard-v2 .wizard-select-card,.wizard-v2 .wizard-style-card{
+  color:#edf5ff!important;
+}
+.wizard-v2 h1,.wizard-v2 h2,.wizard-v2 h3,.wizard-v2 h4,
+.wizard-v2 strong,.wizard-v2 b,.wizard-v2 label{
+  color:#edf5ff!important;
+}
+.wizard-v2 p,.wizard-v2 small,.wizard-v2 .wizard-note,
+.wizard-v2 .wizard-time,.wizard-v2 .wizard-form-grid label{
+  color:#b4c6d9!important;
+}
+.wizard-v2 input,.wizard-v2 select,.wizard-v2 textarea{
+  color:#edf5ff!important;
+  background-color:#192d40!important;
+  -webkit-text-fill-color:#edf5ff;
+}
+.wizard-v2 input::placeholder,.wizard-v2 textarea::placeholder{
+  color:#a8bacd!important;
+  opacity:1;
+}
+.wizard-v2 select option{color:#edf5ff;background:#192d40}
+.wizard-v2 .wizard-actions button:not(.primary-button){color:#edf5ff}
+
 /* rc19 selector completion */
 .intelligence-center-grid,.intelligence-detail-grid,.intel-grid{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;align-items:stretch!important;gap:16px!important}
 .intelligence-center-grid>.panel,.intelligence-detail-grid>.panel,.intel-grid>.panel{height:100%!important;min-width:0!important}
