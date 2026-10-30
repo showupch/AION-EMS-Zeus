@@ -13,6 +13,7 @@ from typing import Any
 
 from ..flow_access import flow_soc, flow_w
 from .forecast_v21_shadow import evaluate_shadow
+from .forecast_v21_weather import summarize_weather_history
 
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -530,6 +531,58 @@ class PredictionAccuracyEngine:
                      "pending_missing_weather_evidence": sum(
                          1 for pending in self._daily_pending
                          if self._num(pending.get("weather_coverage")) is None)}
+            # Read-only V2.1 audit: inspect pending finalization and hourly
+            # weather horizon without changing forecasts or stored evidence.
+            actual_rows = {str(r.get("date")): r for r in self._canonical_daily_rows()}
+            pending_details = []
+            for pending in self._daily_pending:
+                day = str(pending.get("target_date") or "")
+                actual_row = actual_rows.get(day)
+                actual_kwh = self._num(actual_row.get("solar_energy_kwh")) if actual_row else None
+                pending_details.append({
+                    "target_date": day,
+                    "forecast_created_at": pending.get("created_at"),
+                    "weather_coverage": self._num(pending.get("weather_coverage")),
+                    "weather_coverage_source": pending.get("weather_coverage_source"),
+                    "actual_row_available": actual_row is not None,
+                    "actual_solar_kwh_available": actual_kwh is not None,
+                    "target_day_complete": bool(day and day < now.date().isoformat()),
+                    "ready_to_finalize": bool(day and day < now.date().isoformat() and actual_kwh is not None),
+                })
+            audit["finalization_audit"] = {
+                "local_today": now.date().isoformat(),
+                "pending": pending_details,
+                "recent_completed": [
+                    {"target_date": item.get("target_date"),
+                     "weather_coverage": self._num(item.get("weather_coverage")),
+                     "weather_coverage_source": item.get("weather_coverage_source"),
+                     "forecast_created_at": item.get("forecast_created_at")}
+                    for item in list(self._daily_samples)[-5:]
+                ],
+                "note": "Read-only; no historical samples or pending snapshots modified",
+            }
+            horizon_days = []
+            for forecast_day in days[:10]:
+                if not isinstance(forecast_day, dict):
+                    continue
+                match = forecast_day.get("weather_match_diagnostics")
+                if not isinstance(match, dict):
+                    match = {}
+                horizon_days.append({
+                    "date": str(forecast_day.get("date") or ""),
+                    "matched_hours": self._num(match.get("matched_rows")),
+                    "expected_hours": self._num(match.get("expected_rows")),
+                    "coverage_percent": self._num(forecast_day.get("weather_coverage_percent")),
+                    "weather_match_diagnostics": {
+                        str(k): v for k, v in match.items()
+                        if isinstance(v, (str, int, float, bool, type(None)))
+                    },
+                })
+            audit["weather_horizon_audit"] = {
+                "status": "read_only",
+                "forecast_days": horizon_days,
+                "note": "Missing hourly weather is not inferred or synthesized",
+            }
             history = []
             from homeassistant.util import dt as dt_util
             qualified_dates = set()
@@ -568,6 +621,13 @@ class PredictionAccuracyEngine:
             audit["qualified_pre_day_days"] = len(qualified_dates)
             result = evaluate_shadow(target, current, history,
                                      coverage / 100.0 if coverage is not None and 0 <= coverage <= 100 else None)
+            # Keep measured weather relationships separate from frozen forecast
+            # accuracy evidence. This is diagnostic-only, not a correction.
+            try:
+                weather_days = (self.core.weather_history.summary() or {}).get("recent_days") or []
+                result["historical_weather_learning"] = summarize_weather_history(weather_days, latitude=getattr(self.core.hass.config, "latitude", None))
+            except (AttributeError, TypeError, ValueError):
+                result["historical_weather_learning"] = {"status": "weather_history_unavailable", "forecast_correction_applied": False}
             result["evidence_audit"] = audit
             result["baseline_v2_kwh"] = round(current, 3)
             result["source"] = "existing_daily_forecast_and_frozen_recorder_outcomes"
