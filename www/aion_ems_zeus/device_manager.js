@@ -627,6 +627,41 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .diagnostics-center-page .diagnostic-detail-block{display:block;padding-top:24px!important}.diagnostics-center-page .diagnostic-detail-stack{display:grid;gap:14px;margin-top:0!important}.diagnostics-center-page .diagnostic-detail-stack>.detail-entities{margin-top:0!important}.diagnostics-center-page .diagnostic-detail-stack>.diagnostic-device-row{margin-top:0!important}.diagnostics-center-page .diagnostic-detail-stack+.safety-note{margin-top:20px!important}
 /* v14.8.5 Diagnostic Report Export */
 .diagnostics-center-page .diagnostic-report-panel{margin-top:28px}.diagnostics-center-page .diagnostic-report-preview{max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:16px;border:1px solid rgba(127,160,190,.16);border-radius:12px;background:rgba(7,16,25,.55);color:var(--text);font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.diagnostics-center-page .diagnostics-selftest-actions{display:flex;gap:10px;flex-wrap:wrap}
+/* v16.0.392: responsive setup mapping forms only; no desktop changes */
+@media (max-width:760px){
+  .maprow.basicrow,.weather-setup-page .maprow,.page .maprow{
+    display:grid!important;grid-template-columns:minmax(0,1fr)!important;
+    width:100%!important;max-width:100%!important;min-width:0!important;
+    gap:10px!important;padding:12px!important;overflow:visible!important;
+    box-sizing:border-box!important
+  }
+  .maprow.basicrow>*,.page .maprow>*,.page .picker,
+  .page .picker input,.page .picker select,.page .maprow select{
+    min-width:0!important;max-width:100%!important;box-sizing:border-box!important
+  }
+  .page .maprow .buttons{
+    display:flex!important;flex-wrap:wrap!important;gap:8px!important;
+    width:100%!important;min-width:0!important
+  }
+  .page .maprow .buttons button{flex:1 1 76px;min-height:40px;white-space:normal}
+  .page .maprow b,.page .maprow label,.page .setup-choice label{
+    font-size:14px!important;line-height:1.45!important;overflow-wrap:anywhere
+  }
+  .page .maprow .hint,.page .maprow small{
+    font-size:12px!important;line-height:1.5!important;overflow-wrap:anywhere
+  }
+  .page .setup-choice{display:flex!important;flex-direction:column!important;
+    align-items:stretch!important;gap:12px!important}
+  .page .setup-choice label{display:flex!important;align-items:flex-start!important}
+  .page .setup-choice input[type=radio]{flex:none;margin-top:3px}
+  .page .maprow input,.page .maprow select,.page .setup-choice input{
+    font-size:16px;min-height:40px
+  }
+}
+@media (max-width:420px){
+  .page .maprow.basicrow,.page .maprow{padding:10px!important}
+  .page .maprow .buttons button{padding:9px 8px!important}
+}
 </style>
     <h1>AION EMS Zeus Device Manager</h1><div class="sub">Version ${this.esc(this.s("sensor.aion_ems_zeus_platform_status")?.attributes?.version||"16.0.322")} · Registry & Diagnostics Center.</div>
     <div class="status"><b>${this.esc(managerStatus)}</b>${this._error?`<div class="bad">${this.esc(this._error)}</div>`:""}<div>${this.esc(managerMessage)}</div></div>
