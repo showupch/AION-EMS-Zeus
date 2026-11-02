@@ -1034,6 +1034,12 @@ class IntegrationHub:
         target = (mount / relative).resolve()
         if not target.is_relative_to(mount):
             raise ValueError("Backup folder escapes the selected storage location")
+        # Do not expose the configuration registry via Home Assistant's
+        # unauthenticated /local/ static-file route. Resolve first to catch
+        # symlinked mounts or nested folders leading into www.
+        www_root = Path(self.hass.config.path("www")).expanduser().resolve()
+        if target == www_root or target.is_relative_to(www_root):
+            raise ValueError("Registry backups cannot be written under Home Assistant's public www directory")
         return target
 
     def _candidate_registry_state(self, candidate):
@@ -1149,7 +1155,7 @@ class IntegrationHub:
             proposed = dict(self._settings().get(plugin_id, {}))
             proposed.update(safe)
             if proposed.get("path"):
-                self._nas_target_path(proposed)
+                await self.hass.async_add_executor_job(self._nas_target_path, proposed)
             elif proposed.get("folder"):
                 raise ValueError("Select an approved storage path before specifying a backup folder")
         self._settings().setdefault(plugin_id,{}).update(safe)
@@ -1236,7 +1242,7 @@ class IntegrationHub:
         if not raw:
             raise ValueError("Discover and select Home Assistant network storage first")
 
-        validated_target = self._nas_target_path(cfg)
+        validated_target = await self.hass.async_add_executor_job(self._nas_target_path, cfg)
         candidate = self._selected_ha_storage(cfg)
         if candidate and str(candidate.get("usage", "") or "").lower() == "backup":
             if not candidate.get("available", False):
@@ -1310,7 +1316,7 @@ class IntegrationHub:
         if not raw:
             raise ValueError("NAS server is reachable. Discover and select Home Assistant storage")
 
-        validated_target = self._nas_target_path(cfg)
+        validated_target = await self.hass.async_add_executor_job(self._nas_target_path, cfg)
         candidate = self._selected_ha_storage(cfg)
         if candidate and str(candidate.get("usage", "") or "").lower() == "backup":
             if not candidate.get("available", False):
@@ -1334,7 +1340,7 @@ class IntegrationHub:
         exists = await self.hass.async_add_executor_job(lambda: mount.exists() and mount.is_dir())
         if not exists:
             raise ValueError("NAS server is reachable, but the selected Home Assistant mount is unavailable")
-        target = self._nas_target_path(cfg)
+        target = validated_target
 
         def test_write():
             target.mkdir(parents=True, exist_ok=True)
