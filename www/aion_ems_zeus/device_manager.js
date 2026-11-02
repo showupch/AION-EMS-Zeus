@@ -360,22 +360,6 @@ class AionEmsDeviceManager extends HTMLElement {
     const registryRestored=deviceCount>0;
     const managerStatus=registryRestored?'Ready':(manager?.state||this._message||'Ready');
     const managerMessage=registryRestored?`Registry restored · ${deviceCount} registered device${deviceCount===1?'':'s'} loaded.`:(manager?.attributes?.message||'No device import has run.');
-    // Keep scroll containers stable during the periodic full render. The old
-    // shadow DOM is replaced synchronously; restore scroll offsets before the
-    // browser paints, including Home Assistant's outer scrolling containers.
-    const scrollPositions=[];
-    let scrollNode=this;
-    while(scrollNode){
-      if(scrollNode.scrollTop||scrollNode.scrollLeft){
-        scrollPositions.push([scrollNode,scrollNode.scrollTop,scrollNode.scrollLeft]);
-      }
-      const parent=scrollNode.parentNode;
-      scrollNode=parent instanceof ShadowRoot?parent.host:parent;
-    }
-    const documentScroller=document.scrollingElement;
-    if(documentScroller&&!scrollPositions.some(([node])=>node===documentScroller)){
-      scrollPositions.push([documentScroller,documentScroller.scrollTop,documentScroller.scrollLeft]);
-    }
     this.shadowRoot.innerHTML=`<style>
       :host{display:block;width:100%;max-width:none;margin:0;padding:0;background:var(--primary-background-color);color:var(--primary-text-color)}h1{margin:0;font-size:2rem;letter-spacing:-.03em}h2{margin:0 0 8px}.sub,.hint{opacity:.74;font-size:13px;line-height:1.45}.status,.panel,.maprow{background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:16px;padding:16px;margin-top:10px;box-shadow:0 4px 18px rgba(0,0,0,.08)}.hero-panel{border-top:3px solid var(--primary-color)}.battery-panel{border-top:3px solid #f5a623}.section-nav{position:sticky;top:0;z-index:200;display:flex;gap:10px;padding:10px 0;background:var(--primary-background-color)}.navbtn{background:var(--secondary-background-color);color:var(--primary-text-color);border:1px solid var(--divider-color)}.navbtn.active{background:var(--primary-color);color:var(--text-primary-color)}.section-title{display:flex;align-items:center;gap:14px;margin-top:16px}.section-title>span{display:grid;place-items:center;width:42px;height:42px;border-radius:50%;background:var(--primary-color);color:var(--text-primary-color);font-size:20px;font-weight:700}.section-title h2{margin:0}.maprow{display:grid;grid-template-columns:minmax(190px,.8fr) minmax(320px,2fr) auto;gap:10px;align-items:center}.buttons{display:flex;gap:7px;flex-wrap:wrap}button{border:0;border-radius:9px;padding:9px 12px;background:var(--primary-color);color:var(--text-primary-color);font-weight:600;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}.danger{background:#b3261e;color:#fff}input,select{box-sizing:border-box;padding:10px;border-radius:8px;background:var(--card-background-color);color:var(--primary-text-color);border:1px solid var(--divider-color)}input[type=text],.entity-search,.sign-select{width:100%}.sign-select{margin-top:8px;background:var(--card-background-color);color:var(--primary-text-color);border:1px solid var(--divider-color);border-radius:8px}input:focus{outline:2px solid var(--primary-color);outline-offset:1px}.picker{position:relative;min-width:0}.picker:focus-within .entity-search{border-color:var(--primary-color);box-shadow:0 0 0 2px color-mix(in srgb,var(--primary-color) 24%,transparent)}.results{position:absolute;z-index:10000;left:0;right:0;top:calc(100% + 4px);max-height:360px;overflow:auto;background:var(--card-background-color);color:var(--primary-text-color);border:1px solid var(--divider-color);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.42)}.result{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;text-align:left;border-radius:0;background:var(--card-background-color);color:var(--primary-text-color);border-bottom:1px solid var(--divider-color);padding:10px 12px}.result:hover,.result:focus{background:var(--secondary-background-color);outline:2px solid var(--primary-color);outline-offset:-2px}.result span:first-child{min-width:0}.result b,.result small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.result small,.value,.result-note{font-size:12px;opacity:.72}.value{text-align:right;white-space:nowrap}.result-note{padding:12px}.bad{grid-column:1/-1;color:#ef5350}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}.device{padding:10px;border:1px solid var(--divider-color);border-radius:10px}.review{margin-top:12px;border:1px solid var(--divider-color);border-radius:10px;overflow:hidden}.reviewrow{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:11px;border-bottom:1px solid var(--divider-color);cursor:pointer}.reviewrow:last-child{border-bottom:0}.reviewrow small{display:block;opacity:.72;margin-top:2px}.reviewrow.muted{opacity:.55;cursor:not-allowed}.setup-choice{display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:12px;border:1px solid var(--divider-color);border-radius:10px;margin-top:12px}.setup-choice label{display:flex;gap:7px;align-items:center}.calculated-note{padding:12px;margin-top:10px;background:var(--secondary-background-color);border-radius:10px}details.panel>summary{cursor:pointer;font-size:1.25rem}.overview{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0}.overview>div{padding:14px;border:1px solid var(--divider-color);border-radius:14px;background:linear-gradient(145deg,var(--card-background-color),var(--secondary-background-color))}.overview span{display:block;opacity:.7;font-size:12px}.overview b{display:block;margin-top:6px;font-size:18px}.pill{font-size:12px;padding:5px 8px;border-radius:999px;background:var(--secondary-background-color);white-space:nowrap}@media(max-width:900px){aion-ems-device-manager{display:block;width:100%;max-width:100%;min-width:0;overflow-x:hidden;padding:0}.section-nav{overflow-x:auto;overflow-y:hidden;max-width:100%}.navbtn{white-space:nowrap;flex:0 0 auto}.overview{grid-template-columns:repeat(2,minmax(0,1fr))}.maprow{grid-template-columns:1fr}.bad{grid-column:auto}.results{position:fixed;left:12px;right:12px;top:20%;max-height:60vh}.reviewrow{grid-template-columns:auto 1fr}.pill{grid-column:auto}}
 @media(max-width:760px){
@@ -643,45 +627,6 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .diagnostics-center-page .diagnostic-detail-block{display:block;padding-top:24px!important}.diagnostics-center-page .diagnostic-detail-stack{display:grid;gap:14px;margin-top:0!important}.diagnostics-center-page .diagnostic-detail-stack>.detail-entities{margin-top:0!important}.diagnostics-center-page .diagnostic-detail-stack>.diagnostic-device-row{margin-top:0!important}.diagnostics-center-page .diagnostic-detail-stack+.safety-note{margin-top:20px!important}
 /* v14.8.5 Diagnostic Report Export */
 .diagnostics-center-page .diagnostic-report-panel{margin-top:28px}.diagnostics-center-page .diagnostic-report-preview{max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:16px;border:1px solid rgba(127,160,190,.16);border-radius:12px;background:rgba(7,16,25,.55);color:var(--text);font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.diagnostics-center-page .diagnostics-selftest-actions{display:flex;gap:10px;flex-wrap:wrap}
-/* v16.0.392: responsive setup mapping forms only; no desktop changes */
-@media (max-width:760px){
-  .maprow.basicrow,.weather-setup-page .maprow,.page .maprow{
-    display:grid!important;grid-template-columns:minmax(0,1fr)!important;
-    width:100%!important;max-width:100%!important;min-width:0!important;
-    gap:10px!important;padding:12px!important;overflow:visible!important;
-    box-sizing:border-box!important
-    for(const [node,top,left] of scrollPositions){
-      if(node.isConnected){node.scrollTop=top;node.scrollLeft=left;}
-    }
-
-  }
-  .maprow.basicrow>*,.page .maprow>*,.page .picker,
-  .page .picker input,.page .picker select,.page .maprow select{
-    min-width:0!important;max-width:100%!important;box-sizing:border-box!important
-  }
-  .page .maprow .buttons{
-    display:flex!important;flex-wrap:wrap!important;gap:8px!important;
-    width:100%!important;min-width:0!important
-  }
-  .page .maprow .buttons button{flex:1 1 76px;min-height:40px;white-space:normal}
-  .page .maprow b,.page .maprow label,.page .setup-choice label{
-    font-size:14px!important;line-height:1.45!important;overflow-wrap:anywhere
-  }
-  .page .maprow .hint,.page .maprow small{
-    font-size:12px!important;line-height:1.5!important;overflow-wrap:anywhere
-  }
-  .page .setup-choice{display:flex!important;flex-direction:column!important;
-    align-items:stretch!important;gap:12px!important}
-  .page .setup-choice label{display:flex!important;align-items:flex-start!important}
-  .page .setup-choice input[type=radio]{flex:none;margin-top:3px}
-  .page .maprow input,.page .maprow select,.page .setup-choice input{
-    font-size:16px;min-height:40px
-  }
-}
-@media (max-width:420px){
-  .page .maprow.basicrow,.page .maprow{padding:10px!important}
-  .page .maprow .buttons button{padding:9px 8px!important}
-}
 </style>
     <h1>AION EMS Zeus Device Manager</h1><div class="sub">Version ${this.esc(this.s("sensor.aion_ems_zeus_platform_status")?.attributes?.version||"16.0.322")} · Registry & Diagnostics Center.</div>
     <div class="status"><b>${this.esc(managerStatus)}</b>${this._error?`<div class="bad">${this.esc(this._error)}</div>`:""}<div>${this.esc(managerMessage)}</div></div>
@@ -2537,14 +2482,6 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
       .zfc-health-copy strong{display:block;color:#f1f7fc;font-size:clamp(11px,.83vw,15px);line-height:1.15;white-space:nowrap;margin-top:2px}
       .zfc-health-copy small{display:block;color:#9fb7c9;font-size:8px;line-height:1.1}
       @media(max-width:1120px){.zfc-health-strip{grid-template-columns:repeat(2,minmax(0,1fr))}}
-
-      /* v16.0.394: intermediate viewport typography; desktop untouched. */
-      @media(min-width:761px) and (max-width:1199px){
-        .zfc-efficiency-overlay{width:62%;left:50%;transform:translateX(-50%);gap:6px}
-        .zfc-efficiency-label{font-size:clamp(8px,1vw,12px);white-space:normal;text-align:center;line-height:1.1}
-        .zfc-summary-item,.zfc-health-item{min-width:0;overflow:hidden}
-        .zfc-summary-item span,.zfc-health-copy span{overflow-wrap:anywhere}
-      }
       .zfc-stage{position:relative;min-width:0;width:100%;max-width:100%;flex:0 0 auto;justify-self:center;align-self:start;aspect-ratio:1550/1024;border:1px solid #284458;border-radius:12px;overflow:hidden;background:#071522}
       .zfc-stage img{display:block;width:100%;height:100%;object-fit:fill}
       .zfc-stage svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
@@ -9898,46 +9835,6 @@ th,td{padding:11px 12px;vertical-align:top;overflow-wrap:anywhere}
  .wizard-v2{width:100vw!important;max-height:100dvh!important;border-radius:0!important}
 }
 
-
-/* v16.0.396: Setup Wizard always uses a dark surface. Pin its text palette
-   locally so HA light-mode theme variables cannot turn its labels black. */
-.wizard-v2{
-  --text:#edf5ff!important;
-  --muted:#b4c6d9!important;
-  --primary-text-color:#edf5ff!important;
-  --secondary-text-color:#b4c6d9!important;
-  --disabled-text-color:#93a6b9!important;
-  --surface:#142332;
-  --surface2:#1b3044;
-  color:#edf5ff!important;
-  color-scheme:dark;
-}
-.wizard-v2 .wizard-body,.wizard-v2 .wizard-heading,
-.wizard-v2 .wizard-welcome,.wizard-v2 .wizard-ready,
-.wizard-v2 .wizard-summary-row article,
-.wizard-v2 .wizard-device-row,.wizard-v2 .wizard-check-list article,
-.wizard-v2 .wizard-select-card,.wizard-v2 .wizard-style-card{
-  color:#edf5ff!important;
-}
-.wizard-v2 h1,.wizard-v2 h2,.wizard-v2 h3,.wizard-v2 h4,
-.wizard-v2 strong,.wizard-v2 b,.wizard-v2 label{
-  color:#edf5ff!important;
-}
-.wizard-v2 p,.wizard-v2 small,.wizard-v2 .wizard-note,
-.wizard-v2 .wizard-time,.wizard-v2 .wizard-form-grid label{
-  color:#b4c6d9!important;
-}
-.wizard-v2 input,.wizard-v2 select,.wizard-v2 textarea{
-  color:#edf5ff!important;
-  background-color:#192d40!important;
-  -webkit-text-fill-color:#edf5ff;
-}
-.wizard-v2 input::placeholder,.wizard-v2 textarea::placeholder{
-  color:#a8bacd!important;
-  opacity:1;
-}
-.wizard-v2 select option{color:#edf5ff;background:#192d40}
-.wizard-v2 .wizard-actions button:not(.primary-button){color:#edf5ff}
 
 /* rc19 selector completion */
 .intelligence-center-grid,.intelligence-detail-grid,.intel-grid{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;align-items:stretch!important;gap:16px!important}
