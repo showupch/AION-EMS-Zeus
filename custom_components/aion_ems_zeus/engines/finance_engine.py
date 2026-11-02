@@ -428,6 +428,40 @@ class FinanceEngine:
             "boundary": "Simple payback estimate. Financing costs, tax effects, degradation, tariff inflation and replacement costs are not modeled.",
         }
 
+        # Read-only finance reconciliation: retain the actual inputs and
+        # explain differences between hourly pricing and live daily totals.
+        priced_import = today_priced.get("grid_import_kwh")
+        priced_export = today_priced.get("grid_export_kwh")
+        finance_evidence_audit = {
+            "canonical_today": {
+                "house_kwh": round(house, 4),
+                "solar_kwh": round(solar, 4),
+                "grid_import_kwh": round(imported, 4),
+                "grid_export_kwh": round(exported, 4),
+                "battery_discharge_kwh": round(battery_discharge, 4),
+            },
+            "allocation": {
+                "local_home_supply_kwh": round(local_home_supply, 4),
+                "battery_to_home_kwh": round(battery_to_home, 4),
+                "direct_solar_to_home_kwh": round(direct_solar, 4),
+                "solar_period_complete": solar_period_complete,
+                "zero_local_supply": local_home_supply <= 0,
+                "battery_discharge_source": battery_discharge_source,
+            },
+            "hourly_pricing": {
+                "evidence_source": today_priced.get("evidence_source"),
+                "hour_count": today_priced.get("hour_count"),
+                "coverage_start": today_priced.get("coverage_start"),
+                "coverage_end": today_priced.get("coverage_end"),
+                "coverage_complete": today_priced.get("coverage_complete"),
+                "grid_import_kwh": priced_import,
+                "grid_export_kwh": priced_export,
+                "import_delta_vs_canonical_kwh": round(float(priced_import) - imported, 4) if priced_import is not None else None,
+                "export_delta_vs_canonical_kwh": round(float(priced_export) - exported, 4) if priced_export is not None else None,
+            },
+            "note": "Read-only evidence. Completed hourly buckets and live daily totals may cover different time windows.",
+        }
+
         self.last = {
             "status": "Ready" if enabled else "Not configured",
             "configured": enabled, "currency": currency, "tariff_mode": tariff_mode,
@@ -471,6 +505,7 @@ class FinanceEngine:
             "device_costs": devices, "data_confidence": confidence,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "solar_period_complete": solar_period_complete,
+            "finance_evidence_audit": finance_evidence_audit,
             "assumptions": (("Dynamic import prices use absolute timestamped price slots supplied through the AION EMS Zeus set_energy_prices action. Export value is derived per slot as import price minus configured export depreciation." if export_depreciation is not None else "Dynamic import prices use absolute timestamped price slots supplied through the AION EMS Zeus set_energy_prices action. Export remains the configured fixed tariff because no export depreciation is configured.") if tariff_mode == "dynamic" else ("Time-of-use import costs use Home Assistant Recorder hourly grid-import changes and the configured local-time schedule. Avoided-import values use the measured effective import rate for the selected evidence window. Export remains a fixed tariff in this release." if tariff_mode == "time_of_use" else "Fixed tariffs. Direct solar and measured battery discharge to the home are valued as avoided grid purchases. Canonical solar excludes measured export; battery charging is tracked separately. If the Solar Input changes mid-day and the solar period is incomplete, Today is temporarily reconstructed from measured home, grid and battery totals until midnight.")),
         }
         return self.last
