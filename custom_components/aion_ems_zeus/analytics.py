@@ -4126,6 +4126,13 @@ class ForecastEngine:
             if forecast_mode == "v2" and candidate_hours_complete and all(r.get("v2_solar_power_w") is not None for r in candidate_rows):
                 candidate_energy = round(sum(r["v2_solar_power_w"] for r in candidate_rows) / 1000.0, 3)
                 candidate_source = "active_v2_hourly"
+            # A complete historical baseline is not a weather-qualified
+            # forecast. Do not advertise it as a validated V2 candidate when
+            # tomorrow has no matched weather hours. Production is untouched.
+            matched_candidate_weather = sum(bool(r.get("weather_forecast_applied")) for r in candidate_rows)
+            if candidate_source == "active_v2_hourly" and matched_candidate_weather == 0:
+                candidate_energy = None
+                candidate_source = "missing_weather_evidence"
             # Never substitute a read-only sensitivity counterfactual for
             # the active V2 forecast. Incomplete evidence remains unavailable.
             guard_counts = {}
@@ -4250,7 +4257,7 @@ class ForecastEngine:
                     bool(h.get("weather_forecast_applied")) and h.get("cloud_coverage") is not None
                     for h in candidate_rows
                 ),
-                "warning": "V2 is unvalidated; heavy-cloud guard limits upward divergence from Legacy. Explicit opt-in only.",
+                "warning": ("No matched weather for the target day: the legacy number is a historical fallback, not a reliable weather-adjusted forecast. Do not use for automated planning without review." if matched_candidate_weather == 0 else "V2 is unvalidated; heavy-cloud guard limits upward divergence from Legacy. Explicit opt-in only."),
                 "production_applied": False,
                 "control_permission": False,
             }
