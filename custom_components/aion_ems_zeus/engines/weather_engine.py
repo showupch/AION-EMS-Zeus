@@ -295,6 +295,38 @@ class WeatherEngine:
             # condition/cloud evidence. Such rows cannot attenuate PV output.
             diagnostics["hourly"]["status"] = "no_solar_weather_evidence"
             rows = []
+        # Some providers return valid hourly rows only through the current
+        # evening, while daily forecast data covers tomorrow. A nonempty
+        # hourly response must not hide tomorrow's usable daily evidence.
+        # Never stretch today's hourly conditions across tomorrow.
+        def _tomorrow_solar_rows(items):
+            tomorrow = dt_util.as_local(dt_util.utcnow()).date() + timedelta(days=1)
+            count = 0
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    stamp = datetime.fromisoformat(str(item.get("datetime") or item.get("time") or "").replace("Z", "+00:00"))
+                    if stamp.tzinfo is None or stamp.utcoffset() is None:
+                        continue
+                    if dt_util.as_local(stamp).date() != tomorrow:
+                        continue
+                    condition = str(item.get("condition") or "").lower()
+                    if condition in self.CONDITION_FACTORS or any(item.get(k) is not None for k in ("cloud_coverage", "cloud_cover", "cloudiness")):
+                        count += 1
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            return count
+
+        diagnostics["hourly_tomorrow_solar_rows"] = _tomorrow_solar_rows(rows) if kind == "hourly" else 0
+        if kind == "hourly" and rows and diagnostics["hourly_tomorrow_solar_rows"] == 0:
+            daily_rows = await _request("daily")
+            diagnostics["daily_tomorrow_solar_rows"] = _tomorrow_solar_rows(daily_rows)
+            if diagnostics["daily_tomorrow_solar_rows"]:
+                diagnostics["fallback_reason"] = "hourly_missing_tomorrow_using_daily"
+                kind, rows = "daily", daily_rows
+            else:
+                diagnostics["fallback_reason"] = "no_tomorrow_solar_evidence"
         if not rows:
             kind = "daily"
             rows = await _request("daily")
