@@ -56,6 +56,36 @@ RECORDER_STATE_ONLY_KEYS = frozenset({
 })
 
 
+def _solar_daily_authority_audit(core) -> dict[str, Any]:
+    """Read-only comparison of Zeus Today authority and HA daily PV meters."""
+    from homeassistant.util import dt as dt_util
+    now = dt_util.now()
+    mapping = dict((getattr(core.registry, "data", {}) or {}).get("entity_mappings", {}) or {})
+    analytics = core.analytics.summary() or {}
+    row = next((r for r in ((analytics.get("chart_history") or {}).get("today") or []) if isinstance(r, dict)), {})
+    mapped_id = str(mapping.get("solar_energy_today") or "").strip()
+    mapped_state = core.hass.states.get(mapped_id) if mapped_id else None
+    def entity_info(entity_id):
+        st = core.hass.states.get(entity_id) if entity_id else None
+        return {"entity_id": entity_id or None, "state": st.state if st else None,
+                "unit": st.attributes.get("unit_of_measurement") if st else None,
+                "last_updated": st.last_updated.isoformat() if st else None}
+    return {
+        "status": "read_only", "local_date": now.date().isoformat(),
+        "canonical_solar_kwh": row.get("solar_energy_kwh"),
+        "canonical_method": row.get("solar_energy_kwh_method"),
+        "canonical_source": row.get("solar_energy_kwh_source"),
+        "hybrid_true_pv_configured": row.get("hybrid_true_pv_configured"),
+        "true_pv_integrated_kwh": row.get("solar_true_pv_integrated_kwh"),
+        "true_pv_entity": row.get("hybrid_true_pv_entity"),
+        "mapped_daily_meter": entity_info(mapped_id),
+        "observed_zeus_solar_daily": entity_info("sensor.zeus_solar_daily"),
+        "observed_zeus_solar_energy": entity_info("sensor.zeus_solar_energy"),
+        "forecast_actual_history_source": "analytics.chart_history.total",
+        "note": "Diagnostics only; no meter mapping, forecast sample, or stored data changed",
+    }
+
+
 def _json_payload_bytes(value: Any) -> int:
     """Return a stable UTF-8 JSON size estimate for Recorder-facing data."""
     try:
@@ -1831,6 +1861,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Adaptive Advisor", "adaptive_advisor", "mdi:account-sync-outline", lambda c: c.adaptive_advisor.summary().get("status"), lambda c: c.adaptive_advisor.summary()),
         SimpleSensor(coordinator, core, "Decision Engine", "decision_engine", "mdi:source-branch-check", lambda c: c.decision_engine.summary().get("decision"), _decision_engine_attributes),
         SimpleSensor(coordinator, core, "Scenario Simulator", "scenario_simulator", "mdi:compare-horizontal", lambda c: c.scenario_simulator.summary().get("status"), lambda c: c.scenario_simulator.summary()),
+        SimpleSensor(coordinator, core, "Solar Daily Authority Audit", "solar_daily_authority_audit", "mdi:solar-power-variant", lambda c: "read_only", _solar_daily_authority_audit),
         SimpleSensor(coordinator, core, "Prediction Accuracy", "prediction_accuracy", "mdi:target-account", lambda c: c.prediction_accuracy.summary().get("status"), lambda c: c.prediction_accuracy.summary()),
         SimpleSensor(coordinator, core, "Forecast V2.1 Shadow", "forecast_v21_shadow", "mdi:chart-line-variant", lambda c: c.prediction_accuracy.v21_shadow_summary().get("status"), lambda c: c.prediction_accuracy.v21_shadow_summary()),
         ForecastExplorerDataSensor(coordinator, core, "Forecast Explorer Data", "forecast_explorer_data", "mdi:chart-timeline-variant-shimmer"),
@@ -2060,6 +2091,16 @@ class RecorderStateOnlySimpleSensor(SimpleSensor):
         # Mapping configuration is user-driven, not a high-frequency diagnostic.
         # Publish it immediately on Save/Clear rather than waiting for the
         # diagnostic keepalive (which can be 15 minutes).
+        # Switch Hub is a safety-relevant control diagnostic. Publish its
+        # attributes immediately after configuration changes rather than
+        # retaining the old threshold until the 15-minute keepalive.
+        if self._attr_unique_id == f"{DOMAIN}_switch_hub":
+            self.async_on_remove(
+                self.hass.bus.async_listen(
+                    f"{DOMAIN}_switch_hub_changed",
+                    lambda event: self._handle_coordinator_update(force=True),
+                )
+            )
         if self._attr_unique_id == f"{DOMAIN}_energy_mapping":
             self.async_on_remove(
                 self.hass.bus.async_listen(

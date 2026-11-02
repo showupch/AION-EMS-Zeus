@@ -595,6 +595,14 @@ class HistoricalAnalyticsEngine:
                 value *= 1000.0
             elif unit not in {"kwh", "kilowatt-hour", "kilowatt-hours"}:
                 continue
+            if key == "solar_energy_kwh":
+                # Reuse the persisted local-day guard from DataLake. A sleeping
+                # inverter's zero must not erase daytime PV production in the
+                # canonical analytics / forecast-actual history.
+                today = dt_util.now().date().isoformat()
+                day_row = (self.data_lake.data.get("daily_summaries") or {}).get(today, {})
+                if str(day_row.get("solar_daily_guard_source") or "") == entity_id:
+                    value = max(value, float(day_row.get("solar_daily_guard_max_kwh", 0.0) or 0.0))
             out[key] = round(max(value, 0.0), 4)
             out[f"{key}_method"] = "mapped_daily_energy"
             out[f"{key}_source"] = entity_id
@@ -4175,6 +4183,43 @@ class ForecastEngine:
                 round(path_audit["v2_kwh"] - path_audit["pre_guard_kwh"], 3)
                 if path_audit["v2_kwh"] is not None and path_audit["pre_guard_kwh"] is not None else None
             )
+            # Read-only cloud attenuation comparison on the same V2 hourly baseline.
+            cloud_test = {"status": "incomplete_evidence", "target_date": target_date.isoformat(),
+                          "baseline_kwh": path_audit["baseline_kwh"], "current_v2_kwh": path_audit["v2_kwh"],
+                          "candidate_a_kwh": None, "candidate_b_kwh": None,
+                          "method": "same_v2_baseline_numeric_cloud_guard_ratio",
+                          "candidate_a_divisor": 170, "candidate_b_divisor": 200,
+                          "hours": [], "production_applied": False, "control_permission": False,
+                          "note": "Read-only current snapshot, not frozen validation."}
+            if forecast_mode == "v2" and candidate_hours_complete:
+                sums = [0.0, 0.0]
+                complete = True
+                for hour in candidate_rows:
+                    try:
+                        if not hour.get("weather_forecast_applied"):
+                            raise ValueError("missing weather")
+                        vals = [hour.get(k) for k in ("v2_baseline_power_w", "v2_pre_guard_power_w",
+                            "v2_solar_power_w", "cloud_coverage")]
+                        if any(v is None for v in vals):
+                            raise ValueError("missing numeric evidence")
+                        base, pre, final, cloud = map(float, vals)
+                        if not all(math.isfinite(v) for v in (base, pre, final, cloud)) or not 0 <= cloud <= 100:
+                            raise ValueError("invalid numeric evidence")
+                        original = max(0.08, 1.0-cloud/150.0)
+                        condition_ratio = min(1.0,max(0.0,pre/(base*original))) if base*original>0 else 1.0
+                        guard_ratio = min(1.0,max(0.0,final/pre)) if pre>0 else 1.0
+                        estimates = [round(base*max(0.08,1.0-cloud/d)*condition_ratio*guard_ratio,1) for d in (170.,200.)]
+                        for i in range(2): sums[i] += estimates[i]/1000.0
+                        cloud_test["hours"].append({"time":hour.get("time"), "cloud_percent":cloud,
+                            "baseline_w":base,"current_w":final,"candidate_a_w":estimates[0],
+                            "candidate_b_w":estimates[1],"guard_ratio":round(guard_ratio,4)})
+                    except (TypeError,ValueError,OverflowError):
+                        complete = False
+                if complete:
+                    cloud_test["candidate_a_kwh"] = round(sums[0],3)
+                    cloud_test["candidate_b_kwh"] = round(sums[1],3)
+                    cloud_test["status"] = "available_read_only"
+            path_audit["v21_cloud_sensitivity"] = cloud_test
             forecast_correction_candidate = {
                 "status": "production_candidate_opt_in" if candidate_source == "active_v2_hourly" else "incomplete_evidence",
                 "target_date": target_date.isoformat(),

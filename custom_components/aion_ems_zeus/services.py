@@ -1778,8 +1778,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             rows.append(row)
         core.registry.data["switch_hub"] = rows[:30]
         await core.registry.async_save()
+        core.switch_hub.prime_from_registry()
         await core.switch_hub.async_evaluate()
         await _refresh_aion_entities(hass)
+        # Force the recorder-efficient diagnostic sensor to publish the
+        # newly evaluated control thresholds immediately.
+        hass.bus.async_fire(f"{DOMAIN}_switch_hub_changed")
 
     async def remove_switch_hub_device(call: ServiceCall) -> None:
         core = _core(hass)
@@ -1789,8 +1793,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             if str(row.get("id") or "") != device_id
         ]
         await core.registry.async_save()
+        core.switch_hub.prime_from_registry()
         await core.switch_hub.async_evaluate()
         await _refresh_aion_entities(hass)
+        # Force the recorder-efficient diagnostic sensor to publish the
+        # newly evaluated control thresholds immediately.
+        hass.bus.async_fire(f"{DOMAIN}_switch_hub_changed")
 
     async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_SWITCH_HUB_DEVICE, save_switch_hub_device, schema=vol.Schema({
         vol.Required("device_id"): cv.string,

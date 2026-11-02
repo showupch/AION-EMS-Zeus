@@ -2,7 +2,7 @@
 
 DOMAIN = "aion_ems_zeus"
 NAME = "AION EMS"
-VERSION = "16.0.397"
+VERSION = "16.0.405"
 
 PLATFORMS = ["sensor"]
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
+
 from datetime import datetime, timezone
 from typing import Any
 
@@ -37,6 +40,7 @@ class RegistryEngine:
         self.hass = hass
         self.event_bus = event_bus
         self.store = Store(hass, 2, REGISTRY_STORAGE_KEY)
+        self._save_lock = asyncio.Lock()
         # Finance tariff resilience: keep the canonical tariff configuration in
         # a dedicated HA Store as a recovery copy. Integration upgrades replace
         # code files, never this HA storage. The registry remains authoritative;
@@ -175,20 +179,19 @@ class RegistryEngine:
         self.event_bus.publish("RegistryLoaded", "RegistryEngine", self.summary())
 
     async def async_save(self) -> None:
-        # Long-run stability: keep the persistent audit useful but bounded.
-        # Several configuration/services append audit records over the life of
-        # the installation; serialising an ever-growing list wastes memory and
-        # storage I/O without improving diagnostics.
-        audit = self.data.get("audit")
-        if isinstance(audit, list) and len(audit) > MAX_AUDIT_ENTRIES:
-            self.data["audit"] = audit[-MAX_AUDIT_ENTRIES:]
-        await self.store.async_save(self.data)
-        # Mirror the canonical tariff block to its recovery store. Clearing
-        # tariffs also writes the disabled block, so an intentional Clear can
-        # never be resurrected on the next restart.
-        tariffs = self.data.get("sources", {}).get("tariffs")
-        if isinstance(tariffs, dict):
-            await self.tariff_store.async_save(dict(tariffs))
+        """Serialize registry writes and snapshot mutable configuration.
+
+        Uses the supported Home Assistant Store async_save API for all writes.
+        """
+        async with self._save_lock:
+            audit = self.data.get("audit")
+            if isinstance(audit, list) and len(audit) > MAX_AUDIT_ENTRIES:
+                self.data["audit"] = audit[-MAX_AUDIT_ENTRIES:]
+            snapshot = copy.deepcopy(self.data)
+            await self.store.async_save(snapshot)
+            tariffs = snapshot.get("sources", {}).get("tariffs")
+            if isinstance(tariffs, dict):
+                await self.tariff_store.async_save(dict(tariffs))
 
     def build_device(
         self,

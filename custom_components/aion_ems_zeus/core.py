@@ -276,6 +276,9 @@ class AionCore:
         # Persistent configuration and the data lake are required before entity
         # platforms, services and the frontend are exposed.  Keep these awaited.
         await self.registry.async_load()
+        # Make saved Switch Hub configuration visible immediately after reload,
+        # even while deferred warm-up is still running. Display-only.
+        self.switch_hub.prime_from_registry()
         configure_data_epoch((self.registry.data.get("home_settings") or {}).get("data_epoch"))
         await self.data_lake.async_load()
 

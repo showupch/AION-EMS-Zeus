@@ -1750,6 +1750,26 @@ class DataLake:
                 return float(value), field, item.get("entity_id")
         return None, None, None
 
+    @staticmethod
+    def _protected_solar_daily(daily, value, entity_id):
+        """Hold the highest measured daily PV value for one local calendar day.
+
+        An inverter may report zero when it sleeps. The day-specific DataLake
+        summary persists the last valid reading; a new day has a fresh row.
+        No historic readings are rewritten, and no source is silently switched.
+        """
+        value = max(float(value), 0.0)
+        previous_source = str(daily.get("solar_daily_guard_source") or "")
+        if previous_source != str(entity_id or ""):
+            daily["solar_daily_guard_source"] = str(entity_id or "")
+            daily["solar_daily_guard_max_kwh"] = round(value, 4)
+            daily.pop("solar_daily_guard_holding", None)
+            return value
+        maximum = max(float(daily.get("solar_daily_guard_max_kwh", 0.0) or 0.0), value)
+        daily["solar_daily_guard_max_kwh"] = round(maximum, 4)
+        daily["solar_daily_guard_holding"] = value + 0.001 < maximum
+        return maximum
+
     def _apply_mapped_daily_energy(self, daily, energy_key, today_fields, total_fields, reading):
         """Prefer daily meters; continuously accumulate cumulative battery-meter deltas.
 
@@ -1783,6 +1803,8 @@ class DataLake:
             )
 
         if field in today_fields and not duplicate_today_total:
+            if energy_key == "solar_energy_kwh":
+                value = self._protected_solar_daily(daily, value, entity_id)
             daily[energy_key] = round(value, 4)
             daily[f"{energy_key}_method"] = "measured_daily_energy"
             daily[f"{energy_key}_source"] = entity_id
@@ -1977,7 +1999,7 @@ class DataLake:
             # remains authoritative for instantaneous PV power and is the fallback
             # integration source only when no daily Solar energy meter exists.
             mapped_value, _mapped_field, mapped_entity = mapped_daily_solar
-            daily["solar_energy_kwh"] = round(max(float(mapped_value), 0.0), 4)
+            daily["solar_energy_kwh"] = round(self._protected_solar_daily(daily, mapped_value, mapped_entity), 4)
             daily["solar_energy_kwh_method"] = "mapped_true_pv_daily_energy"
             daily["solar_energy_kwh_source"] = mapped_entity
             daily["solar_true_pv_daily_authority"] = True
@@ -2179,7 +2201,7 @@ class DataLake:
         mapped_daily_solar = self._mapped_energy_kwh("solar_energy_today")
         if dedicated_pv_entity and mapped_daily_solar[0] is not None:
             mapped_value, _mapped_field, mapped_entity = mapped_daily_solar
-            daily["solar_energy_kwh"] = round(max(float(mapped_value), 0.0), 4)
+            daily["solar_energy_kwh"] = round(self._protected_solar_daily(daily, mapped_value, mapped_entity), 4)
             daily["solar_energy_kwh_method"] = "mapped_true_pv_daily_energy"
             daily["solar_energy_kwh_source"] = mapped_entity
             daily["solar_true_pv_daily_authority"] = True

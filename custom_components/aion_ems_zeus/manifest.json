@@ -1,11 +1,6 @@
 {
   "domain": "aion_ems_zeus",
   "name": "AION EMS Zeus",
-  "categories": [
-    "energy.meters_monitoring",
-    "energy.solar_batteries",
-    "energy.ev_charging"
-  ],
   "codeowners": [
     "@showupch"
   ],
@@ -19,5 +14,10 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/showupch/AION-EMS-Zeus/issues",
   "requirements": [],
-  "version": "16.0.397"
+  "version": "16.0.405",
+  "categories": [
+    "energy.meters_monitoring",
+    "energy.solar_batteries",
+    "energy.ev_charging"
+  ]
 }

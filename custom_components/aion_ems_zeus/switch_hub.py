@@ -42,6 +42,38 @@ class SwitchHubEngine:
         rows = self.registry.data.get("switch_hub") or []
         return [dict(row) for row in rows if isinstance(row, dict)]
 
+    def prime_from_registry(self) -> None:
+        """Expose persisted Switch Hub devices during essential startup.
+
+        This is display-only: never actuate a switch before the normal
+        background evaluation/control startup has completed.
+        """
+        rows = self._configs()
+        devices = []
+        for index, cfg in enumerate(rows[:30]):
+            mode = str(cfg.get("control_mode") or
+                       ("zeus" if cfg.get("control_enabled") is True else "observe")).lower()
+            switch_entity = str(cfg.get("switch_entity") or "")
+            devices.append({
+                **cfg,
+                "stage_priority": index + 1,
+                "actual_state": "on" if self._state_on(switch_entity) else "off",
+                "desired_state": "pending_evaluation",
+                "reason": "Saved configuration loaded; awaiting first live evaluation",
+            })
+        self.last = {
+            **self.last,
+            "status": "Awaiting evaluation",
+            "device_count": len(devices),
+            "enabled_count": sum(
+                str(d.get("control_mode") or
+                    ("zeus" if d.get("control_enabled") is True else "observe"))
+                in ("zeus", "home_assistant") for d in devices
+            ),
+            "devices": devices,
+            "safety": "Startup preview only: no switch actuation until live evaluation.",
+        }
+
     def _state_on(self, entity_id: str) -> bool:
         state = self.hass.states.get(entity_id)
         return bool(state and str(state.state).lower() == "on")
