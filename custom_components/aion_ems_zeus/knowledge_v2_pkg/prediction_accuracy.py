@@ -15,6 +15,7 @@ from ..flow_access import flow_soc, flow_w
 from .forecast_v21_shadow import evaluate_shadow
 from .forecast_v21_weather import summarize_weather_history
 
+from homeassistant.components.energy import async_get_manager
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -43,6 +44,9 @@ class PredictionAccuracyEngine:
         self._daily_samples: deque[dict[str, Any]] = deque(maxlen=120)
         self._forward_shadow_pending: deque[dict[str, Any]] = deque(maxlen=45)
         self._forward_shadow_outcomes: deque[dict[str, Any]] = deque(maxlen=120)
+        self._hourly_frozen: deque[dict[str, Any]] = deque(maxlen=45)
+        self._hourly_capture_status: dict[str, Any] = {"status": "waiting_for_pre_day_snapshot"}
+        self._hourly_actuals_status: dict[str, Any] = {"status": "awaiting_completed_target_day"}
         self._cloud_pending: deque[dict[str, Any]] = deque(maxlen=45)
         self._cloud_outcomes: deque[dict[str, Any]] = deque(maxlen=120)
         self._cloud_capture_attempt: dict[str, Any] = {
@@ -77,6 +81,7 @@ class PredictionAccuracyEngine:
             ("_daily_samples", "daily_samples", 120),
             ("_forward_shadow_pending", "forward_shadow_pending", 45),
             ("_forward_shadow_outcomes", "forward_shadow_outcomes", 120),
+            ("_hourly_frozen", "hourly_frozen", 45),
             ("_cloud_pending", "cloud_pending", 45),
             ("_cloud_outcomes", "cloud_outcomes", 120),
         ):
@@ -97,6 +102,7 @@ class PredictionAccuracyEngine:
             "daily_samples": list(self._daily_samples),
             "forward_shadow_pending": list(self._forward_shadow_pending),
             "forward_shadow_outcomes": list(self._forward_shadow_outcomes),
+            "hourly_frozen": list(self._hourly_frozen),
             "cloud_pending": list(self._cloud_pending),
             "cloud_outcomes": list(self._cloud_outcomes),
             "saved_at": datetime.now(timezone.utc).isoformat(),
@@ -426,6 +432,174 @@ class PredictionAccuracyEngine:
         finally:
             self._cloud_capture_attempt = status
 
+    def capture_hourly_forecast_tick(self) -> None:
+        """Freeze the first complete pre-day hourly forecast; never overwrite it.
+
+        A frozen row is evidence, not a scored observation. No actual hourly
+        values are inferred from daily totals or mutable live power readings.
+        """
+        now = datetime.now(timezone.utc)
+        today = dt_util.as_local(now).date()
+        result = {"status": "waiting_for_pre_day_snapshot", "checked_at": now.isoformat()}
+        try:
+            daily = (self.core.forecast.summary() or {}).get("daily_forecast") or []
+            for day in daily:
+                target = str(day.get("date") or "")
+                try:
+                    from datetime import date
+                    target_day = date.fromisoformat(target)
+                except (ValueError, TypeError):
+                    continue
+                if target_day <= today or (target_day - today).days != 1:
+                    continue
+                if any(item.get("target_date") == target for item in self._hourly_frozen):
+                    result = {"status": "already_frozen", "target_date": target}
+                    break
+                audit = (day.get("solar_forecast_diagnostics") or {}).get("hourly_pipeline_audit") or {}
+                hours = audit.get("hours") or []
+                if not isinstance(hours, list) or len(hours) not in (23, 24, 25):
+                    result = {"status": "incomplete_hourly_evidence", "target_date": target, "hours": len(hours) if isinstance(hours, list) else 0, "reason": "missing_nested_hourly_audit" if not audit else "unexpected_hour_count", "source": "daily_forecast.solar_forecast_diagnostics.hourly_pipeline_audit"}
+                    break
+                frozen = []
+                seen = set()
+                invalid_reason = None
+                for index, row in enumerate(hours):
+                    if not isinstance(row, dict):
+                        invalid_reason = f"row_{index}_not_object"
+                        break
+                    stamp = self._parse_time(row.get("time_utc"))
+                    original = self._num(row.get("final_w"))
+                    guarded = self._num(row.get("daylight_guard_candidate_w"))
+                    if stamp is None or original is None or guarded is None or not math.isfinite(original) or not math.isfinite(guarded):
+                        invalid_reason = f"row_{index}_missing_timestamp_or_watts"
+                        break
+                    key = stamp.isoformat()
+                    if key in seen:
+                        invalid_reason = f"row_{index}_duplicate_timestamp"
+                        break
+                    seen.add(key)
+                    frozen.append({"start_utc": key, "original_w": round(original, 3), "guarded_w": round(guarded, 3)})
+                if len(frozen) != len(hours):
+                    result = {"status": "invalid_hourly_evidence", "target_date": target, "reason": invalid_reason or "incomplete_rows", "accepted_hours": len(frozen)}
+                    break
+                self._hourly_frozen.append({
+                    "target_date": target, "captured_at_utc": now.isoformat(),
+                    "source": "forecast_daily_hourly_pipeline_audit",
+                    "hour_count": len(frozen), "hours": frozen,
+                    "measurement_source": None, "actuals_paired": False,
+                })
+                self._schedule_save()
+                result = {"status": "frozen", "target_date": target, "hour_count": len(frozen)}
+                break
+        except (AttributeError, TypeError, ValueError) as exc:
+            result = {"status": "capture_error", "error_type": type(exc).__name__}
+        self._hourly_capture_status = result
+
+    async def async_pair_completed_hourly_actuals(self) -> None:
+        """Score frozen pre-day forecasts against completed Recorder hourly changes.
+
+        Fail closed: no live power integration, interpolation, missing-hour zeroes,
+        or use of today's incomplete Recorder statistics. UTC keys handle DST.
+        """
+        now = datetime.now(timezone.utc)
+        today = dt_util.as_local(now).date()
+        pending = [x for x in self._hourly_frozen if not x.get("actuals_paired")
+                   and x.get("target_date", "9999") < today.isoformat()]
+        if not pending:
+            self._hourly_actuals_status = {"status": "awaiting_completed_target_day", "pending": 0}
+            return
+        item = pending[0]
+        target = item["target_date"]
+        try:
+            from datetime import date, time
+            local_start = dt_util.as_local(datetime.combine(date.fromisoformat(target), time.min).replace(tzinfo=dt_util.get_time_zone(self.core.hass.config.time_zone)))
+            local_end = dt_util.as_local(datetime.combine(date.fromisoformat(target) + timedelta(days=1), time.min).replace(tzinfo=dt_util.get_time_zone(self.core.hass.config.time_zone)))
+            start, end = local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc)
+            hours = item.get("hours") or []
+            expected = {self._parse_time(h.get("start_utc")) for h in hours}
+            expected.discard(None)
+            if len(expected) != len(hours) or len(hours) != int((end-start).total_seconds()/3600):
+                self._hourly_actuals_status = {"status": "invalid_frozen_timestamps", "target_date": target}
+                return
+            mappings = (getattr(self.core.registry, "data", {}) or {}).get("entity_mappings", {}) or {}
+            fallback = str(mappings.get("solar_energy_total") or mappings.get("solar_energy_today") or "").strip()
+            ids = []
+            manager = await async_get_manager(self.core.hass)
+            getter = getattr(manager, "async_get_preferences", None)
+            prefs = await getter() if callable(getter) else getattr(manager, "data", None)
+            if isinstance(prefs, dict):
+                ids = [str(x.get("stat_energy_from") or "").strip() for x in (prefs.get("energy_sources") or [])
+                       if isinstance(x, dict) and x.get("type") == "solar"]
+            ids = list(dict.fromkeys(x for x in (ids or [fallback]) if x))
+            if not ids:
+                self._hourly_actuals_status = {"status": "missing_solar_statistic_source", "target_date": target}
+                return
+            response = await self.core.hass.services.async_call(
+                "recorder", "get_statistics", {"statistic_ids": ids,
+                    "start_time": start, "end_time": end, "period": "hour",
+                    "types": ["change"], "units": {"energy": "kWh"}},
+                blocking=True, return_response=True)
+            raw = (response or {}).get("statistics", response or {})
+            actual = {t: 0.0 for t in expected}
+            for eid in ids:
+                rows = (raw or {}).get(eid) or []
+                per_source = {}
+                for row in rows:
+                    stamp = row.get("start")
+                    if isinstance(stamp, (float, int)):
+                        stamp = datetime.fromtimestamp(stamp, timezone.utc)
+                    else:
+                        stamp = self._parse_time(stamp)
+                    val = self._num(row.get("change"))
+                    if stamp not in expected or stamp in per_source or val is None or not math.isfinite(val) or val < -0.000001:
+                        continue
+                    per_source[stamp] = max(0.0, val)
+                if set(per_source) != expected:
+                    self._hourly_actuals_status = {"status": "incomplete_recorder_hours", "target_date": target,
+                        "source": eid, "matched_hours": len(per_source), "expected_hours": len(expected)}
+                    return
+                for stamp, value in per_source.items():
+                    actual[stamp] += value
+            pairs = []
+            for row in hours:
+                stamp = self._parse_time(row["start_utc"])
+                measured = actual[stamp]
+                original = float(row["original_w"]) / 1000
+                guarded = float(row["guarded_w"]) / 1000
+                pairs.append({"start_utc": stamp.isoformat(), "actual_kwh": round(measured, 5),
+                              "original_kwh": round(original, 5), "guarded_kwh": round(guarded, 5)})
+            n = len(pairs)
+            mae_original = sum(abs(r["original_kwh"] - r["actual_kwh"]) for r in pairs)/n
+            mae_guarded = sum(abs(r["guarded_kwh"] - r["actual_kwh"]) for r in pairs)/n
+            item["actuals_paired"] = True
+            item["measurement_source"] = "ha_recorder_hourly_energy_change"
+            item["statistic_ids"] = ids
+            item["paired_at_utc"] = now.isoformat()
+            item["accuracy"] = {"matched_hours": n, "original_hourly_mae_kwh": round(mae_original, 4),
+                "guarded_hourly_mae_kwh": round(mae_guarded, 4),
+                "actual_daily_kwh": round(sum(r["actual_kwh"] for r in pairs), 3),
+                "original_daily_kwh": round(sum(r["original_kwh"] for r in pairs), 3),
+                "guarded_daily_kwh": round(sum(r["guarded_kwh"] for r in pairs), 3),
+                "original_daily_absolute_error_kwh": round(abs(sum(r["original_kwh"]-r["actual_kwh"] for r in pairs)), 3),
+                "guarded_daily_absolute_error_kwh": round(abs(sum(r["guarded_kwh"]-r["actual_kwh"] for r in pairs)), 3)}
+            self._schedule_save()
+            self._hourly_actuals_status = {"status": "paired", "target_date": target, "matched_hours": n}
+        except Exception as exc:
+            self._hourly_actuals_status = {"status": "recorder_query_error", "target_date": target,
+                "error_type": type(exc).__name__}
+
+    def hourly_evidence_summary(self) -> dict[str, Any]:
+        return {
+            "status": "collecting_frozen_hourly_forecasts",
+            "frozen_days": len(self._hourly_frozen),
+            "capture": dict(self._hourly_capture_status),
+            "recent_snapshots": [{k: v for k, v in item.items() if k != "hours"} for item in list(self._hourly_frozen)[-5:]],
+            "paired_measured_hours": sum(len(x.get("hours") or []) for x in self._hourly_frozen if x.get("actuals_paired")),
+            "accuracy_status": "paired" if any(x.get("actuals_paired") for x in self._hourly_frozen) else "awaiting_recorder_hourly_actuals",
+            "actuals_capture": dict(self._hourly_actuals_status),
+            "production_applied": False, "control_permission": False,
+        }
+
     def capture_cloud_snapshot_tick(self) -> None:
         """Independent lightweight capture attempt; never recalculates forecasts."""
         now = datetime.now(timezone.utc)
@@ -628,6 +802,39 @@ class PredictionAccuracyEngine:
                 result["historical_weather_learning"] = summarize_weather_history(weather_days, latitude=getattr(self.core.hass.config, "latitude", None))
             except (AttributeError, TypeError, ValueError):
                 result["historical_weather_learning"] = {"status": "weather_history_unavailable", "forecast_correction_applied": False}
+            # Phase 12: side-by-side diagnostic only. Never select or apply
+            # either candidate to the production V2 forecast or energy controls.
+            try:
+                from .forecast_v21_comparison import compare_evaluators
+                tz_name = str(getattr(self.core.hass.config, "time_zone", "") or "")
+                comparison = compare_evaluators(
+                    target_date=target,
+                    baseline_kwh=current,
+                    weather_coverage=(coverage / 100.0 if coverage is not None and 0 <= coverage <= 100 else None),
+                    samples=list(self._daily_samples),
+                    local_timezone=tz_name,
+                )
+                result["v21_comparison_diagnostic"] = comparison
+                result["v21_bridge_diagnostic"] = {
+                    **comparison["independent"],
+                    "baseline_v2_kwh": round(current, 3),
+                    "bridge_audit": comparison["evidence_audit"],
+                    "production_applied": False,
+                    "control_permission": False,
+                }
+            except (ValueError, TypeError, KeyError, OverflowError, ImportError) as comparison_error:
+                result["v21_comparison_diagnostic"] = {
+                    "status": "comparison_unavailable",
+                    "reason": type(comparison_error).__name__,
+                    "production_applied": False,
+                    "control_permission": False,
+                }
+                result["v21_bridge_diagnostic"] = {
+                    "status": "bridge_unavailable",
+                    "reason": type(comparison_error).__name__,
+                    "production_applied": False,
+                    "control_permission": False,
+                }
             result["evidence_audit"] = audit
             result["baseline_v2_kwh"] = round(current, 3)
             result["source"] = "existing_daily_forecast_and_frozen_recorder_outcomes"
@@ -853,6 +1060,7 @@ class PredictionAccuracyEngine:
         self._capture_forward_shadow(now)
         self._mature_cloud_comparisons(now)
         self._capture_cloud_comparison(now)
+        self.capture_hourly_forecast_tick()
 
         metric_history: dict[str, list[float]] = {key: [] for key in self.METRICS}
         metric_errors: dict[str, list[float]] = {key: [] for key in self.METRICS}
@@ -909,6 +1117,7 @@ class PredictionAccuracyEngine:
             "minimum_samples_for_trend": 6,
             "minimum_samples_for_high_trust": 12,
             "forecast_capture_horizons_hours": list(self.LEAD_HOURS),
+            "hourly_frozen_evidence": self.hourly_evidence_summary(),
             "daily_forecast_accuracy": self._daily_accuracy_summary(),
             "forecast_v21_shadow": self.v21_shadow_summary(),
             "cloud_model_accuracy": self._cloud_comparison_summary(),
