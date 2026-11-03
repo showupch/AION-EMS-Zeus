@@ -4271,8 +4271,38 @@ class ForecastEngine:
                         return round(number, 3) if math.isfinite(number) else None
                     except (ValueError, TypeError, OverflowError):
                         return None
+                # Read-only local/UTC and astronomical boundary evidence.
+                # Never change or filter the forecast power values here.
+                hour_utc = hour_local = daylight_overlap = None
+                daylight_fraction = guarded_candidate_w = removed_w = None
+                try:
+                    parsed_hour = dt_util.parse_datetime(str(audit_row.get("time") or ""))
+                    if parsed_hour is not None:
+                        utc_hour = dt_util.as_utc(parsed_hour)
+                        hour_utc = utc_hour.isoformat()
+                        hour_local = dt_util.as_local(utc_hour).isoformat()
+                        if sunrise_utc is not None and sunset_utc is not None:
+                            daylight_overlap = bool(utc_hour < sunset_utc and utc_hour + timedelta(hours=1) > sunrise_utc)
+                            # Read-only counterfactual: overlap of the hourly
+                            # average-power bucket with astronomical daylight.
+                            # This is NOT a physical irradiance model and is
+                            # deliberately never used for production/control.
+                            overlap_seconds = max(0.0, (min(utc_hour + timedelta(hours=1), sunset_utc) - max(utc_hour, sunrise_utc)).total_seconds())
+                            daylight_fraction = min(1.0, overlap_seconds / 3600.0)
+                            original = audit_number(audit_row.get("solar_power_w"))
+                            if original is not None:
+                                guarded_candidate_w = round(max(0.0, original) * daylight_fraction, 3)
+                                removed_w = round(max(0.0, original) - guarded_candidate_w, 3)
+                except (ValueError, TypeError, OverflowError):
+                    pass
                 hourly_pipeline_audit.append({
                     "time": audit_row.get("time"),
+                    "time_utc": hour_utc,
+                    "time_local": hour_local,
+                    "intersects_astronomical_daylight": daylight_overlap,
+                    "daylight_fraction": audit_number(daylight_fraction),
+                    "daylight_guard_candidate_w": guarded_candidate_w,
+                    "daylight_guard_removed_w": removed_w,
                     "baseline_w": audit_number(audit_row.get("baseline_solar_power_w")),
                     "weather_factor": audit_number(audit_row.get("weather_factor")),
                     "weather_adjusted_w": audit_number(audit_row.get("raw_solar_power_w")),
@@ -4286,12 +4316,45 @@ class ForecastEngine:
             hourly_pipeline_evidence = {
                 "target_date": target_date.isoformat(),
                 "hours": hourly_pipeline_audit,
+                "sunrise_utc": sunrise_utc.isoformat() if sunrise_utc is not None else None,
+                "sunset_utc": sunset_utc.isoformat() if sunset_utc is not None else None,
+                "sunrise_local": dt_util.as_local(sunrise_utc).isoformat() if sunrise_utc is not None else None,
+                "sunset_local": dt_util.as_local(sunset_utc).isoformat() if sunset_utc is not None else None,
+                "astronomy_failure": daylight_failure,
                 "source": "existing_forecast_hourly_rows",
+                "daylight_guard_status": "read_only_counterfactual_not_production",
+                "daylight_guard_method": "hourly_daylight_overlap_fraction_not_irradiance",
+                "daylight_guard_original_kwh": round(sum(float(r["final_w"]) for r in hourly_pipeline_audit if r.get("final_w") is not None) / 1000, 3),
+                "daylight_guard_candidate_kwh": round(sum(float(r["daylight_guard_candidate_w"]) for r in hourly_pipeline_audit if r.get("daylight_guard_candidate_w") is not None) / 1000, 3),
+                "daylight_guard_missing_hours": sum(r.get("daylight_guard_candidate_w") is None for r in hourly_pipeline_audit),
                 "historical_power_source": "historical_hourly_recorder_power_samples",
                 "historical_entity_id": None,
                 "source_note": "The model uses historical solar power samples; the originating entity is not proven by this diagnostic. Do not infer it from daily energy mappings.",
                 "method": evidence_method,
                 "read_only": True,
+            }
+            # v16.0.418: evidence-gated hourly accuracy audit.  Tomorrow's
+            # mutable hourly forecast is NOT a frozen day-ahead prediction,
+            # and daily actuals cannot establish hourly accuracy.  Never
+            # manufacture a comparison from either source.
+            hourly_pipeline_evidence["hourly_accuracy_validation"] = {
+                "status": "awaiting_frozen_hourly_pairs",
+                "target_date": target_date.isoformat(),
+                "frozen_forecast_hours": 0,
+                "paired_measured_hours": 0,
+                "original_mae_w": None,
+                "guarded_mae_w": None,
+                "original_daily_error_kwh": None,
+                "guarded_daily_error_kwh": None,
+                "production_applied": False,
+                "control_permission": False,
+                "reason": "The existing tomorrow-hourly audit is a live forecast, not a persisted pre-day hourly snapshot. Daily measured totals are not hourly observations. No defensible out-of-sample hourly error can be calculated yet.",
+                "required_evidence": [
+                    "Immutable hourly forecast captured before the target local day",
+                    "Immutable daylight-guard candidate for those same hour buckets",
+                    "Recorder measured PV energy for the same local hourly intervals",
+                    "Matching entity provenance and UTC timestamps, including DST days",
+                ],
             }
             # Calendar-day automation values. Keep these on the daily row so
             # Home Assistant entities can expose the exact same Forecast Engine

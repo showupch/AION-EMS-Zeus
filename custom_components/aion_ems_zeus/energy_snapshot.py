@@ -26,6 +26,7 @@ class EnergySnapshotService:
     def __init__(self, core) -> None:
         self.core = core
         self._last: dict[str, Any] = {}
+        self._solar_daily_guard: dict[str, Any] = {}
 
     @staticmethod
     def _num(value: Any) -> float | None:
@@ -53,6 +54,23 @@ class EnergySnapshotService:
         elif unit not in {"kwh", "kilowatt-hour", "kilowatt-hours"}:
             return None, entity_id
         return value, entity_id
+
+    def _guard_solar_today(self, value: float, entity_id: str | None) -> float:
+        """Protect a mapped daily PV counter against a premature UTC reset.
+
+        A local date change clears the guard. A change of source also clears it;
+        readings from different devices are never silently combined. The
+        DataLake's persisted local-day value remains preferred when available.
+        """
+        local_day = dt_util.now().date().isoformat()
+        source = str(entity_id or "")
+        guard = self._solar_daily_guard
+        if guard.get("day") != local_day or guard.get("source") != source:
+            guard.clear()
+            guard.update({"day": local_day, "source": source, "maximum": value})
+            return value
+        guard["maximum"] = max(float(guard.get("maximum", 0.0)), value)
+        return float(guard["maximum"])
 
     def refresh(self) -> dict[str, Any]:
         analytics = self.core.analytics.summary() or {}
@@ -83,8 +101,21 @@ class EnergySnapshotService:
                 continue
             mapped, entity_id = self._mapped_value(mapping_key)
             if mapped is not None:
-                today[output_key] = mapped
-                sources[output_key] = entity_id or "mapped_daily_energy"
+                if output_key == "solar_energy_kwh":
+                    # DataLake already protects mapped daily PV energy by local
+                    # calendar day. Do not replace its guarded value with an
+                    # inverter counter that reset at 23:00 Swiss local time.
+                    canonical = self._num(today.get(output_key))
+                    mapped = self._guard_solar_today(mapped, entity_id)
+                    if canonical is not None:
+                        today[output_key] = max(canonical, mapped)
+                        sources[output_key] = str(today.get(f"{output_key}_source") or entity_id or "analytics_period_today")
+                    else:
+                        today[output_key] = mapped
+                        sources[output_key] = entity_id or "mapped_daily_energy_guarded"
+                else:
+                    today[output_key] = mapped
+                    sources[output_key] = entity_id or "mapped_daily_energy"
                 continue
             current = self._num(today.get(output_key))
             if current is not None:

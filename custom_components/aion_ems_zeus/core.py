@@ -380,6 +380,8 @@ class AionCore:
         # forecast refresh cadence. Never trigger a forecast recalculation here.
         async def _cloud_capture_tick(_now=None):
             self.prediction_accuracy.capture_cloud_snapshot_tick()
+            self.prediction_accuracy.capture_hourly_forecast_tick()
+            await self.prediction_accuracy.async_pair_completed_hourly_actuals()
             if self.hass.services.has_service("homeassistant", "update_entity"):
                 await self.hass.services.async_call(
                     "homeassistant", "update_entity",

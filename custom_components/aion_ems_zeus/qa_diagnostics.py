@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .const import DOMAIN, VERSION
+from .knowledge_v2_pkg.forecast_v21_site_registry import audit_registry_site
 
 
 class QADiagnosticsCenter:
@@ -412,6 +413,7 @@ class QADiagnosticsCenter:
         for c in checks:
             item=categories.setdefault(c['category'],{'ok':0,'warning':0,'error':0})
             item[c['status']]+=1
+        v21_site_audit = audit_registry_site(self.hass, data)
         self.last={
             'status':status,
             'score':score,
@@ -426,6 +428,7 @@ class QADiagnosticsCenter:
             'readiness':readiness_summary,
             'checks':checks[:40],
             'recorder_estimates_bytes':sizes,
+            'v21_site_evidence_audit': v21_site_audit,
             'summary':f"{len(checks)-errors-warnings} passed, {warnings} warning(s), {errors} error(s).",
             'next_action':next((c['recommendation'] for c in checks if c['status']=='error' and c['recommendation']),next((c['recommendation'] for c in checks if c['status']=='warning' and c['recommendation']),'No action required.')),
             'safety':'Read-only QA diagnostics. Recommendation Only mode remains active.',
