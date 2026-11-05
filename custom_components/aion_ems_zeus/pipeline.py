@@ -44,12 +44,22 @@ class IntegrationHub:
         settings.setdefault("safety_mode", "recommendation_only")
         return settings
 
+    @staticmethod
+    def _full_device_entry(device):
+        """Return metadata-bearing registry entries, never child-device entries.
+
+        Home Assistant ChildDeviceEntry does not expose connections, manufacturer,
+        or model. Accessing those fields emits deprecation warnings and will
+        fail in Home Assistant 2027.9.0.
+        """
+        return device if isinstance(device, dr.DeviceEntry) else None
+
     def _registry_context(self, state):
         """Return entity/device registry metadata used for reliable discovery."""
         entity_reg = er.async_get(self.hass)
         device_reg = dr.async_get(self.hass)
         entry = entity_reg.async_get(state.entity_id)
-        device = device_reg.async_get(entry.device_id) if entry and entry.device_id else None
+        device = self._full_device_entry(device_reg.async_get(entry.device_id)) if entry and entry.device_id else None
         identifiers = []
         connections = []
         if device:
@@ -131,7 +141,7 @@ class IntegrationHub:
             if getattr(entry, "device_id", None)
         }
         for device_id in device_ids:
-            device = device_reg.async_get(device_id)
+            device = self._full_device_entry(device_reg.async_get(device_id))
             if device is None:
                 continue
             identifiers = flatten(getattr(device, "identifiers", None))
@@ -650,7 +660,7 @@ class IntegrationHub:
         for entry in entity_reg.entities.values():
             if entry.domain != "notify":
                 continue
-            device = device_reg.async_get(entry.device_id) if entry.device_id else None
+            device = self._full_device_entry(device_reg.async_get(entry.device_id)) if entry.device_id else None
             text = " ".join(str(x or "") for x in (
                 entry.entity_id, entry.platform, entry.original_name,
                 getattr(device, "name", "") if device else "",
