@@ -6418,6 +6418,16 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
     const outdoorEntity=String(dev.outdoor_temperature_entity||dev.mappings?.outdoor_temperature_entity||'').trim(), outdoorState=outdoorEntity?this.s(outdoorEntity):null, weather=this.s('sensor.aion_ems_zeus_weather_context')?.attributes||{}, outdoor=n(outdoorState?.state??weather.temperature??weather.current_temperature??weather.outdoor_temperature??weather.temperature_c), outdoorSource=outdoorState?'Mapped Heat Pump outdoor temperature':'Current Zeus weather context';
     const runtime=n(hp.compressor_runtime_today_minutes??dev.runtime_today_minutes), starts=n(hp.cycle_starts_today), completed=n(hp.cycle_completed_today);
     const elec=n(dev.energy_today_kwh), heatIn=n(hp.heating_electrical_energy_today_kwh), heatOut=n(hp.heating_thermal_energy_today_kwh), dhwIn=n(hp.dhw_electrical_energy_today_kwh), dhwOut=n(hp.dhw_thermal_energy_today_kwh);
+    const efficiency=hp.circuit_efficiency||{};
+    const efficiencyCard=(circuit,label)=>{
+      const rows=['today','week','month','year'].map(period=>{
+        const evidence=efficiency[circuit]?.[period]||{};
+        const v=evidence.value;
+        const valid=v!==null&&v!==undefined&&Number.isFinite(Number(v))&&Number(v)>0;
+        return `<div style="display:flex;justify-content:space-between;gap:12px;margin-top:7px"><span>${this.esc(period[0].toUpperCase()+period.slice(1))}</span><b title="${this.esc(evidence.reason||'Measured Recorder thermal / compressor electrical energy')}">${valid?Number(v).toFixed(2):'Unavailable'}</b></div>`;
+      }).join('');
+      return `<div class="hpd-item" style="display:block"><span>${this.esc(label)}</span>${rows}<small style="display:block;margin-top:10px">Compressor-input ratio only · not full-system SPF</small></div>`;
+    };
     const transitions=Array.isArray(hp.cycle_today_transitions)?hp.cycle_today_transitions:[];
     const compressorDiag=(hp.compressor_power_diagnostic&&typeof hp.compressor_power_diagnostic==='object')?hp.compressor_power_diagnostic:{};
     const compressorDiagText=Object.keys(compressorDiag).length?JSON.stringify(compressorDiag,null,2):'No compressor-power diagnostic payload available.';
@@ -6439,6 +6449,7 @@ class AionEmsEnergyFlowDashboard extends HTMLElement {
         <article class="panel"><div class="section-title"><div><span>TODAY · COP</span><h2>COP through the day</h2></div></div><div class="hpd-graph dual cop-only">${hpCopYAxis}<svg viewBox="0 0 100 100" preserveAspectRatio="none">${hpLine(hpCopRows,hpCopMax,'cop','cop')}</svg>${hpAxis}</div><div class="hpd-legend"><span class="cop">Measured COP</span></div></article>
         <article class="panel"><div class="section-title"><div><span>TODAY · THERMAL ENERGY</span><h2>Heating and DHW</h2></div></div><div class="hpd-items">${item('Electrical energy',heatIn==null?'Unavailable':this.kwh(heatIn),'Today','mdi:radiator')}${item('Heating Output',heatOut==null?'Unavailable':this.kwh(heatOut),'Today','mdi:heat-wave')}${item('DHW Input',dhwIn==null?'Unavailable':this.kwh(dhwIn),'Today','mdi:water-boiler')}${item('DHW Output',dhwOut==null?'Unavailable':this.kwh(dhwOut),'Today','mdi:water-check-outline')}</div></article>
       </div>
+      <article class="panel" style="margin-top:14px"><div class="section-title"><div><span>MEASURED CIRCUIT EFFICIENCY</span><h2>Heating / DHW</h2></div><small>Read-only Recorder evidence</small></div><div class="hpd-items">${efficiencyCard('heating','Heating · compressor ratio')}${efficiencyCard('dhw','DHW · compressor ratio')}</div><small style="display:block;margin-top:10px;color:var(--muted)">Unavailable means the measurement boundary or period evidence is insufficient. Full-system SPF requires separately attributed auxiliary electricity.</small></article>
       <div style="margin-top:14px"><article class="panel"><div class="section-title"><div><span>TODAY · OPERATION</span><h2>Runtime & compressor</h2></div><ha-icon icon="mdi:timeline-clock-outline"></ha-icon></div><div class="hpd-items">
           ${item('Runtime',runtime==null?'Unavailable':this.duration(runtime),hp.compressor_runtime_today_minutes!=null?'Recorder-observed compressor runtime today':'Registered-device runtime today','mdi:timer-outline')}
           ${item('Starts',starts==null?'Unavailable':String(starts),'Recorder-observed starts today','mdi:restart')}
