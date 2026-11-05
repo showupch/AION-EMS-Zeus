@@ -5,12 +5,13 @@ Different eligibility policies are reported rather than silently reconciled.
 """
 from __future__ import annotations
 from typing import Any
+from datetime import tzinfo
 from .forecast_v21_shadow import evaluate_shadow
 from .forecast_v21_bridge import bridge_v21_history, compare_shadow
 
 def compare_evaluators(target_date: str, baseline_kwh: float,
                        weather_coverage: float | None, samples: list[dict[str, Any]],
-                       local_timezone: str) -> dict[str, Any]:
+                       local_timezone: tzinfo) -> dict[str, Any]:
     """Compare candidates on the same frozen evidence without modifying inputs."""
     bridge = compare_shadow(baseline_kwh, target_date, weather_coverage,
                             samples, local_timezone)

@@ -512,8 +512,9 @@ class PredictionAccuracyEngine:
         target = item["target_date"]
         try:
             from datetime import date, time
-            local_start = dt_util.as_local(datetime.combine(date.fromisoformat(target), time.min).replace(tzinfo=dt_util.get_time_zone(self.core.hass.config.time_zone)))
-            local_end = dt_util.as_local(datetime.combine(date.fromisoformat(target) + timedelta(days=1), time.min).replace(tzinfo=dt_util.get_time_zone(self.core.hass.config.time_zone)))
+            local_tz = dt_util.get_default_time_zone()
+            local_start = datetime.combine(date.fromisoformat(target), time.min, tzinfo=local_tz)
+            local_end = datetime.combine(date.fromisoformat(target) + timedelta(days=1), time.min, tzinfo=local_tz)
             start, end = local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc)
             hours = item.get("hours") or []
             expected = {self._parse_time(h.get("start_utc")) for h in hours}
@@ -806,13 +807,13 @@ class PredictionAccuracyEngine:
             # either candidate to the production V2 forecast or energy controls.
             try:
                 from .forecast_v21_comparison import compare_evaluators
-                tz_name = str(getattr(self.core.hass.config, "time_zone", "") or "")
+                local_tz = dt_util.get_default_time_zone()
                 comparison = compare_evaluators(
                     target_date=target,
                     baseline_kwh=current,
                     weather_coverage=(coverage / 100.0 if coverage is not None and 0 <= coverage <= 100 else None),
                     samples=list(self._daily_samples),
-                    local_timezone=tz_name,
+                    local_timezone=local_tz,
                 )
                 result["v21_comparison_diagnostic"] = comparison
                 result["v21_bridge_diagnostic"] = {
