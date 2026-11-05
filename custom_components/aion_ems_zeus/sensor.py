@@ -1518,6 +1518,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 # Analytics already computes these fields; previous builds dropped them
                 # while compacting the sensor attributes, which made the kiosk hide DHW.
                 "separate_heating_dhw_measurements": hp.get("separate_heating_dhw_measurements"),
+                "circuit_efficiency": hp.get("circuit_efficiency"),
                 "heating_electrical_power_configured": hp.get("heating_electrical_power_configured"),
                 "heating_thermal_power_configured": hp.get("heating_thermal_power_configured"),
                 "heating_electrical_energy_configured": hp.get("heating_electrical_energy_configured"),

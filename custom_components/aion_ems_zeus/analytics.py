@@ -3,6 +3,7 @@
 from __future__ import annotations
 import math
 
+from .heat_pump_spf import circuit_efficiency
 from .device_roles import is_consuming_load
 from .period_authority import canonical_period_windows, date_in_period
 from .forecast_v2_baseline import reconciled_hourly_baseline
@@ -7958,6 +7959,13 @@ class DeviceAnalyticsEngine:
                     heat_pump_intelligence[f"{_prefix}_energy_method"] = (
                         "ha_recorder_statistics_delta" if _period is not None else None
                     )
+
+            # v16.0.434: independent, read-only circuit efficiency diagnostics.
+            # Do not modify existing consumption totals or infer heating/DHW splits.
+            if heat_pump_intelligence is not None:
+                heat_pump_intelligence["circuit_efficiency"] = circuit_efficiency(
+                    device, heat_pump_intelligence
+                )
 
             # v16.0.272: ratio-of-energy COP from classified circuit
             # Recorder deltas, never an average of inactive hourly COP=0.
