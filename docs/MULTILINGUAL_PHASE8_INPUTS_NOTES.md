@@ -1,0 +1,1 @@
+v16.0.455: First German translation pass on separate Inputs / Energy Sources page. Translates static headings, configuration health/workspace, buttons, source sections and selected energy mapping labels. No entity IDs, dynamic state values, source mappings, forecasting, or control logic changed. English default, German manual. Live Home Assistant testing pending.

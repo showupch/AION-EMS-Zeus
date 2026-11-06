@@ -1,0 +1,1 @@
+v16.0.447: Fix Statistics V2 heat pump binding to first Heat Pump Intelligence devices[] record; actually render Heating/DHW period graphs and paired forecast graphs in the returned page HTML. Previous 446 added declarations to the wrong method and did not render them. Presentation only. Live HA testing pending.

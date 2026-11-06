@@ -1,0 +1,1 @@
+v16.0.446: Read Heat Pump Intelligence from devices array, add measured period thermal/electrical bar charts for heating and DHW, and paired frozen daily actual/original/guarded comparison chart. Read-only; unavailable evidence stays unavailable. No backend logic changes. Live browser test pending.\n

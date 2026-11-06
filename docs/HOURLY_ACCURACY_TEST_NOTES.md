@@ -1,0 +1,1 @@
+v16.0.418 TEST: Exposes an evidence-gated hourly accuracy panel. No hourly accuracy scores are fabricated: frozen pre-day hourly predictions and matching measured hourly PV energy are not available from the existing diagnostic. V2, V2.1, controls unchanged. This build is an instrumentation checkpoint, not a completed accuracy comparison.

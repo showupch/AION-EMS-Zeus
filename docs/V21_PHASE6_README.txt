@@ -1,0 +1,1 @@
+Phase 6 development only. QA.run() exposes v21_site_evidence_audit using explicit registry home_settings.v21_site_evidence mappings. No automatic sampling, no registry writes, no forecast changes. Keep installed v16.0.411.

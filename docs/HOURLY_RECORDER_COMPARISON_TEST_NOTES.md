@@ -1,0 +1,1 @@
+v16.0.421 TEST: Read-only completed-day Recorder hourly energy-change comparison. Frozen UTC forecast rows preserved. No missing-hour inference. Accuracy in prediction_accuracy.hourly_frozen_evidence.recent_snapshots. No production changes.

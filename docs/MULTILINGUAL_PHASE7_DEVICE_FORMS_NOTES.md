@@ -1,0 +1,1 @@
+v16.0.454: German translation for remaining visible Device Manager help text, grid selection, device type options, energy counter options, and input placeholders. English remains the default and manual German selection remains optional. No backend/forecast/control changes. Forecast, diagnostics and kiosk translations remain future work. Browser test pending.

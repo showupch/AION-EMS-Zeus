@@ -1,0 +1,1 @@
+v16.0.453: German Device Manager advanced heat-pump headings, descriptions, fields and optional picker placeholders. Exact static text only; sensor IDs and user values unchanged. English default; German manual. Live browser verification pending.\n

@@ -1,0 +1,1 @@
+v16.0.448: Multilingual V1 foundation. English always default; manual English/Deutsch selector in Configuration, saved per browser. No HA profile locale detection. Frontend t(key) English fallback and first Statistics V2 headings. German HA translation scaffold. Most labels intentionally English pending staged translation. No backend calculations or control changes.

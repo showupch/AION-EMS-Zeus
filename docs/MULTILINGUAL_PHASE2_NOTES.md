@@ -1,0 +1,1 @@
+v16.0.449: Phase 2 expands manual German translations to the shared navigation hubs, selected sidebar labels, Statistics V2 chart headings, energy labels, periods, and key Configuration labels. English remains default; no Home Assistant locale detection. Untranslated pages and backend evidence remain English. No backend changes.

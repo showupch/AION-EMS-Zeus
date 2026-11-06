@@ -1,0 +1,1 @@
+v16.0.445: Historical comparison now uses canonical periodChartRows(period) instead of hard-coded last_7_days. Today partial-day, Week last 7 daily, Month current-month daily, Year current-year monthly; labels update. No backend changes.

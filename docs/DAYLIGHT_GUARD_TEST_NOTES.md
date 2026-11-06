@@ -1,0 +1,1 @@
+v16.0.417 TEST: Read-only daylight-overlap counterfactual. No production forecast, V2.1 shadow, or control changes. Hourly W is treated as an hourly average for kWh comparison; daylight fraction is not a physically validated solar irradiance weighting. Missing astronomy leaves candidate unavailable.

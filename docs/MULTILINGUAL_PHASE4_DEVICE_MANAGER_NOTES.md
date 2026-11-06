@@ -1,0 +1,1 @@
+v16.0.451: Separate Device Manager shadow-root German translation. Reads manual Zeus language preference; translates exact static UI strings only, preserving entity IDs, values, user data and backend logic. German coverage remains partial. Browser testing pending.

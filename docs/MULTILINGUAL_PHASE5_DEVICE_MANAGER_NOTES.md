@@ -1,0 +1,1 @@
+v16.0.452: Expanded German Device Manager exact-match translations for energy-source forms, grid meter selection, device identity, heat pump advanced mappings, status, and help text. English remains default, German manual, no changes to backend/control/forecast logic. Remaining dynamic and advanced descriptions may stay English. Live browser validation pending.

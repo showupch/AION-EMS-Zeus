@@ -1,0 +1,1 @@
+v16.0.421 TEST: Read frozen hourly rows from daily_forecast[].solar_forecast_diagnostics.hourly_pipeline_audit. Adds explicit missing/invalid evidence reasons. No production forecast or control changes.
