@@ -496,11 +496,15 @@ class PredictionAccuracyEngine:
         self._hourly_capture_status = result
 
     async def async_pair_completed_hourly_actuals(self) -> None:
-        """Score frozen pre-day forecasts against completed Recorder hourly changes.
+        """Pair completed frozen hours using verified Recorder source evidence.
 
-        Fail closed: no live power integration, interpolation, missing-hour zeroes,
-        or use of today's incomplete Recorder statistics. UTC keys handle DST.
+        An obsolete Energy dashboard source with no target-day rows may be
+        excluded only when all remaining sources are complete and their total
+        reconciles with Zeus's independent completed-day actual. Partial sources
+        are never silently dropped. Blocked older days do not starve later days.
         """
+        from .hourly_source_evidence import select_hourly_solar_sources
+
         now = datetime.now(timezone.utc)
         today = dt_util.as_local(now).date()
         pending = [x for x in self._hourly_frozen if not x.get("actuals_paired")
@@ -508,86 +512,119 @@ class PredictionAccuracyEngine:
         if not pending:
             self._hourly_actuals_status = {"status": "awaiting_completed_target_day", "pending": 0}
             return
-        item = pending[0]
-        target = item["target_date"]
-        try:
-            from datetime import date, time
-            local_tz = dt_util.get_default_time_zone()
-            local_start = datetime.combine(date.fromisoformat(target), time.min, tzinfo=local_tz)
-            local_end = datetime.combine(date.fromisoformat(target) + timedelta(days=1), time.min, tzinfo=local_tz)
-            start, end = local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc)
-            hours = item.get("hours") or []
-            expected = {self._parse_time(h.get("start_utc")) for h in hours}
-            expected.discard(None)
-            if len(expected) != len(hours) or len(hours) != int((end-start).total_seconds()/3600):
-                self._hourly_actuals_status = {"status": "invalid_frozen_timestamps", "target_date": target}
-                return
-            mappings = (getattr(self.core.registry, "data", {}) or {}).get("entity_mappings", {}) or {}
-            fallback = str(mappings.get("solar_energy_total") or mappings.get("solar_energy_today") or "").strip()
-            ids = []
-            manager = await async_get_manager(self.core.hass)
-            getter = getattr(manager, "async_get_preferences", None)
-            prefs = await getter() if callable(getter) else getattr(manager, "data", None)
-            if isinstance(prefs, dict):
-                ids = [str(x.get("stat_energy_from") or "").strip() for x in (prefs.get("energy_sources") or [])
-                       if isinstance(x, dict) and x.get("type") == "solar"]
-            ids = list(dict.fromkeys(x for x in (ids or [fallback]) if x))
-            if not ids:
-                self._hourly_actuals_status = {"status": "missing_solar_statistic_source", "target_date": target}
-                return
-            response = await self.core.hass.services.async_call(
-                "recorder", "get_statistics", {"statistic_ids": ids,
-                    "start_time": start, "end_time": end, "period": "hour",
-                    "types": ["change"], "units": {"energy": "kWh"}},
-                blocking=True, return_response=True)
-            raw = (response or {}).get("statistics", response or {})
-            actual = {t: 0.0 for t in expected}
-            for eid in ids:
-                rows = (raw or {}).get(eid) or []
-                per_source = {}
-                for row in rows:
-                    stamp = row.get("start")
-                    if isinstance(stamp, (float, int)):
-                        stamp = datetime.fromtimestamp(stamp, timezone.utc)
-                    else:
-                        stamp = self._parse_time(stamp)
-                    val = self._num(row.get("change"))
-                    if stamp not in expected or stamp in per_source or val is None or not math.isfinite(val) or val < -0.000001:
-                        continue
-                    per_source[stamp] = max(0.0, val)
-                if set(per_source) != expected:
-                    self._hourly_actuals_status = {"status": "incomplete_recorder_hours", "target_date": target,
-                        "source": eid, "matched_hours": len(per_source), "expected_hours": len(expected)}
-                    return
-                for stamp, value in per_source.items():
-                    actual[stamp] += value
-            pairs = []
-            for row in hours:
-                stamp = self._parse_time(row["start_utc"])
-                measured = actual[stamp]
-                original = float(row["original_w"]) / 1000
-                guarded = float(row["guarded_w"]) / 1000
-                pairs.append({"start_utc": stamp.isoformat(), "actual_kwh": round(measured, 5),
-                              "original_kwh": round(original, 5), "guarded_kwh": round(guarded, 5)})
-            n = len(pairs)
-            mae_original = sum(abs(r["original_kwh"] - r["actual_kwh"]) for r in pairs)/n
-            mae_guarded = sum(abs(r["guarded_kwh"] - r["actual_kwh"]) for r in pairs)/n
-            item["actuals_paired"] = True
-            item["measurement_source"] = "ha_recorder_hourly_energy_change"
-            item["statistic_ids"] = ids
-            item["paired_at_utc"] = now.isoformat()
-            item["accuracy"] = {"matched_hours": n, "original_hourly_mae_kwh": round(mae_original, 4),
-                "guarded_hourly_mae_kwh": round(mae_guarded, 4),
-                "actual_daily_kwh": round(sum(r["actual_kwh"] for r in pairs), 3),
-                "original_daily_kwh": round(sum(r["original_kwh"] for r in pairs), 3),
-                "guarded_daily_kwh": round(sum(r["guarded_kwh"] for r in pairs), 3),
-                "original_daily_absolute_error_kwh": round(abs(sum(r["original_kwh"]-r["actual_kwh"] for r in pairs)), 3),
-                "guarded_daily_absolute_error_kwh": round(abs(sum(r["guarded_kwh"]-r["actual_kwh"] for r in pairs)), 3)}
-            self._schedule_save()
-            self._hourly_actuals_status = {"status": "paired", "target_date": target, "matched_hours": n}
-        except Exception as exc:
-            self._hourly_actuals_status = {"status": "recorder_query_error", "target_date": target,
-                "error_type": type(exc).__name__}
+
+        outcomes = []
+        for item in pending:
+            target = item["target_date"]
+            try:
+                from datetime import date, time
+                local_tz = dt_util.get_default_time_zone()
+                local_start = datetime.combine(date.fromisoformat(target), time.min, tzinfo=local_tz)
+                local_end = datetime.combine(date.fromisoformat(target) + timedelta(days=1), time.min, tzinfo=local_tz)
+                start, end = local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc)
+                hours = item.get("hours") or []
+                expected = {self._parse_time(h.get("start_utc")) for h in hours}
+                expected.discard(None)
+                if len(expected) != len(hours) or len(hours) != int((end-start).total_seconds()/3600):
+                    outcomes.append({"status": "invalid_frozen_timestamps", "target_date": target})
+                    continue
+                mappings = (getattr(self.core.registry, "data", {}) or {}).get("entity_mappings", {}) or {}
+                fallback = str(mappings.get("solar_energy_total") or mappings.get("solar_energy_today") or "").strip()
+                ids = []
+                manager = await async_get_manager(self.core.hass)
+                getter = getattr(manager, "async_get_preferences", None)
+                prefs = await getter() if callable(getter) else getattr(manager, "data", None)
+                if isinstance(prefs, dict):
+                    ids = [str(x.get("stat_energy_from") or "").strip() for x in (prefs.get("energy_sources") or [])
+                           if isinstance(x, dict) and x.get("type") == "solar"]
+                ids = list(dict.fromkeys(x for x in (ids or [fallback]) if x))
+                if not ids:
+                    outcomes.append({"status": "missing_solar_statistic_source", "target_date": target})
+                    continue
+                response = await self.core.hass.services.async_call(
+                    "recorder", "get_statistics", {"statistic_ids": ids,
+                        "start_time": start, "end_time": end, "period": "hour",
+                        "types": ["change"], "units": {"energy": "kWh"}},
+                    blocking=True, return_response=True)
+                raw = (response or {}).get("statistics", response or {})
+                by_source = {}
+                invalid_sources = []
+                for eid in ids:
+                    per_source = {}
+                    source_rows = (raw or {}).get(eid) or []
+                    for row in source_rows:
+                        stamp = row.get("start")
+                        if isinstance(stamp, (float, int)):
+                            stamp = datetime.fromtimestamp(stamp, timezone.utc)
+                        else:
+                            stamp = self._parse_time(stamp)
+                        val = self._num(row.get("change"))
+                        if (stamp not in expected or stamp in per_source or val is None
+                                or not math.isfinite(val) or val < -0.000001):
+                            continue
+                        per_source[stamp] = max(0.0, val)
+                    by_source[eid] = per_source
+                    # A source with rows but no accepted hours is not obsolete:
+                    # malformed/negative/duplicate statistics must fail closed.
+                    if source_rows and not per_source:
+                        invalid_sources.append(eid)
+                if invalid_sources:
+                    outcomes.append({"status": "invalid_recorder_source_rows", "target_date": target,
+                                     "sources": invalid_sources})
+                    continue
+
+                # Only request the independent daily authority when a source is
+                # completely empty; the all-complete path is unchanged.
+                canonical = None
+                if any(not rows for rows in by_source.values()):
+                    daily_rows = {str(r.get("date")): r for r in self._canonical_daily_rows()}
+                    canonical, _ = self._frozen_completed_day_solar_actual(target, daily_rows)
+                selection = select_hourly_solar_sources(by_source, expected, canonical)
+                if selection["status"] != "ready":
+                    outcomes.append({"target_date": target, **selection})
+                    continue
+                actual = {t: sum(by_source[eid][t] for eid in selection["included_sources"])
+                          for t in expected}
+                pairs = []
+                for row in hours:
+                    stamp = self._parse_time(row["start_utc"])
+                    measured = actual[stamp]
+                    original = float(row["original_w"]) / 1000
+                    guarded = float(row["guarded_w"]) / 1000
+                    pairs.append({"start_utc": stamp.isoformat(), "actual_kwh": round(measured, 5),
+                                  "original_kwh": round(original, 5), "guarded_kwh": round(guarded, 5)})
+                n = len(pairs)
+                mae_original = sum(abs(r["original_kwh"] - r["actual_kwh"]) for r in pairs)/n
+                mae_guarded = sum(abs(r["guarded_kwh"] - r["actual_kwh"]) for r in pairs)/n
+                item["actuals_paired"] = True
+                item["measurement_source"] = "ha_recorder_hourly_energy_change"
+                item["statistic_ids"] = selection["included_sources"]
+                item["excluded_empty_statistic_ids"] = selection["excluded_empty_sources"]
+                item["source_reconciliation"] = selection["reconciliation"]
+                item["paired_at_utc"] = now.isoformat()
+                item["accuracy"] = {"matched_hours": n, "original_hourly_mae_kwh": round(mae_original, 4),
+                    "guarded_hourly_mae_kwh": round(mae_guarded, 4),
+                    "actual_daily_kwh": round(sum(r["actual_kwh"] for r in pairs), 3),
+                    "original_daily_kwh": round(sum(r["original_kwh"] for r in pairs), 3),
+                    "guarded_daily_kwh": round(sum(r["guarded_kwh"] for r in pairs), 3),
+                    "original_daily_absolute_error_kwh": round(abs(sum(r["original_kwh"]-r["actual_kwh"] for r in pairs)), 3),
+                    "guarded_daily_absolute_error_kwh": round(abs(sum(r["guarded_kwh"]-r["actual_kwh"] for r in pairs)), 3)}
+                self._schedule_save()
+                outcomes.append({"status": "paired", "target_date": target, "matched_hours": n,
+                                 "included_sources": selection["included_sources"],
+                                 "excluded_empty_sources": selection["excluded_empty_sources"],
+                                 "reconciliation": selection["reconciliation"]})
+            except Exception as exc:
+                outcomes.append({"status": "recorder_query_error", "target_date": target,
+                                 "error_type": type(exc).__name__})
+        paired_count = sum(x["status"] == "paired" for x in outcomes)
+        blocked = [x for x in outcomes if x["status"] != "paired"]
+        self._hourly_actuals_status = {
+            "status": "paired" if paired_count and not blocked else
+                      "partial_progress" if paired_count else "blocked",
+            "paired_days": paired_count, "blocked_days": len(blocked),
+            "recent_outcomes": outcomes[-8:],
+        }
 
     def hourly_evidence_summary(self) -> dict[str, Any]:
         return {
