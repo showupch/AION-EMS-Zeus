@@ -1403,6 +1403,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "derived_live_cop_reason": hp.get("derived_live_cop_reason"),
                 "thermal_power_w": hp.get("thermal_power_w"),
                 "electrical_power_w": hp.get("electrical_power_w"),
+                "electrical_power_source_audit": hp.get("electrical_power_source_audit"),
                 "compressor_state": hp.get("compressor_state"),
                 "compressor_activity": hp.get("compressor_activity"),
                 "compressor_speed": hp.get("compressor_speed"),

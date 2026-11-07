@@ -7394,6 +7394,21 @@ class DeviceAnalyticsEngine:
                     classified_live_power_w.append(max(0.0, float(_value)))
                 if classified_live_power_w:
                     electrical_power_w = sum(classified_live_power_w)
+                # Read-only source provenance: do not change power accounting
+                # until the split circuit sensors are confirmed independent.
+                hp_electrical_power_audit = {
+                    "primary_entity": power_entity,
+                    "primary_w": round(primary_power_w, 1) if primary_power_w is not None else None,
+                    "heating_entity": device.get("heating_electrical_power_entity"),
+                    "heating_w": live_electrical_power_w(device.get("heating_electrical_power_entity")),
+                    "dhw_entity": device.get("dhw_electrical_power_entity"),
+                    "dhw_w": live_electrical_power_w(device.get("dhw_electrical_power_entity")),
+                    "cooling_entity": device.get("cooling_electrical_power_entity") if device.get("cooling_measurements_enabled") else None,
+                    "cooling_w": live_electrical_power_w(device.get("cooling_electrical_power_entity")) if device.get("cooling_measurements_enabled") else None,
+                    "displayed_total_w": round(current_power_w, 1),
+                    "cop_denominator_w": round(electrical_power_w, 1),
+                    "source_policy": "split_sum" if classified_live_power_w else ("primary" if primary_power_w is not None else "unavailable"),
+                }
                 thermal_power_w = None
                 thermal_power_source = "unavailable"
                 if thermal_power is not None:
@@ -7775,6 +7790,7 @@ class DeviceAnalyticsEngine:
                     "thermal_power_w": round(thermal_power_w, 1) if thermal_power_w is not None else None,
                     "thermal_power_source": thermal_power_source,
                     "electrical_power_w": round(electrical_power_w, 1),
+                    "electrical_power_source_audit": hp_electrical_power_audit,
                     "compressor_state": compressor_state,
                     "compressor_state_normalized": compressor_binary,
                     "compressor_state_normalization_reason": compressor_state_normalization_reason,
