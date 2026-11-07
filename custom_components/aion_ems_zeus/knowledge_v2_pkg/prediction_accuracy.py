@@ -432,6 +432,43 @@ class PredictionAccuracyEngine:
         finally:
             self._cloud_capture_attempt = status
 
+    def _freeze_array_candidate(self, target: str) -> dict[str, Any]:
+        """Freeze one pre-day geometry/weather candidate or an explicit rejection.
+
+        The result is evidence only: no calibration, model selection or control.
+        A complete 23/24/25-hour weather match is mandatory.
+        """
+        base = {"status": "unavailable", "candidate_kwh": None,
+                "production_applied": False, "control_permission": False,
+                "accuracy_validated": False}
+        try:
+            from .forecast_v21_array_geometry import (
+                geometry_shadow, weather_geometry_shadow, array_energy_candidate_shadow)
+            home = (self.core.settings_api.summary() or {}).get("home_settings") or {}
+            arrays = list(home.get("pv_arrays") or [])[:12]
+            config = self.core.hass.config
+            geometry = geometry_shadow(arrays, target, config.latitude, config.longitude,
+                                       str(config.time_zone or "UTC"))
+            weather = self.core.weather.summary() if self.core.weather else {}
+            adjusted = weather_geometry_shadow(geometry, weather,
+                self.core.weather.factor_for if self.core.weather else None)
+            candidate = array_energy_candidate_shadow(geometry, adjusted)
+            if candidate.get("status") != "candidate_available":
+                return {**base, "status": candidate.get("status", "unavailable")}
+            hourly = candidate.get("hourly") or []
+            if len(hourly) != geometry.get("hour_count"):
+                return {**base, "status": "incomplete_hourly_candidate"}
+            # Keep immutable compact per-hour values and the assumptions used.
+            return {**base, "status": "frozen", "candidate_kwh": candidate["candidate_kwh"],
+                    "array_candidates": candidate.get("array_candidates") or [],
+                    "hourly": [{"hour_local": h.get("hour_local"),
+                                "total_candidate_kwh": h.get("total_candidate_kwh")}
+                               for h in hourly],
+                    "assumptions": candidate.get("assumptions") or {},
+                    "model": candidate.get("model"), "calibrated": False}
+        except (AttributeError, TypeError, ValueError, KeyError, ImportError, OverflowError) as exc:
+            return {**base, "status": "capture_error", "reason": type(exc).__name__}
+
     def capture_hourly_forecast_tick(self) -> None:
         """Freeze the first complete pre-day hourly forecast; never overwrite it.
 
@@ -482,10 +519,15 @@ class PredictionAccuracyEngine:
                 if len(frozen) != len(hours):
                     result = {"status": "invalid_hourly_evidence", "target_date": target, "reason": invalid_reason or "incomplete_rows", "accepted_hours": len(frozen)}
                     break
+                # Capture the array candidate in the SAME immutable pre-day
+                # evidence event as the existing V2 hourly forecast. The
+                # candidate is not recalculated when evaluating later actuals.
+                array_snapshot = self._freeze_array_candidate(target)
                 self._hourly_frozen.append({
                     "target_date": target, "captured_at_utc": now.isoformat(),
                     "source": "forecast_daily_hourly_pipeline_audit",
                     "hour_count": len(frozen), "hours": frozen,
+                    "array_candidate_frozen": array_snapshot,
                     "measurement_source": None, "actuals_paired": False,
                 })
                 self._schedule_save()
@@ -609,6 +651,22 @@ class PredictionAccuracyEngine:
                     "guarded_daily_kwh": round(sum(r["guarded_kwh"] for r in pairs), 3),
                     "original_daily_absolute_error_kwh": round(abs(sum(r["original_kwh"]-r["actual_kwh"] for r in pairs)), 3),
                     "guarded_daily_absolute_error_kwh": round(abs(sum(r["guarded_kwh"]-r["actual_kwh"] for r in pairs)), 3)}
+                # Score only a candidate frozen before the target day, using
+                # the same reconciled Recorder actuals as the V2 comparison.
+                frozen_array = item.get("array_candidate_frozen") or {}
+                if frozen_array.get("status") == "frozen":
+                    predicted = self._num(frozen_array.get("candidate_kwh"))
+                    measured = sum(r["actual_kwh"] for r in pairs)
+                    if predicted is not None and math.isfinite(predicted) and predicted >= 0:
+                        item["array_candidate_accuracy"] = {
+                            "actual_daily_kwh": round(measured, 3),
+                            "candidate_daily_kwh": round(predicted, 3),
+                            "absolute_error_kwh": round(abs(predicted - measured), 3),
+                            "signed_error_kwh": round(predicted - measured, 3),
+                            "comparison_source": "same_reconciled_recorder_hourly_actuals",
+                            "accuracy_validated": False,
+                            "production_applied": False, "control_permission": False,
+                        }
                 self._schedule_save()
                 outcomes.append({"status": "paired", "target_date": target, "matched_hours": n,
                                  "included_sources": selection["included_sources"],
@@ -626,6 +684,23 @@ class PredictionAccuracyEngine:
             "recent_outcomes": outcomes[-8:],
         }
 
+    def _array_candidate_forward_summary(self) -> dict[str, Any]:
+        """Describe frozen forward evidence without approving the candidate."""
+        rows = [item for item in self._hourly_frozen
+                if isinstance(item.get("array_candidate_accuracy"), dict)]
+        errors = [float(item["array_candidate_accuracy"]["absolute_error_kwh"])
+                  for item in rows]
+        return {"status": "forward_comparison" if rows else "awaiting_frozen_actual_pairs",
+                "matched_days": len(rows),
+                "mean_absolute_error_kwh": round(sum(errors) / len(errors), 3) if errors else None,
+                "recent": [{"target_date": item.get("target_date"),
+                            **item["array_candidate_accuracy"]} for item in rows[-7:]],
+                "frozen_candidate_days": sum(
+                    (item.get("array_candidate_frozen") or {}).get("status") == "frozen"
+                    for item in self._hourly_frozen),
+                "accuracy_validated": False, "production_applied": False,
+                "control_permission": False}
+
     def hourly_evidence_summary(self) -> dict[str, Any]:
         return {
             "status": "collecting_frozen_hourly_forecasts",
@@ -635,6 +710,7 @@ class PredictionAccuracyEngine:
             "paired_measured_hours": sum(len(x.get("hours") or []) for x in self._hourly_frozen if x.get("actuals_paired")),
             "accuracy_status": "paired" if any(x.get("actuals_paired") for x in self._hourly_frozen) else "awaiting_recorder_hourly_actuals",
             "actuals_capture": dict(self._hourly_actuals_status),
+            "array_candidate_forward_evidence": self._array_candidate_forward_summary(),
             "production_applied": False, "control_permission": False,
         }
 
@@ -873,6 +949,61 @@ class PredictionAccuracyEngine:
                     "production_applied": False,
                     "control_permission": False,
                 }
+            # Per-array orientation experiment: diagnostics only. This shape is
+            # NOT an energy forecast and must never be applied to production.
+            try:
+                from .forecast_v21_array_geometry import geometry_shadow
+                home = (self.core.settings_api.summary() or {}).get("home_settings") or {}
+                arrays = list(home.get("pv_arrays") or [])[:12]
+                config = self.core.hass.config
+                result["array_geometry_shadow"] = geometry_shadow(
+                    arrays, target, config.latitude, config.longitude,
+                    str(config.time_zone or "UTC"))
+            except (AttributeError, TypeError, ValueError, KeyError, ImportError) as geometry_error:
+                result["array_geometry_shadow"] = {
+                    "status": "unavailable", "reason": type(geometry_error).__name__,
+                    "production_applied": False, "control_permission": False}
+            # V2.1 array weather experiment: strictly read-only. Match hourly
+            # weather by offset-aware instant; never alter production V2.
+            try:
+                from .forecast_v21_array_geometry import weather_geometry_shadow
+                weather = self.core.weather.summary() if self.core.weather else {}
+                result["array_weather_shadow"] = weather_geometry_shadow(
+                    result.get("array_geometry_shadow"), weather,
+                    self.core.weather.factor_for if self.core.weather else None)
+            except (AttributeError, TypeError, ValueError, KeyError, ImportError) as weather_error:
+                result["array_weather_shadow"] = {
+                    "status": "unavailable", "reason": type(weather_error).__name__,
+                    "production_applied": False, "control_permission": False, "forecast_kwh": None}
+            # Independent geometry-to-energy experiment; assumption-based,
+            # never used for production V2, V2.1 selection or device control.
+            try:
+                from .forecast_v21_array_geometry import array_energy_candidate_shadow
+                result["array_energy_candidate_shadow"] = array_energy_candidate_shadow(
+                    result.get("array_geometry_shadow"), result.get("array_weather_shadow"))
+            except (AttributeError, TypeError, ValueError, KeyError, ImportError) as candidate_error:
+                result["array_energy_candidate_shadow"] = {
+                    "status": "unavailable", "reason": type(candidate_error).__name__,
+                    "candidate_kwh": None, "production_applied": False,
+                    "control_permission": False, "calibrated": False}
+            # Expose immutable forward evidence in the V2.1 Shadow sensor.
+            # Old snapshots remain untouched and are never backfilled.
+            target_frozen = next((item for item in reversed(self._hourly_frozen)
+                                  if item.get("target_date") == target), None)
+            frozen_array = (target_frozen or {}).get("array_candidate_frozen") or {}
+            result["array_candidate_forward_evidence"] = {
+                **self._array_candidate_forward_summary(),
+                "target_date": target,
+                "target_snapshot_exists": target_frozen is not None,
+                "target_array_status": (frozen_array.get("status", "not_captured_in_existing_snapshot")
+                                        if target_frozen is not None else "awaiting_future_capture"),
+                "target_frozen_candidate_kwh": (frozen_array.get("candidate_kwh")
+                                                if frozen_array.get("status") == "frozen" else None),
+                "capture": dict(self._hourly_capture_status),
+                "source": "immutable_hourly_frozen_storage",
+                "no_retroactive_backfill": True,
+                "production_applied": False, "control_permission": False,
+            }
             result["evidence_audit"] = audit
             result["baseline_v2_kwh"] = round(current, 3)
             result["source"] = "existing_daily_forecast_and_frozen_recorder_outcomes"

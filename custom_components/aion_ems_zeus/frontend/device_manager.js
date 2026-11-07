@@ -616,10 +616,17 @@ class AionEmsDeviceManager extends HTMLElement {
     };
     return `<div class="setup-choice"><b>How do you measure the grid?</b><label><input type="radio" name="gridMode" value="bidirectional" ${mode==="bidirectional"?"checked":""}> One bidirectional meter (+ / −)</label><label><input type="radio" name="gridMode" value="separate" ${mode==="separate"?"checked":""}> Separate Import and Export sensors</label></div>
       ${row("solar_power","Solar Power","Select the live solar production power entity.")}
+      ${this.pvArraySettingsHtml()}
       <div id="gridBidirectional" ${mode!=="bidirectional"?'hidden':''}>${row("grid_power","Bidirectional Grid Power","Select the meter that changes sign when power direction changes.")}<div class="maprow basicrow"><div><b>Meter sign</b><div class="hint">Choose what a positive meter value means.</div></div><div><select id="gridSign" class="sign-select"><option value="positive_import">Positive = import, negative = export</option><option value="positive_export">Positive = export, negative = import</option></select></div><div></div></div></div>
       <div id="gridSeparate" ${mode!=="separate"?'hidden':''}>${row("grid_import_power","Grid Import Power","Power currently taken from the utility grid.")}${row("grid_export_power","Grid Export Power","Power currently returned to the utility grid.")}</div>
       ${row("house_power","Consumption Power","Select the whole-home consumption/load power entity. Leave empty only when you want Zeus to calculate consumption from Solar + Grid + Battery flows.")}
       <div class="hint calculated-note"><b>Consumption fallback:</b> when no measured Consumption Power entity is configured, Zeus calculates House Power automatically from Solar + Grid + Battery.</div>`;
+  }
+  pvArraySettingsHtml(){
+    const stored=this.s('sensor.aion_ems_zeus_settings_api')?.attributes?.home_settings?.pv_arrays||[];
+    const rows=Array.isArray(this._pvArrayDraft)?this._pvArrayDraft:(Array.isArray(stored)?stored:[]);
+    const tr=(a,i)=>`<div class="maprow basicrow" data-pv-array-row="${i}"><div><b>PV Array ${i+1}</b><div class="hint">Azimuth: 0° north, 90° east, 180° south, 270° west. Tilt: 0° flat, 90° vertical.</div></div><div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px"><label>Name<input data-pv-field="name" value="${this.esc(a.name||'')}" placeholder="East"></label><label>Capacity (kWp)<input data-pv-field="capacity_kwp" type="number" min="0.001" max="1000" step="any" value="${this.esc(a.capacity_kwp??'')}"></label><label>Azimuth (°)<input data-pv-field="azimuth_deg" type="number" min="0" max="359.999" step="any" value="${this.esc(a.azimuth_deg??'')}"></label><label>Tilt (°)<input data-pv-field="tilt_deg" type="number" min="0" max="90" step="any" value="${this.esc(a.tilt_deg??'')}"></label><label style="grid-column:1/-1">Optional power entity<input data-pv-field="power_entity" value="${this.esc(a.power_entity||'')}" placeholder="sensor.array_power"></label></div><div class="buttons"><button data-pv-remove="${i}" class="danger">Remove</button></div></div>`;
+    return `<div class="panel"><h3>PV Arrays · Geometry</h3><div class="hint">Independent per-array geometry for future V2.1 shadow experiments. Saving does NOT alter V2, current forecasts, or controls. Existing single-roof setups remain valid.</div>${rows.map(tr).join('')}<div class="buttons"><button id="pv-add-array" ${rows.length>=12?'disabled':''}>Add PV Array</button><button id="pv-save-arrays">Save PV Arrays</button></div><div class="hint">${rows.length} array(s) · ${rows.reduce((v,a)=>v+(Number(a.capacity_kwp)||0),0).toFixed(2)} kWp registered in this editor. Total production is still measured through the existing solar mapping.</div></div>`;
   }
   batterySetupHtml(mappings,suggestions,invalid,mappingOptions){
     const hasSeparate=mappings.battery_charge_power||mappings.battery_discharge_power;
@@ -1143,6 +1150,23 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
       },250));
     });
     this.shadowRoot.querySelectorAll("[data-save],[data-clear],[data-remove]").forEach(el=>el.addEventListener("click",()=>{this._unsavedChanges=false;this._editLocked=false;}));
+    const pvRows=()=>Array.from(this.shadowRoot.querySelectorAll('[data-pv-array-row]')).map(row=>{const read=k=>row.querySelector(`[data-pv-field="${k}"]`)?.value?.trim()||'';return {name:read('name'),capacity_kwp:read('capacity_kwp'),azimuth_deg:read('azimuth_deg'),tilt_deg:read('tilt_deg'),power_entity:read('power_entity')};});
+    // Keep the PV draft in sync while editing, including across live UI refreshes.
+    this.shadowRoot.querySelectorAll('[data-pv-array-row] [data-pv-field]').forEach(input=>{
+      input.addEventListener('input',()=>{this._pvArrayDraft=pvRows();this._unsavedChanges=true;this._editLocked=true;});
+      input.addEventListener('change',()=>{this._pvArrayDraft=pvRows();this._unsavedChanges=true;});
+    });
+    this.shadowRoot.querySelector('#pv-add-array')?.addEventListener('click',()=>{this._pvArrayDraft=[...pvRows(),{name:'',capacity_kwp:'',azimuth_deg:'',tilt_deg:'',power_entity:''}];this._unsavedChanges=false;this._editLocked=false;this.render();});
+    this.shadowRoot.querySelectorAll('[data-pv-remove]').forEach(button=>button.addEventListener('click',()=>{const rows=pvRows();rows.splice(Number(button.dataset.pvRemove),1);this._pvArrayDraft=rows;this._unsavedChanges=false;this._editLocked=false;this.render();}));
+    this.shadowRoot.querySelector('#pv-save-arrays')?.addEventListener('click',async()=>{
+      const rows=pvRows();const arrays=[];
+      for(const a of rows){const capacity=Number(a.capacity_kwp),azimuth=Number(a.azimuth_deg),tilt=Number(a.tilt_deg);
+        if(!a.name||a.capacity_kwp===''||a.azimuth_deg===''||a.tilt_deg===''||!Number.isFinite(capacity)||capacity<=0||capacity>1000||!Number.isFinite(azimuth)||azimuth<0||azimuth>=360||!Number.isFinite(tilt)||tilt<0||tilt>90){alert('Enter a name, capacity > 0 kWp, azimuth 0–359.999°, and tilt 0–90° for each array.');return;}
+        if(a.power_entity&&!/^sensor\.[a-z0-9_]+$/.test(a.power_entity)){alert('Optional power entity must be a valid sensor entity ID.');return;}
+        arrays.push({name:a.name,capacity_kwp:capacity,azimuth_deg:azimuth,tilt_deg:tilt,power_entity:a.power_entity||null});
+      }
+      try{await this._hass.callService('aion_ems_zeus','save_pv_arrays',{arrays});this._pvArrayDraft=arrays;this._unsavedChanges=false;this._editLocked=false;await this._hass.callService('homeassistant','update_entity',{entity_id:'sensor.aion_ems_zeus_settings_api'});this.render();alert('PV array geometry saved. Verify the saved values by leaving this page and returning. Production forecasts are unchanged.');}catch(error){alert('Could not save PV arrays: '+(error?.message||String(error)));}
+    });
     this.shadowRoot.querySelector('#manager-save-battery-capacity')?.addEventListener('click',async()=>{
       const input=this.shadowRoot.querySelector('#manager-battery-capacity-kwh'),value=Math.max(0,Number(input?.value)||0);
       if(!value){alert((this._zeusLanguage==='de'?'Bitte eine Batteriekapazität über 0 kWh eingeben.':'Enter a battery capacity greater than 0 kWh.'));return;}
