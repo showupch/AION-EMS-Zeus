@@ -1864,7 +1864,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Scenario Simulator", "scenario_simulator", "mdi:compare-horizontal", lambda c: c.scenario_simulator.summary().get("status"), lambda c: c.scenario_simulator.summary()),
         SimpleSensor(coordinator, core, "Solar Daily Authority Audit", "solar_daily_authority_audit", "mdi:solar-power-variant", lambda c: "read_only", _solar_daily_authority_audit),
         SimpleSensor(coordinator, core, "Prediction Accuracy", "prediction_accuracy", "mdi:target-account", lambda c: c.prediction_accuracy.summary().get("status"), lambda c: c.prediction_accuracy.summary()),
-        SimpleSensor(coordinator, core, "Forecast V2.1 Shadow", "forecast_v21_shadow", "mdi:chart-line-variant", lambda c: c.prediction_accuracy.v21_shadow_summary().get("status"), lambda c: c.prediction_accuracy.v21_shadow_summary()),
+        ForecastV21ShadowSensor(coordinator, core),
         ForecastExplorerDataSensor(coordinator, core, "Forecast Explorer Data", "forecast_explorer_data", "mdi:chart-timeline-variant-shimmer"),
         SimpleSensor(coordinator, core, "Home Profile", "home_profile", "mdi:home-analytics", lambda c: c.home_profile.summary().get("status"), lambda c: c.home_profile.summary()),
         AnomalyIntelligenceSensor(coordinator, core, "Anomaly Intelligence", "anomaly_intelligence", "mdi:chart-bell-curve-cumulative"),
@@ -2016,6 +2016,36 @@ class SimpleSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs = self.attrs_fn(self.core) or {}
         return _apply_recorder_guard(self, attrs)
+
+
+class ForecastV21ShadowSensor(SimpleSensor):
+    """Build the shadow diagnostic once for each coordinator refresh.
+
+    Home Assistant reads native_value and extra_state_attributes separately.
+    Both must use the same snapshot, without repeating expensive evidence
+    audits or changing the production forecast.
+    """
+
+    def __init__(self, coordinator, core) -> None:
+        super().__init__(coordinator, core, "Forecast V2.1 Shadow", "forecast_v21_shadow", "mdi:chart-line-variant", lambda c: None, lambda c: {})
+        self._shadow_snapshot = None
+
+    def _snapshot(self):
+        if self._shadow_snapshot is None:
+            self._shadow_snapshot = self.core.prediction_accuracy.v21_shadow_summary() or {}
+        return self._shadow_snapshot
+
+    @property
+    def native_value(self):
+        return self._snapshot().get("status")
+
+    @property
+    def extra_state_attributes(self):
+        return _apply_recorder_guard(self, self._snapshot())
+
+    def _handle_coordinator_update(self) -> None:
+        self._shadow_snapshot = None
+        super()._handle_coordinator_update()
 
 
 class ForecastMetricSensor(CoordinatorEntity, SensorEntity):
