@@ -1270,6 +1270,40 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         core.refresh_pipeline()
         await _refresh_aion_entities(hass)
 
+    async def save_pv_arrays(call: ServiceCall) -> None:
+        """Store per-array geometry only; never modify active forecasts."""
+        core = _core(hass)
+        raw = call.data["arrays"]
+        if not isinstance(raw, list) or len(raw) > 12:
+            raise vol.Invalid("PV arrays must be a list of at most 12 entries")
+        arrays = []
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                raise vol.Invalid("Each PV array must be an object")
+            name = str(item.get("name", "")).strip()
+            if not name or len(name) > 80:
+                raise vol.Invalid("Each PV array needs a name of at most 80 characters")
+            try:
+                capacity = float(item["capacity_kwp"])
+                azimuth = float(item["azimuth_deg"])
+                tilt = float(item["tilt_deg"])
+            except (KeyError, ValueError, TypeError) as exc:
+                raise vol.Invalid("Capacity, azimuth and tilt must be numbers") from exc
+            import math
+            if not all(math.isfinite(v) for v in (capacity, azimuth, tilt)) or not (0 < capacity <= 1000 and 0 <= azimuth < 360 and 0 <= tilt <= 90):
+                raise vol.Invalid("PV geometry out of range: kWp > 0, azimuth 0–<360, tilt 0–90")
+            entity = str(item.get("power_entity") or "").strip()
+            if entity and not cv.entity_id(entity):
+                raise vol.Invalid("Invalid PV power entity")
+            arrays.append({"name": name, "capacity_kwp": round(capacity, 4),
+                           "azimuth_deg": round(azimuth, 3), "tilt_deg": round(tilt, 3),
+                           "power_entity": entity or None})
+        core.registry.data.setdefault("home_settings", {})["pv_arrays"] = arrays
+        core.registry.data.setdefault("audit", []).append({"action": "save_pv_arrays", "array_count": len(arrays)})
+        await core.registry.async_save()
+        core.settings_api.refresh()
+        await _refresh_aion_entities(hass)
+
     async def save_home_profile(call: ServiceCall) -> None:
         core = _core(hass)
         owner_name = str(call.data.get("owner_name", "")).strip()[:80]
@@ -1565,6 +1599,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         hass, DOMAIN, "set_solar_forecast_engine", set_solar_forecast_engine,
         schema=vol.Schema({vol.Required("mode"): vol.In(["legacy", "v2"])}),
     )
+    async_register_admin_service(hass, DOMAIN, "save_pv_arrays", save_pv_arrays, schema=vol.Schema({vol.Required("arrays"): list}))
     async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_HOME_PROFILE, save_home_profile, schema=vol.Schema({
         vol.Optional("owner_name", default=""): cv.string,
         vol.Optional("home_name", default="Home"): cv.string,
@@ -1862,6 +1897,7 @@ async def async_unload_services(hass: HomeAssistant) -> None:
         SERVICE_REFRESH_LEARNING_PREVIEW,
         SERVICE_SAVE_WEATHER_SOURCE, SERVICE_CLEAR_WEATHER_SOURCE,
         SERVICE_SAVE_TARIFF_SETTINGS, SERVICE_CLEAR_TARIFF_SETTINGS, SERVICE_SAVE_HOME_PROFILE,
+        "save_pv_arrays",
     SERVICE_SAVE_BATTERY_CAPACITY,
     SERVICE_SAVE_HOME_PROFILE,
     SERVICE_CLEAR_BATTERY_CAPACITY, SERVICE_SET_DATA_EPOCH, SERVICE_CLEAR_DATA_EPOCH, SERVICE_SAVE_NOTIFICATION_SETTINGS, SERVICE_TEST_NOTIFICATION,

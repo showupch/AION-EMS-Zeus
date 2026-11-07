@@ -1866,6 +1866,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Solar Daily Authority Audit", "solar_daily_authority_audit", "mdi:solar-power-variant", lambda c: "read_only", _solar_daily_authority_audit),
         SimpleSensor(coordinator, core, "Prediction Accuracy", "prediction_accuracy", "mdi:target-account", lambda c: c.prediction_accuracy.summary().get("status"), lambda c: c.prediction_accuracy.summary()),
         ForecastV21ShadowSensor(coordinator, core),
+        SimpleSensor(
+            coordinator, core, "Array Forecast Evidence", "array_forecast_evidence",
+            "mdi:database-check-outline",
+            lambda c: _array_forward_evidence_attributes(c).get("target_array_status", "unavailable"),
+            _array_forward_evidence_attributes,
+        ),
         ForecastExplorerDataSensor(coordinator, core, "Forecast Explorer Data", "forecast_explorer_data", "mdi:chart-timeline-variant-shimmer"),
         SimpleSensor(coordinator, core, "Home Profile", "home_profile", "mdi:home-analytics", lambda c: c.home_profile.summary().get("status"), lambda c: c.home_profile.summary()),
         AnomalyIntelligenceSensor(coordinator, core, "Anomaly Intelligence", "anomaly_intelligence", "mdi:chart-bell-curve-cumulative"),
@@ -1952,7 +1958,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         SimpleSensor(coordinator, core, "Notification Engine", "notification_engine", "mdi:bell-outline", lambda c: c.notifications.summary().get("status"), lambda c: c.notifications.summary()),
         SimpleSensor(coordinator, core, "Control Audit Trail", "control_audit_trail", "mdi:clipboard-text-clock-outline", lambda c: c.control_audit.summary().get("status"), lambda c: c.control_audit.summary()),
         SimpleSensor(coordinator, core, "Dashboard API", "dashboard_api", "mdi:api", lambda c: c.dashboard_api.summary().get("status"), lambda c: c.dashboard_api.recorder_summary()),
-        SimpleSensor(coordinator, core, "Settings API", "settings_api", "mdi:cog-transfer-outline", lambda c: c.settings_api.summary().get("status"), lambda c: {"schema_version": c.settings_api.summary().get("schema_version"), "device_count": len(c.settings_api.summary().get("devices", [])), "battery_capacity_kwh": (c.settings_api.summary().get("home_settings") or {}).get("battery_capacity_kwh"), "battery_profile": {k: v for k, v in ((c.settings_api.summary().get("home_settings") or {}).get("battery_profile") or {}).items() if k in {"registered", "capacity_kwh", "minimum_soc_percent", "emergency_reserve_percent", "maximum_soc_percent", "max_charge_power_w", "max_discharge_power_w", "round_trip_efficiency", "source"}}, "home_settings": {"owner_name": str((c.settings_api.summary().get("home_settings") or {}).get("owner_name") or "")[:80], "home_name": str((c.settings_api.summary().get("home_settings") or {}).get("home_name") or "Home")[:80], "use_owner_name": (c.settings_api.summary().get("home_settings") or {}).get("use_owner_name", True), "story_style": str((c.settings_api.summary().get("home_settings") or {}).get("story_style") or "friendly"), "briefing_length": str((c.settings_api.summary().get("home_settings") or {}).get("briefing_length") or "normal"),  "data_epoch": (c.settings_api.summary().get("home_settings") or {}).get("data_epoch"),
+        SimpleSensor(coordinator, core, "Settings API", "settings_api", "mdi:cog-transfer-outline", lambda c: c.settings_api.summary().get("status"), lambda c: {"schema_version": c.settings_api.summary().get("schema_version"), "device_count": len(c.settings_api.summary().get("devices", [])), "battery_capacity_kwh": (c.settings_api.summary().get("home_settings") or {}).get("battery_capacity_kwh"), "battery_profile": {k: v for k, v in ((c.settings_api.summary().get("home_settings") or {}).get("battery_profile") or {}).items() if k in {"registered", "capacity_kwh", "minimum_soc_percent", "emergency_reserve_percent", "maximum_soc_percent", "max_charge_power_w", "max_discharge_power_w", "round_trip_efficiency", "source"}}, "home_settings": {"pv_arrays": list((c.settings_api.summary().get("home_settings") or {}).get("pv_arrays") or [])[:12], "owner_name": str((c.settings_api.summary().get("home_settings") or {}).get("owner_name") or "")[:80], "home_name": str((c.settings_api.summary().get("home_settings") or {}).get("home_name") or "Home")[:80], "use_owner_name": (c.settings_api.summary().get("home_settings") or {}).get("use_owner_name", True), "story_style": str((c.settings_api.summary().get("home_settings") or {}).get("story_style") or "friendly"), "briefing_length": str((c.settings_api.summary().get("home_settings") or {}).get("briefing_length") or "normal"),  "data_epoch": (c.settings_api.summary().get("home_settings") or {}).get("data_epoch"),
 "solar_forecast_engine_mode": (
 (c.settings_api.summary().get("home_settings") or {}).get("solar_forecast_engine_mode")
 if (c.settings_api.summary().get("home_settings") or {}).get("solar_forecast_engine_mode") in ("legacy", "v2")
@@ -2017,6 +2023,45 @@ class SimpleSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs = self.attrs_fn(self.core) or {}
         return _apply_recorder_guard(self, attrs)
+
+
+def _array_forward_evidence_attributes(core) -> dict[str, Any]:
+    """Compact, independent read-only view of immutable array snapshot evidence.
+
+    Do not depend on the large Forecast V2.1 Shadow attributes or recompute
+    array predictions. The existing frozen storage is the only authority.
+    """
+    from homeassistant.util import dt as dt_util
+    target = (dt_util.now().date() + timedelta(days=1)).isoformat()
+    accuracy = core.prediction_accuracy
+    frozen_rows = getattr(accuracy, "_hourly_frozen", ()) or ()
+    target_row = next((row for row in reversed(frozen_rows)
+                       if isinstance(row, dict) and row.get("target_date") == target), None)
+    frozen = ((target_row or {}).get("array_candidate_frozen") or {})
+    status = (frozen.get("status") or "not_captured_in_existing_snapshot"
+              if target_row is not None else "awaiting_future_capture")
+    try:
+        summary = accuracy._array_candidate_forward_summary()
+    except (AttributeError, ValueError, TypeError, KeyError):
+        summary = {"status": "summary_unavailable"}
+    return {
+        "status": summary.get("status", "unavailable"),
+        "target_date": target,
+        "target_snapshot_exists": target_row is not None,
+        "target_array_status": status,
+        "target_frozen_candidate_kwh": (frozen.get("candidate_kwh")
+                                        if frozen.get("status") == "frozen" else None),
+        "frozen_candidate_days": summary.get("frozen_candidate_days", 0),
+        "matched_days": summary.get("matched_days", 0),
+        "mean_absolute_error_kwh": summary.get("mean_absolute_error_kwh"),
+        "recent": list(summary.get("recent") or [])[-3:],
+        "capture": dict(getattr(accuracy, "_hourly_capture_status", {}) or {}),
+        "source": "immutable_hourly_frozen_storage",
+        "no_retroactive_backfill": True,
+        "accuracy_validated": False,
+        "production_applied": False,
+        "control_permission": False,
+    }
 
 
 class ForecastV21ShadowSensor(SimpleSensor):
