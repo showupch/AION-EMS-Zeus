@@ -102,7 +102,7 @@ class EnergyFlowEngine:
                 dhw_entity = str(device.get("dhw_electrical_power_entity") or "").strip()
                 cooling_entity = (str(device.get("cooling_electrical_power_entity") or "").strip()
                                   if bool(device.get("cooling_measurements_enabled", False)) else "")
-                circuit_entities = [heating_entity, dhw_entity] + ([cooling_entity] if cooling_entity else [])
+                circuit_entities = list(dict.fromkeys([heating_entity, dhw_entity] + ([cooling_entity] if cooling_entity else [])))
                 if heating_entity and dhw_entity:
                     circuit_values = [self._state_power_w(item) for item in circuit_entities]
                     if all(item is not None for item in circuit_values):

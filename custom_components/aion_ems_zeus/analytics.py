@@ -7265,7 +7265,7 @@ class DeviceAnalyticsEngine:
                 dhw_power_e = str(device.get("dhw_electrical_power_entity") or "").strip()
                 cooling_power_e = (str(device.get("cooling_electrical_power_entity") or "").strip()
                                    if bool(device.get("cooling_measurements_enabled", False)) else "")
-                hp_power_entities = [heating_power_e, dhw_power_e] + ([cooling_power_e] if cooling_power_e else [])
+                hp_power_entities = list(dict.fromkeys([heating_power_e, dhw_power_e] + ([cooling_power_e] if cooling_power_e else [])))
                 if heating_power_e and dhw_power_e:
                     hp_power_values = [live_electrical_power_w(eid) for eid in hp_power_entities]
                     if all(value is not None for value in hp_power_values):
