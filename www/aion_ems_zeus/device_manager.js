@@ -1041,6 +1041,43 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
   .page .maprow.basicrow,.page .maprow{padding:10px!important}
   .page .maprow .buttons button{padding:9px 8px!important}
 }
+
+/* v16.0.481 — iOS Companion App mobile navigation: one scroll container,
+   safe-area-aware header clearance and reachable final menu action. */
+@media (max-width:760px) {
+  .sidebar.mobile-nav-open {
+    position:fixed!important;
+    inset:0!important;
+    height:100dvh!important;
+    max-height:100dvh!important;
+    overflow:hidden!important;
+    padding:0!important;
+  }
+  .sidebar.mobile-nav-open nav {
+    display:flex!important;
+    flex-direction:column!important;
+    position:fixed!important;
+    inset:0!important;
+    box-sizing:border-box!important;
+    width:100%!important;
+    height:100dvh!important;
+    max-height:100dvh!important;
+    overflow-x:hidden!important;
+    overflow-y:auto!important;
+    touch-action:pan-y!important;
+    -webkit-overflow-scrolling:touch!important;
+    overscroll-behavior-y:contain!important;
+    padding:calc(76px + env(safe-area-inset-top, 0px)) 14px calc(28px + env(safe-area-inset-bottom, 0px))!important;
+  }
+  .sidebar.mobile-nav-open .mobile-nav-toggle,
+  .sidebar.mobile-nav-open .mobile-back-button {
+    top:calc(12px + env(safe-area-inset-top, 0px))!important;
+  }
+  .sidebar.mobile-nav-open .sidebar-exit-wrap {
+    flex-shrink:0!important;
+    padding-bottom:max(12px, env(safe-area-inset-bottom, 0px))!important;
+  }
+}
 </style>
     <h1>AION EMS Zeus Device Manager</h1><div class="sub">Version ${this.esc(this.s("sensor.aion_ems_zeus_platform_status")?.attributes?.version||"16.0.322")} · Registry & Diagnostics Center.</div>
     <div class="status"><b>${this.esc(managerStatus)}</b>${this._error?`<div class="bad">${this.esc(this._error)}</div>`:""}<div>${this.esc(managerMessage)}</div></div>
