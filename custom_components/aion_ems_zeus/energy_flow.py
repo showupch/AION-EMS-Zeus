@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import Any
+
+from .heat_pump_power import choose_circuit_power
 from datetime import datetime, timezone
 
 
@@ -104,9 +106,13 @@ class EnergyFlowEngine:
                                   if bool(device.get("cooling_measurements_enabled", False)) else "")
                 circuit_entities = list(dict.fromkeys([heating_entity, dhw_entity] + ([cooling_entity] if cooling_entity else [])))
                 if heating_entity and dhw_entity:
-                    circuit_values = [self._state_power_w(item) for item in circuit_entities]
-                    if all(item is not None for item in circuit_values):
-                        value = sum(float(item) for item in circuit_values)
+                    heating_w = self._state_power_w(heating_entity)
+                    dhw_w = self._state_power_w(dhw_entity)
+                    cooling_w = self._state_power_w(cooling_entity) if cooling_entity else None
+                    if heating_w is not None and dhw_w is not None and (not cooling_entity or cooling_w is not None):
+                        chosen, _, _ = choose_circuit_power(heating_w, dhw_w, cooling_w, cooling_entity)
+                        if chosen is not None:
+                            value = chosen
             temperature_entity = str(device.get("temperature_entity") or "").strip() or None
             temperature_c = None
             temperature_unit = None

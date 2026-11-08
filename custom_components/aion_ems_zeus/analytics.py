@@ -1,6 +1,8 @@
 """Historical analytics, forecasting, optimization and scheduling engines."""
 
 from __future__ import annotations
+
+from .heat_pump_power import choose_circuit_power, is_whole_system_meter
 import math
 
 from .heat_pump_spf import circuit_efficiency
@@ -7267,9 +7269,13 @@ class DeviceAnalyticsEngine:
                                    if bool(device.get("cooling_measurements_enabled", False)) else "")
                 hp_power_entities = list(dict.fromkeys([heating_power_e, dhw_power_e] + ([cooling_power_e] if cooling_power_e else [])))
                 if heating_power_e and dhw_power_e:
-                    hp_power_values = [live_electrical_power_w(eid) for eid in hp_power_entities]
-                    if all(value is not None for value in hp_power_values):
-                        current_power_w = sum(float(value) for value in hp_power_values)
+                    heating_w = live_electrical_power_w(heating_power_e)
+                    dhw_w = live_electrical_power_w(dhw_power_e)
+                    cooling_w = live_electrical_power_w(cooling_power_e) if cooling_power_e else None
+                    if heating_w is not None and dhw_w is not None and (not cooling_power_e or cooling_w is not None):
+                        selected_w, _, _ = choose_circuit_power(heating_w, dhw_w, cooling_w, cooling_power_e)
+                        if selected_w is not None:
+                            current_power_w = selected_w
             stored_peak_w = max(0.0, float(row.get("peak_power_w", 0) or 0))
             effective_peak_w = max(stored_peak_w, current_power_w)
 
@@ -7377,23 +7383,15 @@ class DeviceAnalyticsEngine:
                 # 0 W DHW is Standby, not a compressor START. Whole-unit power
                 # remains the compatibility fallback when no classified live
                 # electrical circuit is available.
-                classified_live_power_w = []
-                for _key in (
-                    "heating_electrical_power_entity",
-                    "dhw_electrical_power_entity",
-                    "cooling_electrical_power_entity",
-                ):
-                    _value = hp_number(_key)
-                    _unit = str(hp_unit(_key) or "").strip()
-                    if _value is None:
-                        continue
-                    if _unit == "kW":
-                        _value *= 1000.0
-                    elif _unit == "MW":
-                        _value *= 1000000.0
-                    classified_live_power_w.append(max(0.0, float(_value)))
-                if classified_live_power_w:
-                    electrical_power_w = sum(classified_live_power_w)
+                heating_w = live_electrical_power_w(device.get("heating_electrical_power_entity"))
+                dhw_w = live_electrical_power_w(device.get("dhw_electrical_power_entity"))
+                cooling_eid = (device.get("cooling_electrical_power_entity")
+                               if device.get("cooling_measurements_enabled") else None)
+                cooling_w = live_electrical_power_w(cooling_eid)
+                selected_w, hp_source_policy, hp_mapping_warning = choose_circuit_power(
+                    heating_w, dhw_w, cooling_w, cooling_eid)
+                if selected_w is not None:
+                    electrical_power_w = selected_w
                 # Read-only source provenance: do not change power accounting
                 # until the split circuit sensors are confirmed independent.
                 hp_electrical_power_audit = {
@@ -7407,7 +7405,9 @@ class DeviceAnalyticsEngine:
                     "cooling_w": live_electrical_power_w(device.get("cooling_electrical_power_entity")) if device.get("cooling_measurements_enabled") else None,
                     "displayed_total_w": round(current_power_w, 1),
                     "cop_denominator_w": round(electrical_power_w, 1),
-                    "source_policy": "split_sum" if classified_live_power_w else ("primary" if primary_power_w is not None else "unavailable"),
+                    "source_policy": hp_source_policy if selected_w is not None else ("primary" if primary_power_w is not None else "unavailable"),
+                    "mapping_warning": hp_mapping_warning,
+                    "cooling_whole_system_overlap_suspected": bool(cooling_eid and is_whole_system_meter(cooling_eid)),
                 }
                 thermal_power_w = None
                 thermal_power_source = "unavailable"
