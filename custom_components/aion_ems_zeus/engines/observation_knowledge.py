@@ -538,15 +538,60 @@ class ObservationKnowledgeEngine:
         self.data["observations"] = self.data["observations"][:self.MAX_OBSERVATIONS]
         self._schedule_save()
 
+    # Timeline flow thresholds (watts). Keep device and safety observations separate.
+    TIMELINE_FLOW_DEFAULTS = {"import": 500.0, "export": 1000.0, "solar": 500.0}
+    TIMELINE_CONFIRM_SECONDS = 30.0
+    TIMELINE_STOP_RATIO = 0.8
+
+    def _observe_timeline_flows(self, current: dict[str, float]) -> None:
+        """Emit sustained flow transitions, never instantaneous grid jitter.
+
+        The state is retained in memory across refreshes. A threshold must hold
+        for 30 seconds before an event; a lower exit threshold provides hysteresis.
+        No initial 'started' event is emitted until a threshold is confirmed.
+        """
+        now = datetime.now(timezone.utc)
+        states = getattr(self, "_timeline_flow_states", None)
+        if states is None:
+            states = self._timeline_flow_states = {}
+        for key, threshold in self.TIMELINE_FLOW_DEFAULTS.items():
+            value = max(0.0, self._num(current.get(key)))
+            state = states.setdefault(key, {"active": False, "pending": None, "since": None})
+            active = state["active"]
+            crossed = value <= threshold * self.TIMELINE_STOP_RATIO if active else value >= threshold
+            if not crossed:
+                state["pending"] = None
+                state["since"] = None
+                continue
+            desired = not active
+            if state["pending"] != desired:
+                state["pending"] = desired
+                state["since"] = now
+                continue
+            if (now - state["since"]).total_seconds() < self.TIMELINE_CONFIRM_SECONDS:
+                continue
+            state["active"] = desired
+            state["pending"] = None
+            state["since"] = None
+            label = {"import": "Grid import", "export": "Grid export", "solar": "Solar production"}[key]
+            action = "started" if desired else "stopped"
+            self._add_observation(
+                "solar" if key == "solar" else "grid",
+                f"{label} {action}",
+                f"{label} {'reached' if desired else 'fell to'} {value:.0f} W "
+                f"(start {threshold:.0f} W, stop {threshold * self.TIMELINE_STOP_RATIO:.0f} W; "
+                f"confirmed {self.TIMELINE_CONFIRM_SECONDS:.0f} s).",
+                {**current, "timeline_flow": key, "power_w": value, "threshold_w": threshold,
+                 "confirmed_seconds": self.TIMELINE_CONFIRM_SECONDS},
+                100,
+            )
+
     def _observe_transitions(self, current: dict[str, float]) -> None:
         prev = self.data.get("previous") or {}
+        self._observe_timeline_flows(current)
         threshold = 50.0
         if prev:
             transitions = [
-                (prev.get("solar", 0) <= threshold < current["solar"], "solar", "Solar production started", f"Solar output rose to {current['solar']:.0f} W."),
-                (prev.get("solar", 0) > threshold >= current["solar"], "solar", "Solar production stopped", "Measured solar output fell below the active-flow threshold."),
-                (prev.get("import", 0) <= threshold < current["import"], "grid", "Grid import started", f"The grid began supplying {current['import']:.0f} W."),
-                (prev.get("export", 0) <= threshold < current["export"], "grid", "Grid export started", f"Surplus export reached {current['export']:.0f} W."),
                 (prev.get("charge", 0) <= threshold < current["charge"], "battery", "Battery charging started", f"Battery charge power reached {current['charge']:.0f} W."),
                 (prev.get("discharge", 0) <= threshold < current["discharge"], "battery", "Battery support started", f"Battery discharge power reached {current['discharge']:.0f} W."),
                 (prev.get("soc", -1) < 99 <= current["soc"], "battery", "Battery reached full", "Battery state of charge reached the full threshold."),

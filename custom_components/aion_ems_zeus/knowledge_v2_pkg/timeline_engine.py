@@ -44,7 +44,7 @@ class KnowledgeTimelineEngine:
 
             states = {
                 "solar_active": solar >= 500,
-                "exporting": export >= 250,
+                "exporting": export >= 1000,
                 "battery_full": battery_soc >= 98,
                 "high_demand": home >= 3000,
             }
