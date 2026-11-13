@@ -3405,6 +3405,35 @@ class ForecastEngine:
             if len(observed) >= 8 and sum(cloud >= 80 for cloud, _ in observed) >= 8:
                 persistent_overcast_days.add(day)
 
+        # Shadow-only independent radiation: astronomical daylight boundaries
+        # are cached by local target date. Never infer daylight from a nonzero
+        # historical baseline, which can contain overnight measurement noise.
+        independent_daylight_cache = {}
+        def independent_daylight_fraction(local_hour):
+            day = local_hour.date()
+            if day not in independent_daylight_cache:
+                try:
+                    from astral import Observer
+                    from astral.sun import sun as astral_sun
+                    hass = self.core.hass if self.core is not None else None
+                    if hass is None:
+                        raise ValueError("forecast_core_unavailable")
+                    observer = Observer(latitude=float(hass.config.latitude),
+                                        longitude=float(hass.config.longitude),
+                                        elevation=float(hass.config.elevation or 0))
+                    events = astral_sun(observer, date=day, tzinfo=timezone.utc)
+                    independent_daylight_cache[day] = (events["sunrise"], events["sunset"])
+                except (ValueError, TypeError, KeyError, OverflowError, ImportError):
+                    independent_daylight_cache[day] = None
+            bounds = independent_daylight_cache[day]
+            if bounds is None:
+                return None
+            start = dt_util.as_utc(local_hour)
+            end = start + timedelta(hours=1)
+            sunrise, sunset = bounds
+            overlap = max(0.0, (min(end, sunset) - max(start, sunrise)).total_seconds())
+            return min(1.0, overlap / 3600.0)
+
         hourly = []
         projected_soc = soc if 0 <= soc <= 100 else None
         for offset in range(170):
@@ -3439,6 +3468,14 @@ class ForecastEngine:
             v2_cloud_factor = None
             v2_baseline_power_w = None
             v2_pre_guard_power_w = None
+            v2_after_cloud_before_condition_w = None
+            v2_after_condition_before_caps_w = None
+            v2_after_legacy_caps_w = None
+            v2_fallback_reason = None
+            v21_without_persistent_w = None
+            v21_without_legacy_w = None
+            v21_diffuse_candidate_w = None
+            v21_independent_radiation_w = None
             if forecast_mode == "v2":
                 alternative = v2_reconciled_baseline(dt.date(), dt.hour)
                 if alternative is not None and alternative["historical_days"] >= 2:
@@ -3473,6 +3510,8 @@ class ForecastEngine:
                             "weather_unavailable_legacy_fallback"
                         )
                     v2_cloud_factor = round(v2_factor, 4) if v2_factor is not None else None
+                    if v2_factor is not None:
+                        v2_after_cloud_before_condition_w = round(max(0.0, alternative["equal_day_w"] * v2_factor), 1)
                     # Explicit fog/precipitation conditions provide information
                     # about opacity beyond cloud percentage. Reuse existing
                     # WeatherEngine condition factors as a ceiling for V2;
@@ -3490,6 +3529,55 @@ class ForecastEngine:
                     v2_solar = (max(0.0, alternative["equal_day_w"] * v2_factor * learned_factor)
                                 if v2_factor is not None else legacy_solar)
                     v2_pre_guard_power_w = round(v2_solar, 1) if v2_solar is not None else None
+                    v2_after_condition_before_caps_w = v2_pre_guard_power_w
+                    # Shadow-only counterfactual: keep the adverse-weather factor,
+                    # but remove BOTH Legacy-relative ceilings.
+                    v21_without_legacy_w = max(0.0, v2_solar)
+                    # V2.1 shadow-only diffuse-light candidate: use the same
+                    # reconciled historical p80 baseline and frozen weather,
+                    # but avoid compounding Legacy ceilings. Cloud opacity is
+                    # not zero irradiance: test a modest diffuse transmission
+                    # floor under fog/clouds, lower under precipitation.
+                    # This is an empirical hypothesis, NOT calibrated irradiance.
+                    if v2_factor is not None and weather_forecast_applied and cloud_num is not None:
+                        diffuse_floor = (0.42 if condition_key in ("fog", "cloudy", "partlycloudy")
+                                         else 0.26 if condition_key in adverse_condition_factors
+                                         else 0.38)
+                        transmission = max(v2_factor, diffuse_floor * (cloud_num / 100.0))
+                        v21_diffuse_candidate_w = max(0.0, alternative["equal_day_w"] * transmission)
+                    else:
+                        # Missing numeric weather evidence: no invented diffuse correction.
+                        v21_diffuse_candidate_w = legacy_solar
+                    # V2.1 independent direct + diffuse radiation hypothesis.
+                    # Shadow only: no Legacy ceiling, no learned V2 multiplier,
+                    # and no effect on adjusted_solar, battery, grid or control.
+                    # The historical p80 shape is NOT clear-sky normalized;
+                    # accordingly this is an uncalibrated diagnostic, not a
+                    # deployable or validated irradiance forecast.
+                    if v2_factor is not None and weather_forecast_applied and cloud_num is not None:
+                        cloud_fraction = cloud_num / 100.0
+                        # Direct beam declines quickly under cloud, while a
+                        # nonzero diffuse component remains. These coefficients
+                        # are explicit hypotheses, not learned site parameters.
+                        direct_share = 0.70
+                        diffuse_share = 0.30
+                        direct_transmission = max(0.02, (1.0 - cloud_fraction) ** 1.6)
+                        diffuse_transmission = max(0.12, 1.0 - 0.70 * cloud_fraction)
+                        if condition_key in ("rainy", "pouring", "lightning-rainy", "snowy", "snowy-rainy"):
+                            direct_transmission *= 0.50
+                            diffuse_transmission *= 0.65
+                        elif condition_key == "fog":
+                            direct_transmission *= 0.35
+                            diffuse_transmission *= 0.85
+                        radiation_factor = direct_share * direct_transmission + diffuse_share * diffuse_transmission
+                        # A full-night hour must be exactly zero. Partial
+                        # sunrise/sunset buckets contribute only daylight share.
+                        # If astronomy is unavailable, leave this shadow value
+                        # missing rather than inventing nighttime production.
+                        daylight_share = independent_daylight_fraction(dt)
+                        v21_independent_radiation_w = (max(0.0, alternative["equal_day_w"] * radiation_factor) * daylight_share
+                                                      if daylight_share is not None else None)
+                    # Missing weather is unknown, not zero or assumed clear.
                     # Conservative weather guard: under heavy clouds, V2 may
                     # not greatly exceed the already weather-adjusted Legacy
                     # estimate. This is a safety bound, NOT learned accuracy.
@@ -3505,6 +3593,10 @@ class ForecastEngine:
                             if v2_solar > ceiling:
                                 v2_guard_reasons.append("cloud_legacy_ceiling")
                             v2_solar = min(v2_solar, ceiling)
+                    v2_after_legacy_caps_w = round(v2_solar, 1) if v2_solar is not None else None
+                    # Shadow-only: retain heavy-cloud ceiling, omit only
+                    # persistent-overcast ceiling. No production impact.
+                    v21_without_persistent_w = max(0.0, v2_solar)
                     # Persistent overcast: the V2 lighter-cloud candidate
                     # must not exceed the weather-adjusted Legacy estimate.
                     # This is a conservative upper bound, not a calibrated
@@ -3517,15 +3609,29 @@ class ForecastEngine:
                     if pv_capacity_w is not None:
                         v2_solar = min(v2_solar, pv_capacity_w)
                     v2_solar = round(v2_solar, 1)
+                    v21_without_persistent_w = round(min(v21_without_persistent_w, pv_capacity_w) if pv_capacity_w is not None else v21_without_persistent_w, 1)
+                    v21_without_legacy_w = round(min(v21_without_legacy_w, pv_capacity_w) if pv_capacity_w is not None else v21_without_legacy_w, 1)
+                    if v21_diffuse_candidate_w is not None:
+                        v21_diffuse_candidate_w = round(min(v21_diffuse_candidate_w, pv_capacity_w)
+                            if pv_capacity_w is not None else v21_diffuse_candidate_w, 1)
+                    if v21_independent_radiation_w is not None:
+                        v21_independent_radiation_w = round(min(v21_independent_radiation_w, pv_capacity_w)
+                            if pv_capacity_w is not None else v21_independent_radiation_w, 1)
                     adjusted_solar = v2_solar
                 else:
                     # A missing canonical hourly baseline is not zero PV.
                     # Preserve the exact Legacy planning value and mark the
                     # fallback explicitly in the same-hour V2 evidence.
                     v2_guard_reasons.append("historical_baseline_missing_legacy_fallback")
+                    v2_fallback_reason = "historical_baseline_missing"
                     v2_solar = legacy_solar
                     v2_pre_guard_power_w = legacy_solar
                     adjusted_solar = legacy_solar
+                    # Baseline fallback is not evidence for ceiling removal.
+                    # Preserve the identical fallback in both shadows.
+                    v21_without_persistent_w = legacy_solar
+                    v21_without_legacy_w = legacy_solar
+                    v21_diffuse_candidate_w = legacy_solar
             net_w = (adjusted_solar or 0) - (house or 0)
             charge_w = max(net_w, 0)
             discharge_w = max(-net_w, 0)
@@ -3564,6 +3670,14 @@ class ForecastEngine:
                 "v2_cloud_factor": v2_cloud_factor,
                 "v2_baseline_power_w": v2_baseline_power_w,
                 "v2_pre_guard_power_w": v2_pre_guard_power_w,
+                "v2_after_cloud_before_condition_w": v2_after_cloud_before_condition_w,
+                "v2_after_condition_before_caps_w": v2_after_condition_before_caps_w,
+                "v2_after_legacy_caps_w": v2_after_legacy_caps_w,
+                "v2_fallback_reason": v2_fallback_reason,
+                "v21_without_persistent_w": v21_without_persistent_w,
+                "v21_without_legacy_w": v21_without_legacy_w,
+                "v21_diffuse_candidate_w": v21_diffuse_candidate_w,
+                "v21_independent_radiation_w": v21_independent_radiation_w,
                 "adaptive_correction_percent": round(contextual_correction_percent, 1),
                 "calibration_context": calibration_context,
                 "calibration_source": calibration_source,
@@ -4312,6 +4426,10 @@ class ForecastEngine:
                     "calibration_multiplier": audit_number(audit_row.get("shadow_calibration_multiplier")),
                     "calibration_source": audit_row.get("calibration_source"),
                     "final_w": audit_number(audit_row.get("solar_power_w")),
+                    "v21_without_persistent_w": audit_number(audit_row.get("v21_without_persistent_w")),
+                    "v21_without_legacy_w": audit_number(audit_row.get("v21_without_legacy_w")),
+                    "v21_diffuse_candidate_w": audit_number(audit_row.get("v21_diffuse_candidate_w")),
+                    "v21_independent_radiation_w": audit_number(audit_row.get("v21_independent_radiation_w")),
                     "weather_matched": bool(audit_row.get("weather_forecast_applied")),
                     "cloud_percent": audit_number(audit_row.get("cloud_coverage")),
                     "sample_count": audit_row.get("sample_count"),
@@ -4362,10 +4480,27 @@ class ForecastEngine:
             # Calendar-day automation values. Keep these on the daily row so
             # Home Assistant entities can expose the exact same Forecast Engine
             # evidence without creating a second forecast path.
-            remaining_solar = (
-                energy_between(now, dt_util.start_of_local_day(forecast_start.date() + timedelta(days=1)), "solar_power_w")
-                if day_offset == 0 else None
-            )
+            remaining_solar = None
+            if day_offset == 0:
+                remaining_end = dt_util.start_of_local_day(target_date + timedelta(days=1))
+                # Remaining PV is physically limited to daylight. Use the same
+                # astronomical evidence already computed for this target day;
+                # do not change the hourly production forecast or frozen evidence.
+                if daylight_available:
+                    if dt_util.as_utc(now) >= sunset_utc:
+                        remaining_solar = 0.0
+                    else:
+                        daylight_start = max(
+                            (now, dt_util.as_local(sunrise_utc)), key=dt_util.as_utc
+                        )
+                        remaining_solar = energy_between(
+                            daylight_start, dt_util.as_local(sunset_utc), "solar_power_w"
+                        )
+                else:
+                    # Preserve the existing behavior if sun events are unavailable.
+                    remaining_solar = energy_between(
+                        now, remaining_end, "solar_power_w"
+                    )
             energy_balance = round(float(expected_solar) - float(expected_load), 2)
 
             daily_forecast.append({

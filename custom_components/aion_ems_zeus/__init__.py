@@ -350,6 +350,11 @@ async def _websocket_solar_irradiance_learning(hass, connection, msg) -> None:
         samples.append({"time":stamp.isoformat(),"hour":local.hour+local.minute/60,
                         "irradiance_w_m2":round(irr,1),"solar_power_w":round(pv,1),
                         "illuminance_lx":round(lux,1) if lux is not None else None})
+    from .engines.irradiance_evidence_quality import summarize_paired_samples
+    evidence_quality = summarize_paired_samples(
+        (dt_util.as_local(dt_util.parse_datetime(r["time"])),
+         r["irradiance_w_m2"], r["solar_power_w"]) for r in samples
+    )
     morning = [r for r in samples if r["hour"] < 12]
     afternoon = [r for r in samples if r["hour"] >= 12]
     def summary(rows):
@@ -375,6 +380,7 @@ async def _websocket_solar_irradiance_learning(hass, connection, msg) -> None:
         "lux_morning":lux_summary([r for r in lux_samples if r["hour"] < 12]),
         "lux_afternoon":lux_summary([r for r in lux_samples if r["hour"] >= 12]),
         "morning":summary(morning),"afternoon":summary(afternoon),
+        "evidence_quality":evidence_quality,
         "points":samples[-336:],
         "note":"Read-only paired 30-minute historical samples; not a forecast or physical conversion model."
     })
@@ -435,6 +441,7 @@ async def _websocket_solar_irradiance_daily_calibration(hass, connection, msg) -
             except (TypeError,ValueError,OverflowError):
                 continue
     daily = defaultdict(list)
+    validation_samples = []
     for stamp, row in sorted(bins.items()):
         if not row.get("irr") or not row.get("pv"): continue
         irradiance_wm2 = sum(row["irr"])/len(row["irr"])
@@ -442,6 +449,7 @@ async def _websocket_solar_irradiance_daily_calibration(hass, connection, msg) -
         if irradiance_wm2 < 20: continue
         day = dt_util.as_local(stamp).date().isoformat()
         daily[day].append((irradiance_wm2,pv_w))
+        validation_samples.append((day, irradiance_wm2, pv_w))
     days=[]
     for day, rows in sorted(daily.items()):
         morning=[x for x in rows if x[0]>=20]
@@ -454,7 +462,10 @@ async def _websocket_solar_irradiance_daily_calibration(hass, connection, msg) -
             "pv_kw_per_100_w_m2":round(sum(x[1] for x in rows)/sum(x[0] for x in rows)/10,3),
             "coverage":"limited" if n < 8 else "sampled",
         })
+    from .engines.irradiance_shadow_validation import validate_irradiance_pv
+    shadow_validation = validate_irradiance_pv(validation_samples)
     connection.send_result(msg["id"],{
+        "shadow_validation": shadow_validation,
         "status":"ready" if days else "unavailable",
         "days":days, "period":"Last 21 days",
         "source_irradiance":irradiance,"source_pv":pv,
@@ -970,32 +981,212 @@ async def _websocket_grid_day_history(hass, connection, msg) -> None:
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/forecast_v2_hourly_diagnostics"})
 @websocket_api.async_response
 async def _websocket_forecast_v2_hourly_diagnostics(hass, connection, msg) -> None:
-    """Return compact read-only hourly evidence for tomorrow."""
-    from datetime import timedelta
+    """Read-only, correctly labeled V2 versus Legacy forecast audit for tomorrow."""
+    from datetime import timedelta, timezone
     from homeassistant.util import dt as dt_util
+    from astral import Observer
+    from astral.sun import sun as astral_sun
+
     core = hass.data.get(DOMAIN, {}).get("core")
     if core is None:
         connection.send_error(msg["id"], "not_ready", "Zeus is not ready")
         return
-    tomorrow = (dt_util.now() + timedelta(days=1)).date().isoformat()
+    tomorrow_date = (dt_util.now() + timedelta(days=1)).date()
+    tomorrow = tomorrow_date.isoformat()
+    try:
+        observer = Observer(latitude=float(hass.config.latitude),
+                            longitude=float(hass.config.longitude),
+                            elevation=float(hass.config.elevation or 0))
+        events = astral_sun(observer, date=tomorrow_date, tzinfo=timezone.utc)
+        sunrise, sunset = events["sunrise"], events["sunset"]
+    except (ValueError, TypeError, KeyError, OverflowError):
+        sunrise = sunset = None
+
     rows = []
     for row in (core.forecast.summary() or {}).get("planning_hourly", []):
         stamp = str(row.get("time") or "")
-        if stamp[:10] == tomorrow:
-            rows.append({
-                "time": stamp, "condition": row.get("condition"),
-                "baseline_w": row.get("baseline_solar_power_w"),
-                "legacy_w": row.get("legacy_solar_power_w"),
-                "v2_w": row.get("v2_solar_power_w"),
-                "final_w": row.get("solar_power_w"),
-                "baseline_days": row.get("v2_baseline_days"),
-                "cloud_factor": row.get("v2_cloud_factor"),
-                "guards": row.get("v2_guard_reasons") or [],
-            })
+        if stamp[:10] != tomorrow:
+            continue
+        legacy_baseline = row.get("baseline_solar_power_w")
+        v2_baseline = row.get("v2_baseline_power_w")
+        pre_guard = row.get("v2_pre_guard_power_w")
+        after_caps = row.get("v2_after_legacy_caps_w")
+        final = row.get("v2_solar_power_w")
+        daylight_fraction = None
+        if sunrise is not None and sunset is not None:
+            try:
+                start = dt_util.as_utc(dt_util.parse_datetime(stamp))
+                end = start + timedelta(hours=1)
+                daylight_fraction = round(min(1.0, max(0.0,
+                    (min(end, sunset) - max(start, sunrise)).total_seconds() / 3600.0)), 4)
+            except (TypeError, ValueError, OverflowError):
+                pass
+        def delta(before, after):
+            if isinstance(before, (int, float)) and isinstance(after, (int, float)):
+                return round(float(after) - float(before), 1)
+            return None
+        rows.append({
+            "time": stamp,
+            "condition": row.get("condition"),
+            "baseline_w": legacy_baseline,  # backward-compatible, NOT V2 baseline
+            "legacy_historical_baseline_w": legacy_baseline,
+            "v2_reconciled_baseline_w": v2_baseline,
+            "legacy_w": row.get("legacy_solar_power_w"),
+            "v2_w": final,
+            "final_w": row.get("solar_power_w"),
+            "baseline_days": row.get("v2_baseline_days"),
+            "cloud_factor": row.get("v2_cloud_factor"),
+            "cloud_percent": row.get("cloud_coverage"),
+            "weather_factor": row.get("weather_factor"),
+            "weather_applied": row.get("weather_forecast_applied"),
+            "pre_guard_w": pre_guard,
+            "after_cloud_before_condition_w": row.get("v2_after_cloud_before_condition_w"),
+            "after_condition_before_caps_w": row.get("v2_after_condition_before_caps_w"),
+            "after_legacy_caps_w": after_caps,
+            "cloud_and_condition_delta_w": delta(v2_baseline, pre_guard),
+            "legacy_ceiling_delta_w": delta(pre_guard, after_caps),
+            "remaining_guards_delta_w": delta(after_caps, final),
+            "daylight_fraction": daylight_fraction,
+            "legacy_baseline_outside_daylight": bool(daylight_fraction == 0 and isinstance(legacy_baseline, (int, float)) and legacy_baseline > 50),
+            "fallback_reason": row.get("v2_fallback_reason"),
+            "guards": row.get("v2_guard_reasons") or [],
+        })
+    def sum_kwh(field):
+        return round(sum(float(r[field]) for r in rows
+                         if isinstance(r.get(field), (int, float))) / 1000.0, 3)
     connection.send_result(msg["id"], {
-        "date": tomorrow, "hours": rows[:24],
+        "date": tomorrow,
         "status": "ready" if rows else "unavailable",
+        "note": "baseline_w is the Legacy historical average; compare V2 against v2_reconciled_baseline_w. All values are read-only diagnostics; no production forecast changes.",
+        "daily_totals_kwh": {
+            "legacy_historical_baseline": sum_kwh("legacy_historical_baseline_w"),
+            "v2_reconciled_baseline": sum_kwh("v2_reconciled_baseline_w"),
+            "legacy_forecast": sum_kwh("legacy_w"),
+            "v2_forecast": sum_kwh("v2_w"),
+            "cloud_and_condition_delta": sum_kwh("cloud_and_condition_delta_w"),
+            "legacy_ceiling_delta": sum_kwh("legacy_ceiling_delta_w"),
+            "remaining_guards_delta": sum_kwh("remaining_guards_delta_w"),
+        },
+        "nighttime_legacy_baseline_hours": [r["time"] for r in rows if r["legacy_baseline_outside_daylight"]],
+        "hours": rows[:24],
     })
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/open_meteo_radiation_shadow"})
+@websocket_api.async_response
+async def _websocket_open_meteo_radiation_shadow(hass, connection, msg) -> None:
+    """Return independent Open-Meteo radiation for comparison only."""
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+    from .engines.open_meteo_radiation import fetch_radiation
+    tomorrow = (dt_util.now() + timedelta(days=1)).date().isoformat()
+    evidence = await fetch_radiation(hass, tomorrow)
+    connection.send_result(msg["id"], {"date": tomorrow, **evidence,
+        "production_applied": False, "control_permission": False})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/radiation_pv_shadow"})
+@websocket_api.async_response
+async def _websocket_radiation_pv_shadow(hass, connection, msg) -> None:
+    """Read-only experimental Open-Meteo irradiance -> PV energy comparison."""
+    from datetime import timedelta
+    from homeassistant.components.recorder import get_instance, history
+    from homeassistant.components.recorder.util import session_scope
+    from homeassistant.util import dt as dt_util
+    from .engines.open_meteo_radiation import fetch_radiation
+    from .engines.radiation_pv_shadow import estimate_radiation_pv
+    result = await _async_radiation_shadow_result(hass)
+    connection.send_result(msg["id"], result)
+
+
+async def _async_radiation_shadow_result(hass, target_date=None):
+    """Shared read-only calculation for UI and scheduled forward capture."""
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        return {"status":"not_ready","production_applied":False}
+    station = (core.registry.data.get("sources") or {}).get("local_weather_station") or {}
+    irr = str((station.get("entities") or {}).get("solar_radiation") or "").strip()
+    pv = str(core.energy_mapping.mappings.get("solar_power") or "").strip()
+    if not station.get("enabled") or not irr or not pv or irr == pv:
+        return {"status":"missing_mapped_sources","production_applied":False}
+    tomorrow=target_date or (dt_util.now()+timedelta(days=1)).date().isoformat()
+    radiation=await fetch_radiation(hass,tomorrow)
+    if radiation.get("status")!="available":
+        return {"date":tomorrow,"status":"radiation_unavailable",
+                "radiation_status":radiation.get("status"),"production_applied":False}
+    now=dt_util.utcnow()
+    def query():
+        with session_scope(hass=hass,read_only=True) as session:
+            return history.get_significant_states_with_session(
+                hass,session,now-timedelta(days=21),now,[irr,pv],None,False,False,False,True)
+    try:
+        raw=await get_instance(hass).async_add_executor_job(query)
+    except Exception:
+        return {"date":tomorrow,"status":"recorder_unavailable","production_applied":False}
+    # Use the same 30-minute grouping and unit fallback as Local Irradiance Learning.
+    bins={}
+    raw_counts={"irradiance":0,"solar":0}
+    accepted_counts={"irradiance":0,"solar":0}
+    rejected_counts={"irradiance":0,"solar":0}
+    for key,eid in (("irradiance",irr),("solar",pv)):
+        states=(raw or {}).get(eid,[]) or []
+        raw_counts[key]=len(states)
+        current=hass.states.get(eid)
+        fallback_unit=str(current.attributes.get("unit_of_measurement") or "").strip() if current else ""
+        for state in states:
+            try:
+                value=float(state.state)
+                unit=str(state.attributes.get("unit_of_measurement") or fallback_unit).strip()
+                if key=="irradiance":
+                    if unit not in ("W/m²","W/m2"): raise ValueError("irradiance unit")
+                elif unit=="kW": value*=1000
+                elif unit!="W": raise ValueError("power unit")
+                if not 0<=value<100000: raise ValueError("out of range")
+                stamp=getattr(state,"last_updated",None) or getattr(state,"last_changed",None)
+                if stamp is None: raise ValueError("no timestamp")
+                utc=dt_util.as_utc(stamp)
+                bucket=utc.replace(minute=(utc.minute//30)*30,second=0,microsecond=0)
+                bins.setdefault(bucket,{}).setdefault(key,[]).append(value)
+                accepted_counts[key]+=1
+            except (ValueError,TypeError,OverflowError):
+                rejected_counts[key]+=1
+    paired_buckets=sum(bool(r.get("irradiance") and r.get("solar")) for r in bins.values())
+    samples=[]
+    for stamp,row in sorted(bins.items()):
+        if not row.get("irradiance") or not row.get("solar"): continue
+        irr_value=sum(row["irradiance"])/len(row["irradiance"])
+        pv_value=sum(row["solar"])/len(row["solar"])
+        samples.append((dt_util.as_local(stamp),irr_value,pv_value))
+    daylight_samples=[r for r in samples if 50<=r[1]<=1500]
+    daylight_by_day={}
+    for stamp,_,_ in daylight_samples:
+        key=stamp.date().isoformat()
+        daylight_by_day[key]=daylight_by_day.get(key,0)+1
+    evidence_diagnostic={
+        "recorder_window_days":21,
+        "raw_recorder_rows":raw_counts,
+        "accepted_recorder_rows":accepted_counts,
+        "rejected_recorder_rows":rejected_counts,
+        "paired_30min_buckets":paired_buckets,
+        "paired_daylight_intervals":len(daylight_samples),
+        "daylight_intervals_by_day":daylight_by_day,
+        "days_with_four_daylight_intervals":sum(n>=4 for n in daylight_by_day.values()),
+        "training_policy":{"min_daylight_intervals_per_day":4,"min_training_days":3,
+                           "min_training_buckets":24,"min_each_half_buckets":8},
+    }
+    from .engines.radiation_pv_shadow import threshold_evidence_sensitivity
+    threshold_audit=threshold_evidence_sensitivity(samples)
+    result=estimate_radiation_pv(samples,radiation["hours"],local_timezone=hass.config.time_zone,min_irradiance_w_m2=30)
+    return {"date":tomorrow,"source_irradiance":irr,"source_pv":pv,
+            "radiation_status":radiation["status"],"evidence_diagnostic":evidence_diagnostic,"threshold_sensitivity":threshold_audit,**result}
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/radiation_forward_evidence"})
+@websocket_api.async_response
+async def _websocket_radiation_forward_evidence(hass, connection, msg) -> None:
+    """Read-only frozen radiation forecast evidence and completed-day scores."""
+    from .engines.radiation_forward_evidence import async_read_radiation_evidence
+    connection.send_result(msg["id"], await async_read_radiation_evidence(hass))
 
 
 async def _async_register_frontend(hass: HomeAssistant, version: str) -> None:
@@ -1071,6 +1262,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["climate_schedule_manager"] = manager
         await manager.async_start()
     await async_setup_services(hass)
+    from .engines.radiation_forward_evidence import async_start_radiation_evidence
+    await async_start_radiation_evidence(hass, entry, _async_radiation_shadow_result)
+
     if not hass.data.get(_WEBSOCKET_REGISTERED):
         websocket_api.async_register_command(hass, _websocket_climate_schedules)
         websocket_api.async_register_command(hass, _websocket_save_climate_schedule)
@@ -1081,6 +1275,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, _websocket_entity_authority_recorder_evidence)
         websocket_api.async_register_command(hass, _websocket_solar_irradiance_learning)
         websocket_api.async_register_command(hass, _websocket_forecast_v2_hourly_diagnostics)
+        websocket_api.async_register_command(hass, _websocket_open_meteo_radiation_shadow)
+        websocket_api.async_register_command(hass, _websocket_radiation_pv_shadow)
+        websocket_api.async_register_command(hass, _websocket_radiation_forward_evidence)
         websocket_api.async_register_command(hass, _websocket_solar_irradiance_daily_calibration)
         websocket_api.async_register_command(hass, _websocket_heat_pump_day_history)
         websocket_api.async_register_command(hass, _websocket_heat_pump_monthly_energy)
@@ -1115,6 +1312,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not unload_ok:
         return False
 
+    from .engines.radiation_forward_evidence import async_stop_radiation_evidence
+    await async_stop_radiation_evidence(hass, entry)
     manager = hass.data.get(DOMAIN, {}).pop("climate_schedule_manager", None)
     if manager:
         await manager.async_stop()
