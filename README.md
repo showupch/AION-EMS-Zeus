@@ -1,6 +1,8 @@
 <div align="center">
 
-<img src="brand/icon.png" alt="AION EMS Zeus" width="112">
+<img width="1207" height="781" alt="image" src="https://github.com/user-attachments/assets/3b7b15d5-8ff1-416c-991e-357597be5deb" />
+
+
 
 # ⚡ AION EMS Zeus
 
