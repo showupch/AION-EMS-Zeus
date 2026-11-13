@@ -58,6 +58,7 @@ class ObservationKnowledgeEngine:
         self.data.setdefault("observations", [])
         self.data.setdefault("evolution", [])
         self.data.setdefault("metadata", {})
+        self.data.setdefault("timeline_flow_states", {})
 
     async def async_save(self) -> None:
         self._save_pending = False
@@ -542,6 +543,7 @@ class ObservationKnowledgeEngine:
     TIMELINE_FLOW_DEFAULTS = {"import": 500.0, "export": 1000.0, "solar": 500.0}
     TIMELINE_CONFIRM_SECONDS = 30.0
     TIMELINE_STOP_RATIO = 0.8
+    TIMELINE_MIN_TRANSITION_SECONDS = 600.0  # 10 minutes between visible transitions per flow
 
     def _observe_timeline_flows(self, current: dict[str, float]) -> None:
         """Emit sustained flow transitions, never instantaneous grid jitter.
@@ -551,28 +553,44 @@ class ObservationKnowledgeEngine:
         No initial 'started' event is emitted until a threshold is confirmed.
         """
         now = datetime.now(timezone.utc)
-        states = getattr(self, "_timeline_flow_states", None)
-        if states is None:
-            states = self._timeline_flow_states = {}
+        # Persist confirmed state and last transition to avoid phantom events on restart.
+        states = self.data.setdefault("timeline_flow_states", {})
         for key, threshold in self.TIMELINE_FLOW_DEFAULTS.items():
             value = max(0.0, self._num(current.get(key)))
-            state = states.setdefault(key, {"active": False, "pending": None, "since": None})
-            active = state["active"]
+            state = states.setdefault(key, {"active": None, "pending": None, "since": None, "last_transition": None})
+            active = state.get("active")
+            if active is None:
+                # First observation establishes baseline, not a historical start event.
+                state.update(active=value >= threshold, pending=None, since=None)
+                self._schedule_save()
+                continue
+            desired = not active
             crossed = value <= threshold * self.TIMELINE_STOP_RATIO if active else value >= threshold
             if not crossed:
                 state["pending"] = None
                 state["since"] = None
                 continue
-            desired = not active
-            if state["pending"] != desired:
+            if state.get("pending") != desired or not state.get("since"):
                 state["pending"] = desired
-                state["since"] = now
+                state["since"] = now.isoformat()
                 continue
-            if (now - state["since"]).total_seconds() < self.TIMELINE_CONFIRM_SECONDS:
+            try:
+                pending_age = (now - datetime.fromisoformat(state["since"])).total_seconds()
+            except (TypeError, ValueError):
+                state["since"] = now.isoformat()
                 continue
-            state["active"] = desired
-            state["pending"] = None
-            state["since"] = None
+            if pending_age < self.TIMELINE_CONFIRM_SECONDS:
+                continue
+            last = state.get("last_transition")
+            try:
+                elapsed = (now - datetime.fromisoformat(last)).total_seconds() if last else float("inf")
+            except (TypeError, ValueError):
+                elapsed = float("inf")
+            if elapsed < self.TIMELINE_MIN_TRANSITION_SECONDS:
+                # Keep the candidate pending; only confirm if it stays across cooldown.
+                continue
+            state.update(active=desired, pending=None, since=None, last_transition=now.isoformat())
+            self._schedule_save()
             label = {"import": "Grid import", "export": "Grid export", "solar": "Solar production"}[key]
             action = "started" if desired else "stopped"
             self._add_observation(
@@ -582,7 +600,8 @@ class ObservationKnowledgeEngine:
                 f"(start {threshold:.0f} W, stop {threshold * self.TIMELINE_STOP_RATIO:.0f} W; "
                 f"confirmed {self.TIMELINE_CONFIRM_SECONDS:.0f} s).",
                 {**current, "timeline_flow": key, "power_w": value, "threshold_w": threshold,
-                 "confirmed_seconds": self.TIMELINE_CONFIRM_SECONDS},
+                 "confirmed_seconds": self.TIMELINE_CONFIRM_SECONDS,
+                 "minimum_transition_seconds": self.TIMELINE_MIN_TRANSITION_SECONDS},
                 100,
             )
 

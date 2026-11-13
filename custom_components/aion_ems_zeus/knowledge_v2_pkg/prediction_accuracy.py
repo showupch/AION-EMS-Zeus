@@ -498,6 +498,10 @@ class PredictionAccuracyEngine:
                     result = {"status": "incomplete_hourly_evidence", "target_date": target, "hours": len(hours) if isinstance(hours, list) else 0, "reason": "missing_nested_hourly_audit" if not audit else "unexpected_hour_count", "source": "daily_forecast.solar_forecast_diagnostics.hourly_pipeline_audit"}
                     break
                 frozen = []
+                # Fail closed for shadow candidates when any hour is absent.
+                # Existing V2/array freezing remains independent.
+                shadow_valid = True
+                radiation_valid = True
                 seen = set()
                 invalid_reason = None
                 for index, row in enumerate(hours):
@@ -515,7 +519,22 @@ class PredictionAccuracyEngine:
                         invalid_reason = f"row_{index}_duplicate_timestamp"
                         break
                     seen.add(key)
-                    frozen.append({"start_utc": key, "original_w": round(original, 3), "guarded_w": round(guarded, 3)})
+                    entry = {"start_utc": key, "original_w": round(original, 3), "guarded_w": round(guarded, 3)}
+                    a = self._num(row.get("v21_without_persistent_w"))
+                    b = self._num(row.get("v21_without_legacy_w"))
+                    c = self._num(row.get("v21_diffuse_candidate_w"))
+                    if a is None or b is None or c is None or not all(math.isfinite(v) and v >= 0 for v in (a, b, c)):
+                        shadow_valid = False
+                    else:
+                        entry["without_persistent_w"] = round(a, 3)
+                        entry["without_legacy_w"] = round(b, 3)
+                        entry["diffuse_candidate_w"] = round(c, 3)
+                    radiation = self._num(row.get("v21_independent_radiation_w"))
+                    if radiation is None or not math.isfinite(radiation) or radiation < 0:
+                        radiation_valid = False
+                    else:
+                        entry["independent_radiation_w"] = round(radiation, 3)
+                    frozen.append(entry)
                 if len(frozen) != len(hours):
                     result = {"status": "invalid_hourly_evidence", "target_date": target, "reason": invalid_reason or "incomplete_rows", "accepted_hours": len(frozen)}
                     break
@@ -528,6 +547,16 @@ class PredictionAccuracyEngine:
                     "source": "forecast_daily_hourly_pipeline_audit",
                     "hour_count": len(frozen), "hours": frozen,
                     "array_candidate_frozen": array_snapshot,
+                    "v21_independent_radiation_experiment": {
+                        "status": "frozen" if radiation_valid else "incomplete_evidence",
+                        "model": "v21_independent_direct_diffuse_radiation",
+                        "candidate_kwh": round(sum(h.get("independent_radiation_w", 0.0) for h in frozen) / 1000, 3) if radiation_valid else None,
+                        "production_applied": False, "control_permission": False,
+                        "accuracy_validated": False, "no_retroactive_backfill": True},
+                    "v21_guard_experiment": {"status": "frozen" if shadow_valid else "incomplete_evidence",
+                        "model": "v21_diffuse_and_ceiling_comparison", "production_applied": False,
+                        "control_permission": False, "accuracy_validated": False,
+                        "no_retroactive_backfill": True},
                     "measurement_source": None, "actuals_paired": False,
                 })
                 self._schedule_save()
@@ -667,6 +696,37 @@ class PredictionAccuracyEngine:
                             "accuracy_validated": False,
                             "production_applied": False, "control_permission": False,
                         }
+                # Independent radiation is scored only from its immutable pre-day watts.
+                radiation_experiment = item.get("v21_independent_radiation_experiment") or {}
+                if radiation_experiment.get("status") == "frozen" and all(
+                    "independent_radiation_w" in h for h in hours
+                ):
+                    radiation_kwh = sum(h["independent_radiation_w"] for h in hours) / 1000
+                    measured_kwh = sum(r["actual_kwh"] for r in pairs)
+                    radiation_experiment["accuracy"] = {
+                        "actual_daily_kwh": round(measured_kwh, 3),
+                        "candidate_daily_kwh": round(radiation_kwh, 3),
+                        "absolute_error_kwh": round(abs(radiation_kwh - measured_kwh), 3),
+                        "signed_error_kwh": round(radiation_kwh - measured_kwh, 3),
+                        "comparison_source": "same_reconciled_recorder_hourly_actuals",
+                        "accuracy_validated": False, "production_applied": False,
+                        "control_permission": False}
+                # Score only shadow variants frozen in the same pre-day event.
+                experiment = item.get("v21_guard_experiment") or {}
+                if experiment.get("status") == "frozen" and all(
+                    "without_persistent_w" in h and "without_legacy_w" in h and "diffuse_candidate_w" in h for h in hours
+                ):
+                    actual_total = sum(r["actual_kwh"] for r in pairs)
+                    experiment["accuracy"] = {"actual_daily_kwh": round(actual_total, 3),
+                        "frozen_v2": {"forecast_kwh": round(sum(h["original_w"] for h in hours) / 1000, 3),
+                            "absolute_error_kwh": round(abs(sum(h["original_w"] for h in hours) / 1000 - actual_total), 3)},
+                        "variants": {name: {"forecast_kwh": round(sum(h[key] for h in hours) / 1000, 3),
+                            "absolute_error_kwh": round(abs(sum(h[key] for h in hours) / 1000 - actual_total), 3)}
+                            for name, key in (("without_persistent", "without_persistent_w"),
+                                               ("without_legacy_ceilings", "without_legacy_w"),
+                                               ("diffuse_aware", "diffuse_candidate_w"))},
+                        "comparison_source": "same_reconciled_recorder_hourly_actuals",
+                        "accuracy_validated": False, "production_applied": False, "control_permission": False}
                 self._schedule_save()
                 outcomes.append({"status": "paired", "target_date": target, "matched_hours": n,
                                  "included_sources": selection["included_sources"],
@@ -701,6 +761,32 @@ class PredictionAccuracyEngine:
                 "accuracy_validated": False, "production_applied": False,
                 "control_permission": False}
 
+    def _guard_experiment_summary(self) -> dict[str, Any]:
+        rows = [r for r in self._hourly_frozen if (r.get("v21_guard_experiment") or {}).get("status") == "frozen"]
+        paired = [r for r in rows if (r.get("v21_guard_experiment") or {}).get("accuracy")]
+        return {"status": "forward_comparison" if paired else "awaiting_frozen_actual_pairs",
+            "frozen_days": len(rows), "matched_days": len(paired),
+            "recent": [{"target_date": r.get("target_date"), **r["v21_guard_experiment"]["accuracy"]} for r in paired[-7:]],
+            "source": "immutable_hourly_frozen_storage", "no_retroactive_backfill": True,
+            "accuracy_validated": False, "production_applied": False, "control_permission": False}
+
+    def _independent_radiation_summary(self) -> dict[str, Any]:
+        rows = [r for r in self._hourly_frozen
+                if (r.get("v21_independent_radiation_experiment") or {}).get("status") == "frozen"]
+        paired = [r for r in rows
+                  if isinstance((r.get("v21_independent_radiation_experiment") or {}).get("accuracy"), dict)]
+        errors = [r["v21_independent_radiation_experiment"]["accuracy"]["absolute_error_kwh"]
+                  for r in paired]
+        return {
+            "status": "forward_comparison" if paired else "awaiting_frozen_actual_pairs",
+            "frozen_days": len(rows), "matched_days": len(paired),
+            "mean_absolute_error_kwh": round(sum(errors) / len(errors), 3) if errors else None,
+            "recent": [{"target_date": r.get("target_date"),
+                        **r["v21_independent_radiation_experiment"]["accuracy"]}
+                       for r in paired[-7:]],
+            "source": "immutable_hourly_frozen_storage", "no_retroactive_backfill": True,
+            "accuracy_validated": False, "production_applied": False, "control_permission": False}
+
     def hourly_evidence_summary(self) -> dict[str, Any]:
         return {
             "status": "collecting_frozen_hourly_forecasts",
@@ -711,6 +797,7 @@ class PredictionAccuracyEngine:
             "accuracy_status": "paired" if any(x.get("actuals_paired") for x in self._hourly_frozen) else "awaiting_recorder_hourly_actuals",
             "actuals_capture": dict(self._hourly_actuals_status),
             "array_candidate_forward_evidence": self._array_candidate_forward_summary(),
+            "v21_guard_experiment": self._guard_experiment_summary(),
             "production_applied": False, "control_permission": False,
         }
 
@@ -1004,6 +1091,36 @@ class PredictionAccuracyEngine:
                 "no_retroactive_backfill": True,
                 "production_applied": False, "control_permission": False,
             }
+            # Compact live preview from today's hourly pipeline. This is NOT
+            # frozen evidence and is never used to score a forecast.
+            daily_rows = (self.core.forecast.summary() or {}).get("daily_forecast") or []
+            target_day = next((d for d in daily_rows if isinstance(d, dict)
+                               and str(d.get("date")) == target), {})
+            pipeline = ((target_day.get("solar_forecast_diagnostics") or {})
+                        .get("hourly_pipeline_audit") or {})
+            preview_hours = pipeline.get("hours") or []
+            preview = []
+            for hour in preview_hours:
+                if not isinstance(hour, dict):
+                    continue
+                watts = self._num(hour.get("v21_independent_radiation_w"))
+                if watts is not None and math.isfinite(watts) and watts >= 0:
+                    preview.append({"time_local": hour.get("time_local"),
+                                    "v21_independent_radiation_w": round(watts, 1)})
+            preview_valid = len(preview_hours) in (23, 24, 25) and len(preview) == len(preview_hours)
+            result["v21_independent_radiation"] = {
+                **self._independent_radiation_summary(),
+                "target_date": target,
+                "live_preview_status": "available" if preview_valid else "incomplete_hourly_evidence",
+                "live_preview_kwh": round(sum(h["v21_independent_radiation_w"] for h in preview) / 1000, 3) if preview_valid else None,
+                "live_preview_hours": preview if preview_valid else [],
+                "live_preview_not_frozen": True,
+                "target_frozen_status": ((target_frozen.get("v21_independent_radiation_experiment") or {}).get("status")
+                                         if target_frozen else "awaiting_future_capture"),
+                "target_frozen_candidate_kwh": ((target_frozen.get("v21_independent_radiation_experiment") or {}).get("candidate_kwh")
+                                                if target_frozen else None),
+            }
+            result["v21_guard_experiment"] = self._guard_experiment_summary()
             result["evidence_audit"] = audit
             result["baseline_v2_kwh"] = round(current, 3)
             result["source"] = "existing_daily_forecast_and_frozen_recorder_outcomes"
