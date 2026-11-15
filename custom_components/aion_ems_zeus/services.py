@@ -57,6 +57,8 @@ from .const import (
     SERVICE_CLEAR_ENTITY_MAPPING,
     SERVICE_SAVE_WEATHER_SOURCE,
     SERVICE_CLEAR_WEATHER_SOURCE,
+    SERVICE_SAVE_SECONDARY_WEATHER_SOURCE,
+    SERVICE_CLEAR_SECONDARY_WEATHER_SOURCE,
     SERVICE_SAVE_LOCAL_WEATHER_STATION,
     SERVICE_CLEAR_LOCAL_WEATHER_STATION,
     SERVICE_SAVE_TARIFF_SETTINGS,
@@ -992,6 +994,32 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         await _refresh_aion_entities(hass)
 
 
+    async def save_secondary_weather_source(call: ServiceCall) -> None:
+        """Persist an optional comparison source without changing forecast authority."""
+        core = _core(hass)
+        entity_id = call.data["entity_id"]
+        state = hass.states.get(entity_id)
+        if not entity_id.startswith("weather.") or state is None:
+            raise vol.Invalid("A valid Home Assistant weather.* entity is required")
+        primary = core.registry.data.get("sources", {}).get("weather", {}).get("entity_id")
+        if entity_id == primary:
+            raise vol.Invalid("Secondary weather source must differ from primary")
+        core.registry.data.setdefault("sources", {})["weather_secondary"] = {
+            "entity_id": entity_id,
+            "enabled": True,
+            "saved_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        }
+        await core.registry.async_save()
+        await _refresh_aion_entities(hass)
+
+    async def clear_secondary_weather_source(call: ServiceCall) -> None:
+        core = _core(hass)
+        core.registry.data.setdefault("sources", {})["weather_secondary"] = {
+            "entity_id": None, "enabled": False,
+        }
+        await core.registry.async_save()
+        await _refresh_aion_entities(hass)
+
     async def save_local_weather_station(call: ServiceCall) -> None:
         """Save optional local on-site weather observation entities."""
         core = _core(hass)
@@ -1577,6 +1605,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_ENTITY_MAPPING, clear_entity_mapping, schema=vol.Schema({vol.Required("field"): vol.In(list(_core(hass).energy_mapping.FIELD_RULES))}))
     async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_WEATHER_SOURCE, save_weather_source, schema=vol.Schema({vol.Required("entity_id"): cv.entity_id}))
     async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_WEATHER_SOURCE, clear_weather_source)
+    async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_SECONDARY_WEATHER_SOURCE, save_secondary_weather_source, schema=vol.Schema({vol.Required("entity_id"): cv.entity_id}))
+    async_register_admin_service(hass, DOMAIN, SERVICE_CLEAR_SECONDARY_WEATHER_SOURCE, clear_secondary_weather_source)
     async_register_admin_service(hass, DOMAIN, SERVICE_SAVE_LOCAL_WEATHER_STATION,
         save_local_weather_station,
         schema=vol.Schema({

@@ -463,7 +463,15 @@ def _weather_context_attributes(core) -> dict[str, Any]:
             "available": item.get("available"),
             "supported_features": item.get("supported_features"),
         })
+    secondary = core.registry.data.get("sources", {}).get("weather_secondary", {})
+    secondary_id = secondary.get("entity_id") if secondary.get("enabled") else None
+    secondary_state = core.hass.states.get(secondary_id) if secondary_id else None
     return {
+        "secondary_weather_entity_id": secondary_id,
+        "secondary_weather_available": bool(secondary_state and secondary_state.state not in ("unknown", "unavailable")),
+        "secondary_weather_condition": secondary_state.state if secondary_state else None,
+        "secondary_weather_temperature": secondary_state.attributes.get("temperature") if secondary_state else None,
+        "secondary_weather_role": "comparison_only_no_production_control",
         "status": data.get("status"),
         "entity_id": data.get("entity_id"),
         "available": data.get("available"),

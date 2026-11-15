@@ -978,6 +978,467 @@ async def _websocket_grid_day_history(hass, connection, msg) -> None:
     connection.send_result(msg["id"],{"series":rows,"mappings":{"grid":grid_id,"import":import_id,"export":export_id,"house":house_id},"options":options,"source":"Home Assistant Recorder"})
 
 
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/forecast_v2_shadow_ablation"})
+@websocket_api.async_response
+async def _websocket_forecast_v2_shadow_ablation(hass, connection, msg) -> None:
+    """Read-only stage ablation for tomorrow; not a forecast or a backtest."""
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        connection.send_error(msg["id"], "not_ready", "Zeus is not ready")
+        return
+    date = (dt_util.now() + timedelta(days=1)).date().isoformat()
+    stages = (
+        ("baseline", "v2_baseline_power_w"),
+        ("after_cloud", "v2_after_cloud_before_condition_w"),
+        ("after_condition", "v2_pre_guard_power_w"),
+        ("after_legacy_ceiling", "v2_after_legacy_caps_w"),
+        ("final_v2", "v2_solar_power_w"),
+    )
+    rows = []
+    for hour in (core.forecast.summary() or {}).get("planning_hourly", []):
+        stamp = str(hour.get("time") or "")
+        if stamp[:10] != date:
+            continue
+        values = {name: (round(float(hour[key]), 2)
+                         if isinstance(hour.get(key), (int, float)) else None)
+                  for name, key in stages}
+        rows.append({"time": stamp, "condition": hour.get("condition"),
+                     "cloud_percent": hour.get("cloud_coverage"),
+                     "weather_factor": hour.get("weather_factor"),
+                     "stages_w": values})
+    totals = {name: (round(sum(row["stages_w"][name] for row in rows) / 1000, 3)
+                     if rows and all(row["stages_w"][name] is not None for row in rows)
+                     else None)
+              for name, _ in stages}
+    def difference(a, b):
+        return round(a - b, 3) if a is not None and b is not None else None
+    connection.send_result(msg["id"], {
+        "status": "ready" if rows else "unavailable",
+        "target_date": date,
+        "mode": "read_only_stage_ablation",
+        "not_a_prediction": True,
+        "warning": "Counterfactuals remove individual suppression stages without recomputing downstream logic. Not validated against actuals; do not use for controls.",
+        "hour_count": len(rows),
+        "stages_kwh": totals,
+        "isolated_stage_effects_kwh": {
+            "cloud_effect": difference(totals["after_cloud"], totals["baseline"]),
+            "condition_effect": difference(totals["after_condition"], totals["after_cloud"]),
+            "legacy_ceiling_effect": difference(totals["after_legacy_ceiling"], totals["after_condition"]),
+            "remaining_guard_effect": difference(totals["final_v2"], totals["after_legacy_ceiling"]),
+        },
+        "counterfactuals_kwh": {
+            "without_legacy_ceiling_stage": totals["after_condition"],
+            "without_condition_stage": totals["after_cloud"],
+            "without_cloud_or_condition_stages": totals["baseline"],
+        },
+        "hours": rows[:24],
+        "production_applied": False,
+        "control_permission": False,
+    })
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/recorder_daily_evidence_audit",
+    vol.Optional("days", default=21): vol.All(vol.Coerce(int), vol.Range(min=1, max=30)),
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_recorder_daily_evidence_audit(hass, connection, msg) -> None:
+    """Read-only UTC-day Recorder availability and rejection audit."""
+    from datetime import datetime, timedelta, timezone
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        connection.send_error(msg["id"], "not_ready", "Zeus is not ready")
+        return
+    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=msg["days"])
+    evidence = await core.weather_history.async_preview_recorder_irradiance_pairs(start, end)
+    connection.send_result(msg["id"], {
+        "status": evidence.get("status"),
+        "window_start_utc": start.isoformat(),
+        "window_end_utc": end.isoformat(),
+        "pv_entity": evidence.get("pv_entity"),
+        "irradiance_entity": evidence.get("irradiance_entity"),
+        "pair_count": evidence.get("pair_count", 0),
+        "raw_state_counts": evidence.get("raw_state_counts"),
+        "first_last_raw_utc": evidence.get("first_last_raw_utc"),
+        "daily_audit": evidence.get("daily_audit", []),
+        "error_type": evidence.get("error_type"),
+        "production_applied": False,
+        "control_permission": False,
+    })
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/v21_historical_calibration_readiness",
+    vol.Optional("days", default=21): vol.All(vol.Coerce(int), vol.Range(min=1, max=30)),
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_v21_historical_calibration_readiness(hass, connection, msg) -> None:
+    """Read-only evidence readiness; never fit or apply a forecast model."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        connection.send_error(msg["id"], "not_ready", "Zeus is not ready")
+        return
+    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=msg["days"])
+    evidence = await core.weather_history.async_preview_recorder_irradiance_pairs(start, end)
+    pairs = evidence.get("pairs") or []
+    local_tz = ZoneInfo(hass.config.time_zone)
+    by_day = {}
+    daylight = []
+    for pair in pairs:
+        stamp = datetime.fromisoformat(pair["hour_utc"])
+        local_day = stamp.astimezone(local_tz).date().isoformat()
+        row = by_day.setdefault(local_day, {"date_local": local_day, "pair_count": 0,
+                                             "daylight_pair_count": 0})
+        row["pair_count"] += 1
+        if pair["irradiance_mean_w_m2"] >= 20:
+            row["daylight_pair_count"] += 1
+            daylight.append(pair)
+    complete_days = sum(1 for row in by_day.values() if row["daylight_pair_count"] >= 6)
+    readiness = ("candidate_evaluation_possible" if complete_days >= 7 and len(daylight) >= 50
+                 else "insufficient_independent_daylight_evidence")
+    connection.send_result(msg["id"], {
+        "status": evidence.get("status"), "readiness": readiness,
+        "window_start_utc": start.isoformat(), "window_end_utc": end.isoformat(),
+        "pv_entity": evidence.get("pv_entity"),
+        "irradiance_entity": evidence.get("irradiance_entity"),
+        "pair_count": len(pairs), "daylight_pair_count": len(daylight),
+        "days_with_6_daylight_pairs": complete_days,
+        "daily_local": sorted(by_day.values(), key=lambda row: row["date_local"]),
+        "daylight_definition": "measured_irradiance_at_least_20_W_m2_not_solar_horizon",
+        "thresholds": {"minimum_daylight_pairs": 50, "minimum_days_with_6_daylight_pairs": 7},
+        "raw_state_counts": evidence.get("raw_state_counts"),
+        "note": "Readiness screening only; thresholds are preliminary, not statistical validation. No calibration coefficients, POA conversion, or kWh forecast are calculated.",
+        "production_applied": False, "control_permission": False,
+    })
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/east_west_geometry_preview",
+    vol.Required("target_date"): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_east_west_geometry_preview(hass, connection, msg) -> None:
+    """Read-only, uncalibrated East/West exposure diagnostic for this site.
+
+    Uses the established geometry engine, NOT an invented GHI-to-POA factor.
+    No weather-to-PV conversion is claimed, and no production state is changed.
+    """
+    from datetime import date
+    from .knowledge_v2_pkg.forecast_v21_array_geometry import geometry_shadow, geometry_solar_diagnostics
+    try:
+        day = date.fromisoformat(msg["target_date"])
+        if day.isoformat() != msg["target_date"]:
+            raise ValueError("noncanonical date")
+        if hass.config.latitude is None or hass.config.longitude is None:
+            raise ValueError("site coordinates unavailable")
+        result = geometry_shadow([
+            {"name": "East", "capacity_kwp": 12.0, "azimuth_deg": 90.0, "tilt_deg": 33.0},
+            {"name": "West", "capacity_kwp": 12.0, "azimuth_deg": 270.0, "tilt_deg": 33.0},
+        ], day.isoformat(), hass.config.latitude, hass.config.longitude, hass.config.time_zone)
+        if result.get("status") == "ready":
+            result["solar_diagnostics"] = geometry_solar_diagnostics(
+                result, day.isoformat(), hass.config.latitude, hass.config.longitude, hass.config.time_zone
+            )
+        result["geometry_source"] = "explicit_12kWp_east_12kWp_west_33deg_site_configuration"
+        result["irradiance_calibrated"] = False
+        result["production_applied"] = False
+        result["control_permission"] = False
+        connection.send_result(msg["id"], result)
+    except (TypeError, ValueError) as exc:
+        connection.send_error(msg["id"], "invalid_geometry_request", str(exc))
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/east_west_irradiance_evidence_preview",
+    vol.Optional("target_date"): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_east_west_irradiance_evidence_preview(hass, connection, msg) -> None:
+    """Read-only station irradiance evidence alongside array geometry.
+
+    No GHI/POA conversion: station mounting and direct/diffuse split unknown.
+    """
+    from datetime import date, datetime
+    from math import isfinite
+    from .knowledge_v2_pkg.forecast_v21_array_geometry import geometry_shadow, geometry_solar_diagnostics
+
+    entity_id = "sensor.ws2900_v2_02_03_solar_radiation"
+    try:
+        day_text = msg.get("target_date") or datetime.now().astimezone().date().isoformat()
+        day = date.fromisoformat(day_text)
+        if day.isoformat() != day_text:
+            raise ValueError("noncanonical date")
+        geometry = geometry_shadow([
+            {"name": "East", "capacity_kwp": 12.0, "azimuth_deg": 90.0, "tilt_deg": 33.0},
+            {"name": "West", "capacity_kwp": 12.0, "azimuth_deg": 270.0, "tilt_deg": 33.0},
+        ], day_text, hass.config.latitude, hass.config.longitude, hass.config.time_zone)
+        state = hass.states.get(entity_id)
+        reading = None
+        status = "entity_missing" if state is None else "unavailable"
+        if state is not None:
+            try:
+                value = float(state.state)
+                if isfinite(value) and 0 <= value <= 1500:
+                    reading = value
+                    status = "valid_instantaneous_reading"
+                else:
+                    status = "out_of_range"
+            except (ValueError, TypeError, OverflowError):
+                pass
+        # A valid numerical state is not necessarily a fresh measurement.
+        # Keep the original status field for backward compatibility.
+        from datetime import timezone
+        age_seconds = None
+        freshness = "unknown"
+        if state is not None and state.last_updated is not None:
+            age_seconds = max(0, round((datetime.now(timezone.utc) - state.last_updated).total_seconds()))
+            freshness = "fresh" if age_seconds <= 900 else "stale"
+        connection.send_result(msg["id"], {
+            "status": "ready" if geometry.get("status") == "ready" else "geometry_unavailable",
+            "target_date": day_text,
+            "station": {"entity_id": entity_id, "status": status,
+                        "age_seconds": age_seconds, "freshness_15min": freshness,
+                        "irradiance_w_m2": reading,
+                        "unit": state.attributes.get("unit_of_measurement") if state else None,
+                        "last_updated": state.last_updated.isoformat() if state else None,
+                        "sensor_plane": "unverified", "measurement_type": "instantaneous_state_not_hourly_average"},
+            "geometry": {"arrays": geometry.get("arrays"), "hourly": geometry.get("hourly"),
+                         "solar_diagnostics": geometry_solar_diagnostics(
+                             geometry, day_text, hass.config.latitude, hass.config.longitude,
+                             hass.config.time_zone) if geometry.get("status") == "ready" else None},
+            "irradiance_to_plane_of_array": "not_computed_sensor_plane_and_dni_dhi_unknown",
+            "estimated_array_kwh": None, "forecast_kwh": None,
+            "historical_hourly_irradiance": "not_requested",
+            "production_applied": False, "control_permission": False,
+            "note": "Diagnostic only. Current irradiance reading is not historical or forecast weather; no station-to-array conversion is inferred."
+        })
+    except (TypeError, ValueError) as exc:
+        connection.send_error(msg["id"], "invalid_irradiance_preview", str(exc))
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/weather_conditioned_day_preview",
+    vol.Required("target_date"): str,
+    vol.Required("capacity_w"): vol.All(vol.Coerce(float), vol.Range(min=1, max=1000000)),
+    vol.Optional("training_window_days", default=21): vol.All(vol.Coerce(int), vol.Range(min=7, max=30)),
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_weather_conditioned_day_preview(hass, connection, msg) -> None:
+    """Read-only full local-day preview using forecast GHI and Recorder evidence."""
+    from datetime import datetime, date, time, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    from .engines.open_meteo_radiation import fetch_radiation
+    from .weather_conditioned_baseline import candidate_from_irradiance
+
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        connection.send_error(msg["id"], "not_ready", "Zeus is not ready")
+        return
+    try:
+        target_day = date.fromisoformat(msg["target_date"])
+        if target_day.isoformat() != msg["target_date"]:
+            raise ValueError
+        tz = ZoneInfo(hass.config.time_zone)
+    except (ValueError, KeyError, TypeError):
+        connection.send_error(msg["id"], "invalid_date", "Use YYYY-MM-DD and a valid site timezone")
+        return
+    start = datetime.combine(target_day, time.min, tzinfo=tz).astimezone(timezone.utc)
+    stop = datetime.combine(target_day + timedelta(days=1), time.min, tzinfo=tz).astimezone(timezone.utc)
+    # Read no future observations, and never include the target day in training.
+    training_end = min(start, datetime.now(timezone.utc))
+    training_window_days = msg["training_window_days"]
+    evidence = await core.weather_history.async_preview_recorder_irradiance_pairs(
+        training_end - timedelta(days=training_window_days), training_end)
+    if evidence.get("status") != "ready":
+        connection.send_result(msg["id"], {"status": "evidence_unavailable",
+            "reason": evidence.get("status"), "production_applied": False,
+            "control_permission": False})
+        return
+    # A local calendar day can overlap two UTC dates (and contain 23/25 hours).
+    utc_dates = sorted({(start + timedelta(hours=h)).date().isoformat()
+                        for h in range(int((stop-start).total_seconds() // 3600))})
+    radiation = [await fetch_radiation(hass, day) for day in utc_dates]
+    rows = {datetime.fromisoformat(r["time_utc"]).astimezone(timezone.utc): r
+            for batch in radiation for r in batch.get("hours", [])}
+    hours = []
+    cursor = start
+    while cursor < stop:
+        row = rows.get(cursor)
+        if row is None:
+            result = {"status": "missing_forecast_irradiance", "candidate_w": None}
+        else:
+            result = candidate_from_irradiance(
+                evidence.get("pairs") or [], target_hour_utc=cursor,
+                forecast_irradiance_w_m2=row["shortwave_radiation_w_m2"],
+                capacity_w=msg["capacity_w"], site_timezone=hass.config.time_zone)
+            # At night a zero-irradiance forecast does not require daylight training.
+            if row["shortwave_radiation_w_m2"] == 0:
+                result = {"status": "night_zero", "candidate_w": 0.0}
+        hours.append({"hour_utc": cursor.isoformat(),
+            "local_hour": cursor.astimezone(tz).isoformat(),
+            "forecast_irradiance_w_m2": row["shortwave_radiation_w_m2"] if row else None,
+            "status": result["status"], "candidate_w": result.get("candidate_w"),
+            "training_days": result.get("training_days", 0)})
+        cursor += timedelta(hours=1)
+    unresolved = [h for h in hours if h["candidate_w"] is None]
+    connection.send_result(msg["id"], {
+        "status": "candidate_available" if not unresolved else "insufficient_evidence",
+        "target_date_local": target_day.isoformat(), "timezone": hass.config.time_zone,
+        "hour_count": len(hours), "resolved_hours": len(hours)-len(unresolved),
+        "unresolved_hours": len(unresolved),
+        "candidate_kwh": round(sum(h["candidate_w"] for h in hours)/1000, 3) if not unresolved else None,
+        "recorder_pair_count": evidence.get("pair_count", 0),
+        "training_window_days": training_window_days,
+        "daylight_hours_with_evidence": sum(1 for h in hours if h["forecast_irradiance_w_m2"] is not None and h["forecast_irradiance_w_m2"] > 0 and h["training_days"] > 0),
+        "daylight_hours_meeting_threshold": sum(1 for h in hours if h["forecast_irradiance_w_m2"] is not None and h["forecast_irradiance_w_m2"] > 0 and h["candidate_w"] is not None),
+        "radiation_sources": [r.get("source") for r in radiation],
+        "radiation_statuses": [r.get("status") for r in radiation],
+        "hours": hours, "production_applied": False, "control_permission": False,
+        "warning": "Experimental GHI-to-PV estimate; horizontal irradiance is not plane-of-array irradiance. Not validated for east/west geometry or forecast accuracy. Missing hours never silently become zero."})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/weather_conditioned_baseline_preview",
+    vol.Required("target_hour_utc"): str,
+    vol.Required("forecast_irradiance_w_m2"): vol.Coerce(float),
+    vol.Required("capacity_w"): vol.All(vol.Coerce(float), vol.Range(min=1)),
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_weather_conditioned_baseline_preview(hass, connection, msg) -> None:
+    """One-hour read-only baseline preview from verified Recorder observations."""
+    from datetime import datetime, timedelta, timezone
+    from .weather_conditioned_baseline import candidate_from_irradiance
+    from homeassistant.util import dt as dt_util
+
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        connection.send_error(msg["id"], "not_ready", "Zeus is not ready")
+        return
+    try:
+        target = datetime.fromisoformat(msg["target_hour_utc"].replace("Z", "+00:00"))
+        if target.tzinfo is None:
+            raise ValueError("timezone required")
+        target = target.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        connection.send_error(msg["id"], "invalid_target_hour", "Use an ISO timestamp with UTC offset")
+        return
+    # No future observations, and no retroactive target leakage.
+    end = min(target, dt_util.utcnow().replace(tzinfo=timezone.utc))
+    start = end - timedelta(days=7)
+    evidence = await core.weather_history.async_preview_recorder_irradiance_pairs(start, end)
+    if evidence.get("status") != "ready":
+        connection.send_result(msg["id"], {
+            "status": "evidence_unavailable",
+            "reason": evidence.get("status"),
+            "production_applied": False, "control_permission": False,
+        })
+        return
+    result = candidate_from_irradiance(
+        evidence.get("pairs") or [],
+        target_hour_utc=target,
+        forecast_irradiance_w_m2=msg["forecast_irradiance_w_m2"],
+        capacity_w=msg["capacity_w"],
+        site_timezone=hass.config.time_zone,
+    )
+    result.update({
+        "target_hour_utc": target.isoformat(),
+        "evidence_window_days": 7,
+        "recorder_pair_count": evidence.get("pair_count"),
+        "forecast_irradiance_source": "explicit_diagnostic_input",
+        "note": "One-hour preview only; does not validate solar geometry, forecast accuracy, or production suitability.",
+        "production_applied": False, "control_permission": False,
+    })
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/recorder_hourly_weather_evidence",
+    vol.Optional("days", default=2): vol.All(vol.Coerce(int), vol.Range(min=1, max=7)),
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_recorder_hourly_weather_evidence(hass, connection, msg) -> None:
+    """Read-only historical PV/irradiance evidence, never a production forecast."""
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        connection.send_error(msg["id"], "not_ready", "Zeus is not ready")
+        return
+    end = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=msg["days"])
+    result = await core.weather_history.async_preview_recorder_irradiance_pairs(start, end)
+    result["window_start_utc"] = start.isoformat()
+    result["window_end_utc"] = end.isoformat()
+    result["production_applied"] = False
+    result["control_permission"] = False
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/forecast_v2_cloud_shadow"})
+@websocket_api.async_response
+async def _websocket_forecast_v2_cloud_shadow(hass, connection, msg) -> None:
+    """Read-only comparison; no production or control mutations."""
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+
+    core = hass.data.get(DOMAIN, {}).get("core")
+    if core is None:
+        connection.send_error(msg["id"], "not_ready", "Zeus is not ready")
+        return
+    target = (dt_util.now() + timedelta(days=1)).date().isoformat()
+    hours = []
+    for item in (core.forecast.summary() or {}).get("planning_hourly", []):
+        stamp = str(item.get("time") or "")
+        if stamp[:10] != target:
+            continue
+        hours.append({
+            "time": stamp,
+            "cloud_percent": item.get("cloud_coverage"),
+            "condition": item.get("condition"),
+            "baseline_w": item.get("v2_baseline_power_w"),
+            "a_current_v2_w": item.get("v2_solar_power_w"),
+            "b_reduced_cloud_w": item.get("v230_reduced_cloud_w"),
+            "c_weather_normalized_baseline_w": None,
+        })
+    def total(field):
+        values = [r.get(field) for r in hours]
+        if not values or any(not isinstance(v, (int, float)) for v in values):
+            return None
+        return round(sum(values) / 1000.0, 3)
+    connection.send_result(msg["id"], {
+        "status": "ready" if hours else "unavailable",
+        "target_date": target,
+        "mode": "read_only_cloud_hypothesis",
+        "not_a_prediction": True,
+        "models": {
+            "a_current_v2_kwh": total("a_current_v2_w"),
+            "b_reduced_cloud_kwh": total("b_reduced_cloud_w"),
+            "c_weather_normalized_baseline_kwh": None,
+        },
+        "b_method": "Recomputed weaker cloud factor (1-cloud_percent/300) with original adverse-condition, Legacy, persistent-overcast and PV capacity guards.",
+        "c_status": "unavailable: historical weather normalization requires verified aligned hourly historical weather evidence",
+        "warning": "B is uncalibrated; C is unavailable, not zero. Tomorrow's live preview is not a frozen backtest.",
+        "hours": hours[:24],
+        "production_applied": False,
+        "control_permission": False,
+    })
+
+
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/forecast_v2_hourly_diagnostics"})
 @websocket_api.async_response
 async def _websocket_forecast_v2_hourly_diagnostics(hass, connection, msg) -> None:
@@ -1101,6 +1562,12 @@ async def _websocket_radiation_pv_shadow(hass, connection, msg) -> None:
 
 async def _async_radiation_shadow_result(hass, target_date=None):
     """Shared read-only calculation for UI and scheduled forward capture."""
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+    from homeassistant.components.recorder import get_instance, history
+    from homeassistant.components.recorder.util import session_scope
+    from .engines.open_meteo_radiation import fetch_radiation
+    from .engines.radiation_pv_shadow import estimate_radiation_pv
     core = hass.data.get(DOMAIN, {}).get("core")
     if core is None:
         return {"status":"not_ready","production_applied":False}
@@ -1177,8 +1644,10 @@ async def _async_radiation_shadow_result(hass, target_date=None):
     from .engines.radiation_pv_shadow import threshold_evidence_sensitivity
     threshold_audit=threshold_evidence_sensitivity(samples)
     result=estimate_radiation_pv(samples,radiation["hours"],local_timezone=hass.config.time_zone,min_irradiance_w_m2=30)
+    from .engines.radiation_hourly_shadow import estimate_hourly_radiation_shadow
+    hourly_shadow=estimate_hourly_radiation_shadow(samples,radiation["hours"],target_date=tomorrow,local_timezone=hass.config.time_zone)
     return {"date":tomorrow,"source_irradiance":irr,"source_pv":pv,
-            "radiation_status":radiation["status"],"evidence_diagnostic":evidence_diagnostic,"threshold_sensitivity":threshold_audit,**result}
+            "radiation_status":radiation["status"],"evidence_diagnostic":evidence_diagnostic,"threshold_sensitivity":threshold_audit,"hourly_transfer_shadow":hourly_shadow,**result}
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/radiation_forward_evidence"})
@@ -1275,6 +1744,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, _websocket_entity_authority_recorder_evidence)
         websocket_api.async_register_command(hass, _websocket_solar_irradiance_learning)
         websocket_api.async_register_command(hass, _websocket_forecast_v2_hourly_diagnostics)
+        websocket_api.async_register_command(hass, _websocket_forecast_v2_shadow_ablation)
+        websocket_api.async_register_command(hass, _websocket_forecast_v2_cloud_shadow)
+        websocket_api.async_register_command(hass, _websocket_recorder_hourly_weather_evidence)
+        websocket_api.async_register_command(hass, _websocket_recorder_daily_evidence_audit)
+        websocket_api.async_register_command(hass, _websocket_v21_historical_calibration_readiness)
+        websocket_api.async_register_command(hass, _websocket_weather_conditioned_baseline_preview)
+        websocket_api.async_register_command(hass, _websocket_weather_conditioned_day_preview)
+        websocket_api.async_register_command(hass, _websocket_east_west_geometry_preview)
+        websocket_api.async_register_command(hass, _websocket_east_west_irradiance_evidence_preview)
         websocket_api.async_register_command(hass, _websocket_open_meteo_radiation_shadow)
         websocket_api.async_register_command(hass, _websocket_radiation_pv_shadow)
         websocket_api.async_register_command(hass, _websocket_radiation_forward_evidence)

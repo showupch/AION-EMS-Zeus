@@ -240,6 +240,20 @@ clear_weather_source:
   name: Clear weather source
   description: Clear the preferred weather source. Zeus will fall back to safe auto-discovery.
 
+save_secondary_weather_source:
+  name: Save secondary weather source
+  description: Save an optional comparison-only weather entity. Never changes the production forecast source.
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          domain: weather
+
+clear_secondary_weather_source:
+  name: Clear secondary weather source
+  description: Remove the optional comparison weather entity without changing the primary source.
+
 save_tariff_settings:
   name: Save tariff settings
   description: Save fixed import/export tariffs and finance preferences.

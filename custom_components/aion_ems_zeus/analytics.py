@@ -3474,6 +3474,7 @@ class ForecastEngine:
             v2_fallback_reason = None
             v21_without_persistent_w = None
             v21_without_legacy_w = None
+            v230_reduced_cloud_w = None
             v21_diffuse_candidate_w = None
             v21_independent_radiation_w = None
             if forecast_mode == "v2":
@@ -3593,6 +3594,23 @@ class ForecastEngine:
                             if v2_solar > ceiling:
                                 v2_guard_reasons.append("cloud_legacy_ceiling")
                             v2_solar = min(v2_solar, ceiling)
+                    # Shadow-only B: weaker cloud attenuation, with all downstream
+                    # condition, Legacy and capacity guards recomputed independently.
+                    if v2_factor is not None and cloud_num is not None and weather_forecast_applied:
+                        shadow_factor = max(0.08, 1.0 - cloud_num / 300.0)
+                        if condition_key in adverse_condition_factors:
+                            shadow_factor = min(shadow_factor, adverse_condition_factors[condition_key])
+                        shadow_w = max(0.0, alternative["equal_day_w"] * shadow_factor * learned_factor)
+                        if legacy_solar is not None:
+                            if cloud_num >= 80.0:
+                                shadow_w = min(shadow_w, max(0.0, legacy_solar) * 1.25)
+                            elif cloud_num >= 60.0:
+                                shadow_w = min(shadow_w, max(0.0, legacy_solar) * 1.50)
+                            if dt.date() in persistent_overcast_days:
+                                shadow_w = min(shadow_w, max(0.0, legacy_solar))
+                        if pv_capacity_w is not None:
+                            shadow_w = min(shadow_w, pv_capacity_w)
+                        v230_reduced_cloud_w = round(shadow_w, 1)
                     v2_after_legacy_caps_w = round(v2_solar, 1) if v2_solar is not None else None
                     # Shadow-only: retain heavy-cloud ceiling, omit only
                     # persistent-overcast ceiling. No production impact.
@@ -3608,6 +3626,15 @@ class ForecastEngine:
                         v2_solar = min(v2_solar, ceiling)
                     if pv_capacity_w is not None:
                         v2_solar = min(v2_solar, pv_capacity_w)
+                    # A physically dark hour cannot generate PV. The
+                    # reconciled baseline may retain recorder noise outside
+                    # astronomical daylight; never pass that noise to energy
+                    # planning. Preserve unknown astronomy as unknown rather
+                    # than guessing a sunrise/sunset time.
+                    daylight_fraction = independent_daylight_fraction(dt)
+                    if daylight_fraction == 0.0 and v2_solar > 0:
+                        v2_guard_reasons.append("astronomical_night_zero")
+                        v2_solar = 0.0
                     v2_solar = round(v2_solar, 1)
                     v21_without_persistent_w = round(min(v21_without_persistent_w, pv_capacity_w) if pv_capacity_w is not None else v21_without_persistent_w, 1)
                     v21_without_legacy_w = round(min(v21_without_legacy_w, pv_capacity_w) if pv_capacity_w is not None else v21_without_legacy_w, 1)
@@ -3676,6 +3703,7 @@ class ForecastEngine:
                 "v2_fallback_reason": v2_fallback_reason,
                 "v21_without_persistent_w": v21_without_persistent_w,
                 "v21_without_legacy_w": v21_without_legacy_w,
+                "v230_reduced_cloud_w": v230_reduced_cloud_w,
                 "v21_diffuse_candidate_w": v21_diffuse_candidate_w,
                 "v21_independent_radiation_w": v21_independent_radiation_w,
                 "adaptive_correction_percent": round(contextual_correction_percent, 1),
