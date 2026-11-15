@@ -301,3 +301,215 @@ def array_energy_candidate_shadow(geometry, weather_shadow, *,
                                 "Do not compare as a validated forecast; frozen pre-day snapshots and actuals are required"]}
     except (TypeError, ValueError, KeyError, OverflowError):
         return {**result, "status": "invalid_hourly_evidence"}
+
+def subhourly_geometry_comparison(arrays, target_date, latitude, longitude, timezone_name):
+    """Read-only direct-beam geometry sensitivity; no weather or forecast kWh.
+
+    Compare the existing midpoint exposure with 5-minute sampled exposure.
+    A low-sun air-mass proxy is reported separately, never applied to V2/V2.1.
+    """
+    from math import sqrt
+    zone = ZoneInfo(str(timezone_name))
+    day = date.fromisoformat(str(target_date))
+    lat, lon = float(latitude), float(longitude)
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return {"status": "invalid_location", "production_applied": False}
+    if not isinstance(arrays, list) or not arrays:
+        return {"status": "not_configured", "production_applied": False}
+    prepared = []
+    for a in arrays[:12]:
+        try:
+            capacity = float(a["capacity_kwp"])
+            azimuth = float(a["azimuth_deg"])
+            tilt = float(a["tilt_deg"])
+            if not all(isfinite(x) for x in (capacity, azimuth, tilt)):
+                raise ValueError()
+            if not (0 < capacity <= 1000 and 0 <= azimuth < 360 and 0 <= tilt <= 90):
+                raise ValueError()
+        except (TypeError, KeyError, ValueError, OverflowError):
+            return {"status": "invalid_array", "production_applied": False}
+        prepared.append((capacity, radians(azimuth), radians(tilt)))
+    start = datetime.combine(day, datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
+    end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
+    phi = radians(lat)
+
+    def exposure(t):
+        local = t.astimezone(zone)
+        n = local.timetuple().tm_yday
+        hour = local.hour + local.minute/60 + local.second/3600
+        gamma = 2*pi/365 * (n-1+(hour-12)/24)
+        eq = 229.18*(0.000075+0.001868*cos(gamma)-0.032077*sin(gamma)-0.014615*cos(2*gamma)-0.040849*sin(2*gamma))
+        decl = (0.006918-0.399912*cos(gamma)+0.070257*sin(gamma)-0.006758*cos(2*gamma)+0.000907*sin(2*gamma)-0.002697*cos(3*gamma)+0.00148*sin(3*gamma))
+        utc = t.astimezone(timezone.utc)
+        ha = radians(((utc.hour*60+utc.minute+utc.second/60)+eq+4*lon)/4-180)
+        east = -cos(decl)*sin(ha)
+        north = cos(phi)*sin(decl)-sin(phi)*cos(decl)*cos(ha)
+        up = sin(phi)*sin(decl)+cos(phi)*cos(decl)*cos(ha)
+        if up <= 0:
+            return 0., 0.
+        total = sum(cap*max(0.,up*cos(tilt)+sin(tilt)*(north*cos(az)+east*sin(az)))
+                    for cap,az,tilt in prepared)
+        # Illustrative horizon sensitivity only: not an irradiance model.
+        proxy = min(1., max(0., up)/sin(radians(15)))
+        return total, total*proxy
+    rows = []
+    t = start
+    while t < end:
+        stop = min(t+timedelta(hours=1), end)
+        span = (stop-t).total_seconds()
+        midpoint = t+(stop-t)/2
+        midpoint_value, _ = exposure(midpoint)
+        n = max(1,round(span/300))
+        samples = [exposure(t+timedelta(seconds=span*(i+0.5)/n)) for i in range(n)]
+        integrated = sum(v for v,_ in samples)/n
+        low_sun = sum(v for _,v in samples)/n
+        rows.append({
+            "hour_local": midpoint.astimezone(zone).strftime("%Y-%m-%d %H:%M %z"),
+            "midpoint_relative_exposure": round(midpoint_value,5),
+            "five_minute_relative_exposure": round(integrated,5),
+            "illustrative_low_sun_proxy_exposure": round(low_sun,5),
+            "difference_percent": round(100*(integrated/midpoint_value-1),2) if midpoint_value else None,
+        })
+        t = stop
+    return {"status": "ready", "target_date": str(day),
+            "method": "NOAA_geometry_midpoint_vs_5_minute_samples",
+            "hourly": rows,
+            "midpoint_sum": round(sum(x["midpoint_relative_exposure"] for x in rows),4),
+            "five_minute_sum": round(sum(x["five_minute_relative_exposure"] for x in rows),4),
+            "limitations": "Relative direct-beam exposure only; low-sun proxy illustrative, not validated irradiance, weather or kWh",
+            "production_applied": False, "control_permission": False}
+
+def clear_sky_irradiance_sensitivity(arrays, target_date, latitude, longitude, timezone_name):
+    """Read-only Haurwitz clear-sky GHI and direct-plane sensitivity.
+
+    Haurwitz estimates horizontal global irradiance, not DNI or DHI.
+    The direct-plane conversion below uses an explicitly assumed diffuse
+    fraction; it is an exploratory scenario, not a validated PV forecast.
+    """
+    zone = ZoneInfo(str(timezone_name))
+    day = date.fromisoformat(str(target_date))
+    lat, lon = float(latitude), float(longitude)
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return {"status": "invalid_location", "production_applied": False}
+    if not isinstance(arrays, list) or not arrays:
+        return {"status": "not_configured", "production_applied": False}
+    prepared = []
+    for a in arrays[:12]:
+        try:
+            capacity = float(a["capacity_kwp"])
+            azimuth = float(a["azimuth_deg"])
+            tilt = float(a["tilt_deg"])
+            if not all(isfinite(v) for v in (capacity, azimuth, tilt)):
+                raise ValueError()
+            if not (0 < capacity <= 1000 and 0 <= azimuth < 360 and 0 <= tilt <= 90):
+                raise ValueError()
+        except (TypeError, KeyError, ValueError, OverflowError):
+            return {"status": "invalid_array", "production_applied": False}
+        prepared.append((capacity, radians(azimuth), radians(tilt)))
+    phi = radians(lat)
+    diffuse_fraction = 0.15  # sensitivity assumption, not measured
+    def sample(t):
+        local = t.astimezone(zone)
+        n = local.timetuple().tm_yday
+        hour = local.hour + local.minute/60 + local.second/3600
+        gamma = 2*pi/365*(n-1+(hour-12)/24)
+        eq = 229.18*(0.000075+0.001868*cos(gamma)-0.032077*sin(gamma)-0.014615*cos(2*gamma)-0.040849*sin(2*gamma))
+        decl = (0.006918-0.399912*cos(gamma)+0.070257*sin(gamma)-0.006758*cos(2*gamma)+0.000907*sin(2*gamma)-0.002697*cos(3*gamma)+0.00148*sin(3*gamma))
+        utc = t.astimezone(timezone.utc)
+        ha = radians(((utc.hour*60+utc.minute+utc.second/60)+eq+4*lon)/4-180)
+        east = -cos(decl)*sin(ha)
+        north = cos(phi)*sin(decl)-sin(phi)*cos(decl)*cos(ha)
+        up = sin(phi)*sin(decl)+cos(phi)*cos(decl)*cos(ha)
+        if up <= 0:
+            return 0.,0.,0.
+        # Haurwitz empirical clear-sky GHI (W/m2).
+        ghi = 1098*up*exp(-0.059/up)
+        dhi = diffuse_fraction*ghi
+        dni = (ghi-dhi)/up
+        poa = 0.
+        for capacity, az, tilt in prepared:
+            incidence = max(0.,up*cos(tilt)+sin(tilt)*(north*cos(az)+east*sin(az)))
+            poa += capacity*(dni*incidence+dhi*(1+cos(tilt))/2)
+        return ghi,poa,up
+    start = datetime.combine(day,datetime.min.time(),tzinfo=zone).astimezone(timezone.utc)
+    end = datetime.combine(day+timedelta(days=1),datetime.min.time(),tzinfo=zone).astimezone(timezone.utc)
+    rows=[]
+    t=start
+    while t<end:
+        stop=min(t+timedelta(hours=1),end)
+        duration=(stop-t).total_seconds()
+        n=max(1,round(duration/300))
+        values=[sample(t+timedelta(seconds=duration*(i+0.5)/n)) for i in range(n)]
+        mid=t+(stop-t)/2
+        rows.append({
+            "hour_local":mid.astimezone(zone).strftime("%Y-%m-%d %H:%M %z"),
+            "clear_sky_ghi_w_m2":round(sum(x[0] for x in values)/n,2),
+            "clear_sky_weighted_poa_w_m2_kwp":round(sum(x[1] for x in values)/n,2),
+            "daylight_fraction":round(sum(x[2]>0 for x in values)/n,3)
+        })
+        t=stop
+    return {
+        "status":"ready", "target_date":str(day),
+        "method":"Haurwitz_clear_sky_GHI_5_minute_integrated",
+        "diffuse_fraction_assumed":diffuse_fraction,
+        "hourly":rows,
+        "production_applied":False,"control_permission":False,
+        "limitations":"Haurwitz GHI with assumed diffuse fraction; no measured DNI/DHI, weather, horizon, temperature, clipping, shading, or calibration; weighted POA is not kWh"
+    }
+
+def physical_candidate_from_frozen_weather(clear_sky, frozen_hourly, capacity_kwp,
+                                           performance_ratio=0.8):
+    """Read-only scenario; never use current weather to revise a frozen forecast.
+
+    A physical candidate is withheld unless every daylight hour has an
+    explicit, valid frozen attenuation factor. Historical snapshots lacking
+    this evidence are not backfilled.
+    """
+    base = {"status": "unavailable", "candidate_kwh": None,
+            "production_applied": False, "control_permission": False,
+            "accuracy_validated": False,
+            "model": "haurwitz_5_minute_ghi_assumed_diffuse_frozen_weather_sensitivity"}
+    if clear_sky.get("status") != "ready":
+        return {**base, "status": "missing_clear_sky_geometry"}
+    if not isinstance(frozen_hourly, list):
+        return {**base, "status": "missing_frozen_weather"}
+    try:
+        capacity = float(capacity_kwp)
+        ratio = float(performance_ratio)
+        if not (isfinite(capacity) and capacity > 0 and isfinite(ratio) and 0 < ratio <= 1):
+            return {**base, "status": "invalid_parameters"}
+        weather_by_hour = {row.get("hour_local"): row for row in frozen_hourly
+                           if isinstance(row, dict) and isinstance(row.get("hour_local"), str)}
+        if len(weather_by_hour) != len(clear_sky["hourly"]):
+            return {**base, "status": "incomplete_frozen_weather"}
+        result = []
+        for hour in clear_sky["hourly"]:
+            weather = weather_by_hour.get(hour["hour_local"])
+            if weather is None:
+                return {**base, "status": "unmatched_frozen_weather"}
+            ghi = float(hour["clear_sky_ghi_w_m2"])
+            factor = weather.get("weather_attenuation_factor")
+            if ghi > 0:
+                if factor is None:
+                    return {**base, "status": "missing_hourly_attenuation"}
+                factor = float(factor)
+                if not isfinite(factor) or not 0 <= factor <= 1:
+                    return {**base, "status": "invalid_hourly_attenuation"}
+            else:
+                factor = 0.
+            # Sum(capacity_kWp * assumed POA W/m²) / 1000 W/m²,
+            # multiplied by PR and a one-hour interval -> kWh.
+            energy = max(0., float(hour["clear_sky_weighted_poa_w_m2_kwp"])) / 1000 * ratio * factor
+            result.append({"hour_local": hour["hour_local"],
+                           "clear_sky_scenario_kwh": round(energy, 4),
+                           "frozen_weather_attenuation_factor": round(factor, 5)})
+        return {**base, "status": "scenario_available",
+                "candidate_kwh": round(sum(row["clear_sky_scenario_kwh"] for row in result), 3),
+                "hourly": result,
+                "assumptions": {"performance_ratio": ratio, "diffuse_fraction": 0.15,
+                                "hourly_interval_hours": 1,
+                                "weather_factor": "frozen_existing_heuristic",
+                                "no_measured_dni_dhi": True},
+                "limitations": "Scenario only; uncalibrated clear-sky decomposition, temperature, shading, clipping and weather attenuation"}
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return {**base, "status": "invalid_frozen_evidence"}

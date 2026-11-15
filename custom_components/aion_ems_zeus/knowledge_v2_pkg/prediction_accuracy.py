@@ -458,12 +458,38 @@ class PredictionAccuracyEngine:
             hourly = candidate.get("hourly") or []
             if len(hourly) != geometry.get("hour_count"):
                 return {**base, "status": "incomplete_hourly_candidate"}
+            # Freeze the contemporaneous weather evidence and solar geometry.
+            # Only new snapshots receive these fields; old snapshots remain immutable.
+            from .forecast_v21_array_geometry import geometry_solar_diagnostics
+            solar = geometry_solar_diagnostics(
+                geometry, target, config.latitude, config.longitude,
+                str(config.time_zone or "UTC"))
+            weather_hours = {
+                h.get("hour_local"): h for h in (adjusted.get("hourly") or [])
+                if isinstance(h, dict)
+            }
+            solar_hours = {
+                h.get("hour_local"): h for h in (solar.get("hourly_solar_position") or [])
+                if isinstance(h, dict)
+            }
             # Keep immutable compact per-hour values and the assumptions used.
             return {**base, "status": "frozen", "candidate_kwh": candidate["candidate_kwh"],
                     "array_candidates": candidate.get("array_candidates") or [],
-                    "hourly": [{"hour_local": h.get("hour_local"),
-                                "total_candidate_kwh": h.get("total_candidate_kwh")}
-                               for h in hourly],
+                    "hourly": [{
+                        "hour_local": h.get("hour_local"),
+                        "total_candidate_kwh": h.get("total_candidate_kwh"),
+                        "array_candidate_kwh": h.get("array_candidate_kwh"),
+                        "weather_condition": (weather_hours.get(h.get("hour_local")) or {}).get("condition"),
+                        "cloud_coverage": (weather_hours.get(h.get("hour_local")) or {}).get("cloud_coverage"),
+                        "weather_attenuation_factor": (weather_hours.get(h.get("hour_local")) or {}).get("attenuation_factor"),
+                        "attenuated_array_exposure": (weather_hours.get(h.get("hour_local")) or {}).get("attenuated_array_exposure"),
+                        "solar_elevation_deg": (solar_hours.get(h.get("hour_local")) or {}).get("solar_elevation_deg"),
+                        "solar_azimuth_deg": (solar_hours.get(h.get("hour_local")) or {}).get("solar_azimuth_deg"),
+                        "direct_beam_incidence_factors": [
+                            a.get("direct_beam_incidence_factor")
+                            for a in ((solar_hours.get(h.get("hour_local")) or {}).get("arrays") or [])
+                        ],
+                    } for h in hourly],
                     "assumptions": candidate.get("assumptions") or {},
                     "model": candidate.get("model"), "calibrated": False}
         except (AttributeError, TypeError, ValueError, KeyError, ImportError, OverflowError) as exc:
@@ -760,6 +786,130 @@ class PredictionAccuracyEngine:
                     for item in self._hourly_frozen),
                 "accuracy_validated": False, "production_applied": False,
                 "control_permission": False}
+
+    def _physical_candidate_parallel_diagnostic(self) -> dict[str, Any]:
+        """Compare only truly frozen weather evidence; do not backfill old days."""
+        from .forecast_v21_array_geometry import (
+            clear_sky_irradiance_sensitivity, physical_candidate_from_frozen_weather)
+        try:
+            home = (self.core.settings_api.summary() or {}).get("home_settings") or {}
+            arrays = list(home.get("pv_arrays") or [])[:12]
+            capacity = sum(float(a["capacity_kwp"]) for a in arrays)
+            cfg = self.core.hass.config
+            days = []
+            for item in list(self._hourly_frozen)[-10:]:
+                frozen = item.get("array_candidate_frozen") or {}
+                if frozen.get("status") != "frozen":
+                    continue
+                target = item.get("target_date")
+                if not target:
+                    continue
+                clear = clear_sky_irradiance_sensitivity(
+                    arrays, target, cfg.latitude, cfg.longitude,
+                    str(cfg.time_zone or "UTC"))
+                scenario = physical_candidate_from_frozen_weather(
+                    clear, frozen.get("hourly"), capacity)
+                days.append({
+                    "target_date": target,
+                    "frozen_original_candidate_kwh": frozen.get("candidate_kwh"),
+                    "scenario": scenario,
+                    "frozen_original_unchanged": True,
+                })
+            return {"status": "read_only", "days": days,
+                    "production_applied": False, "control_permission": False,
+                    "note": "Old snapshots without frozen weather factors are explicitly withheld"}
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            return {"status": "unavailable", "reason": type(exc).__name__,
+                    "production_applied": False, "control_permission": False}
+
+    def _clear_sky_irradiance_diagnostic(self) -> dict[str, Any]:
+        """Compare physical clear-sky irradiance scenarios without affecting V2."""
+        try:
+            from .forecast_v21_array_geometry import clear_sky_irradiance_sensitivity
+            home = (self.core.settings_api.summary() or {}).get("home_settings") or {}
+            arrays = list(home.get("pv_arrays") or [])[:12]
+            cfg = self.core.hass.config
+            return {
+                "status": "read_only",
+                "days": [clear_sky_irradiance_sensitivity(
+                    arrays, d, cfg.latitude, cfg.longitude, str(cfg.time_zone or "UTC"))
+                    for d in ("2026-11-13", "2026-11-14")],
+                "production_applied": False, "control_permission": False,
+            }
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            return {"status": "unavailable", "reason": type(exc).__name__,
+                    "production_applied": False, "control_permission": False}
+
+    def _array_geometry_integration_diagnostic(self) -> dict[str, Any]:
+        """Read-only model sensitivity for the two historically difficult dates."""
+        try:
+            from .forecast_v21_array_geometry import subhourly_geometry_comparison
+            home = (self.core.settings_api.summary() or {}).get("home_settings") or {}
+            arrays = list(home.get("pv_arrays") or [])[:12]
+            cfg = self.core.hass.config
+            return {
+                "status": "read_only",
+                "days": [subhourly_geometry_comparison(
+                    arrays, d, cfg.latitude, cfg.longitude, str(cfg.time_zone or "UTC"))
+                    for d in ("2026-11-13", "2026-11-14")],
+                "production_applied": False, "control_permission": False,
+                "note": "Sensitivity diagnostic only; not a new calibrated forecast",
+            }
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            return {"status": "unavailable", "reason": type(exc).__name__,
+                    "production_applied": False, "control_permission": False}
+
+    def _array_candidate_error_analysis(self) -> dict[str, Any]:
+        """Read-only triage of the November 13/14 frozen daily forecast errors."""
+        results = []
+        for target in ("2026-11-13", "2026-11-14"):
+            item = next((x for x in self._hourly_frozen
+                         if x.get("target_date") == target and x.get("actuals_paired")), None)
+            if item is None:
+                results.append({"target_date": target, "status": "missing_paired_snapshot"})
+                continue
+            acc = item.get("accuracy") or {}
+            candidate = item.get("array_candidate_accuracy") or {}
+            frozen = item.get("array_candidate_frozen") or {}
+            try:
+                actual = float(acc["actual_daily_kwh"])
+                v2 = float(acc["original_daily_kwh"])
+                v21 = float(candidate["candidate_daily_kwh"])
+                if not all(math.isfinite(x) and x >= 0 for x in (actual, v2, v21)):
+                    raise ValueError("invalid evidence")
+            except (TypeError, ValueError, KeyError, OverflowError):
+                results.append({"target_date": target, "status": "incomplete_daily_evidence"})
+                continue
+            hourly = []
+            for row in frozen.get("hourly") or []:
+                if not isinstance(row, dict):
+                    continue
+                val = self._num(row.get("total_candidate_kwh"))
+                if val is None or not math.isfinite(val) or val < 0:
+                    continue
+                hourly.append({"hour_local": row.get("hour_local"),
+                               "v21_frozen_kwh": round(val, 4)})
+            results.append({
+                "target_date": target, "status": "paired",
+                "actual_daily_kwh": round(actual, 3),
+                "v2_frozen_daily_kwh": round(v2, 3),
+                "v21_frozen_daily_kwh": round(v21, 3),
+                "v2_signed_error_kwh": round(v2 - actual, 3),
+                "v21_signed_error_kwh": round(v21 - actual, 3),
+                "v21_vs_v2_delta_kwh": round(v21 - v2, 3),
+                "frozen_hourly_candidate": hourly,
+                "frozen_model_assumptions": frozen.get("assumptions") or {},
+                "hourly_weather_attribution": (
+                    "frozen_input_evidence_available"
+                    if any("weather_attenuation_factor" in h for h in (frozen.get("hourly") or []))
+                    else "unavailable_not_frozen"),
+                "hourly_actuals": "unavailable_not_persisted",
+                "causal_conclusion": "not_established",
+            })
+        return {"status": "read_only_error_triage", "days": results,
+                "source": "immutable_frozen_forecasts_and_paired_daily_actuals",
+                "production_applied": False, "control_permission": False,
+                "accuracy_validated": False}
 
     def _array_candidate_paired_comparison(self) -> dict[str, Any]:
         """Read-only matched-day comparison of immutable V2 and V2.1 forecasts."""
@@ -1122,6 +1272,10 @@ class PredictionAccuracyEngine:
                                   if item.get("target_date") == target), None)
             frozen_array = (target_frozen or {}).get("array_candidate_frozen") or {}
             result["array_candidate_paired_comparison"] = self._array_candidate_paired_comparison()
+            result["array_candidate_error_analysis"] = self._array_candidate_error_analysis()
+            result["array_geometry_integration_diagnostic"] = self._array_geometry_integration_diagnostic()
+            result["clear_sky_irradiance_diagnostic"] = self._clear_sky_irradiance_diagnostic()
+            result["physical_candidate_parallel_diagnostic"] = self._physical_candidate_parallel_diagnostic()
             result["array_candidate_forward_evidence"] = {
                 **self._array_candidate_forward_summary(),
                 "target_date": target,
