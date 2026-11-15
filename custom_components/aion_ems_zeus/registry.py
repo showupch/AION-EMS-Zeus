@@ -647,7 +647,7 @@ class RegistryEngine:
             "backup_count": len(self.data.get("backups", [])),
             "audit_count": len(self.data.get("audit", [])),
             "entity_mappings": dict(self.data.get("entity_mappings", {})),
-            "devices": self.data.get("devices", [])[:20],
+            "devices": list(self.data.get("devices", [])),
             "rooms": self.data.get("rooms", [])[:20],
             "groups": self.data.get("groups", [])[:20],
             "sites": self.data.get("sites", [])[:10],

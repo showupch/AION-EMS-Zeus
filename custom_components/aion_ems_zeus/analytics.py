@@ -3471,6 +3471,8 @@ class ForecastEngine:
             v2_after_cloud_before_condition_w = None
             v2_after_condition_before_caps_w = None
             v2_after_legacy_caps_w = None
+            v2_legacy_ceiling_counterfactual_w = None
+            v2_legacy_ceiling_counterfactual_guards = []
             v2_fallback_reason = None
             v21_without_persistent_w = None
             v21_without_legacy_w = None
@@ -3578,22 +3580,38 @@ class ForecastEngine:
                         daylight_share = independent_daylight_fraction(dt)
                         v21_independent_radiation_w = (max(0.0, alternative["equal_day_w"] * radiation_factor) * daylight_share
                                                       if daylight_share is not None else None)
-                    # Missing weather is unknown, not zero or assumed clear.
-                    # Conservative weather guard: under heavy clouds, V2 may
-                    # not greatly exceed the already weather-adjusted Legacy
-                    # estimate. This is a safety bound, NOT learned accuracy.
-                    # Missing cloud evidence is never treated as clear sky.
+                    # Read-only reconstruction of v16.0.565 Legacy-relative
+                    # ceilings, using the SAME baseline and weather inputs as
+                    # the active v16.0.566 calculation. Never feed this value
+                    # into planning, frozen forecasts or controls.
+                    old_ceiling_w = max(0.0, v2_solar)
                     if weather_forecast_applied and cloud_num is not None and legacy_solar is not None:
                         if cloud_num >= 80.0:
-                            ceiling = max(0.0, legacy_solar) * 1.25
-                            if v2_solar > ceiling:
-                                v2_guard_reasons.append("heavy_cloud_legacy_ceiling")
-                            v2_solar = min(v2_solar, ceiling)
+                            limit = max(0.0, legacy_solar) * 1.25
+                            if old_ceiling_w > limit:
+                                v2_legacy_ceiling_counterfactual_guards.append("heavy_cloud_legacy_ceiling")
+                            old_ceiling_w = min(old_ceiling_w, limit)
                         elif cloud_num >= 60.0:
-                            ceiling = max(0.0, legacy_solar) * 1.50
-                            if v2_solar > ceiling:
-                                v2_guard_reasons.append("cloud_legacy_ceiling")
-                            v2_solar = min(v2_solar, ceiling)
+                            limit = max(0.0, legacy_solar) * 1.50
+                            if old_ceiling_w > limit:
+                                v2_legacy_ceiling_counterfactual_guards.append("cloud_legacy_ceiling")
+                            old_ceiling_w = min(old_ceiling_w, limit)
+                    if v2_factor is not None and dt.date() in persistent_overcast_days and legacy_solar is not None:
+                        limit = max(0.0, legacy_solar)
+                        if old_ceiling_w > limit:
+                            v2_legacy_ceiling_counterfactual_guards.append("persistent_overcast_ceiling")
+                        old_ceiling_w = min(old_ceiling_w, limit)
+                    if pv_capacity_w is not None:
+                        old_ceiling_w = min(old_ceiling_w, pv_capacity_w)
+                    if independent_daylight_fraction(dt) == 0.0:
+                        old_ceiling_w = 0.0
+                    v2_legacy_ceiling_counterfactual_w = round(old_ceiling_w, 1)
+                    # v16.0.566 LOCAL: do not cap the reconciled V2 baseline
+                    # against Legacy's independently weather-attenuated value.
+                    # That cross-model ceiling double-constrains V2, and can
+                    # systematically suppress output when historical baselines
+                    # differ. The numeric cloud and adverse-condition guards
+                    # above remain in force. This is a LOCAL evaluation change.
                     # Shadow-only B: weaker cloud attenuation, with all downstream
                     # condition, Legacy and capacity guards recomputed independently.
                     if v2_factor is not None and cloud_num is not None and weather_forecast_applied:
@@ -3615,15 +3633,9 @@ class ForecastEngine:
                     # Shadow-only: retain heavy-cloud ceiling, omit only
                     # persistent-overcast ceiling. No production impact.
                     v21_without_persistent_w = max(0.0, v2_solar)
-                    # Persistent overcast: the V2 lighter-cloud candidate
-                    # must not exceed the weather-adjusted Legacy estimate.
-                    # This is a conservative upper bound, not a calibrated
-                    # forecast or a replacement for site irradiance learning.
-                    if v2_factor is not None and dt.date() in persistent_overcast_days and legacy_solar is not None:
-                        ceiling = max(0.0, legacy_solar)
-                        if v2_solar > ceiling:
-                            v2_guard_reasons.append("persistent_overcast_ceiling")
-                        v2_solar = min(v2_solar, ceiling)
+                    # v16.0.566 LOCAL: persistent-overcast Legacy-relative
+                    # ceiling removed from V2. Weather opacity and adverse
+                    # conditions remain applied before this point.
                     if pv_capacity_w is not None:
                         v2_solar = min(v2_solar, pv_capacity_w)
                     # A physically dark hour cannot generate PV. The
@@ -3652,6 +3664,7 @@ class ForecastEngine:
                     v2_guard_reasons.append("historical_baseline_missing_legacy_fallback")
                     v2_fallback_reason = "historical_baseline_missing"
                     v2_solar = legacy_solar
+                    v2_legacy_ceiling_counterfactual_w = legacy_solar
                     v2_pre_guard_power_w = legacy_solar
                     adjusted_solar = legacy_solar
                     # Baseline fallback is not evidence for ceiling removal.
@@ -3691,6 +3704,8 @@ class ForecastEngine:
                 "solar_power_w": adjusted_solar,
                 "legacy_solar_power_w": legacy_solar,
                 "v2_solar_power_w": v2_solar,
+                "v2_legacy_ceiling_counterfactual_w": v2_legacy_ceiling_counterfactual_w,
+                "v2_legacy_ceiling_counterfactual_guards": v2_legacy_ceiling_counterfactual_guards,
                 "forecast_engine_mode": forecast_mode,
                 "v2_guard_reasons": v2_guard_reasons,
                 "v2_baseline_days": v2_baseline_days,
@@ -4309,6 +4324,8 @@ class ForecastEngine:
                     "hour": forecast_hour.get("hour"),
                     "legacy_w": legacy_w,
                     "v2_w": v2_w,
+                    "old_v2_with_legacy_ceilings_w": forecast_hour.get("v2_legacy_ceiling_counterfactual_w"),
+                    "old_ceiling_guards": forecast_hour.get("v2_legacy_ceiling_counterfactual_guards") or [],
                     "effective_w": effective_w,
                     "baseline_days": forecast_hour.get("v2_baseline_days"),
                     "baseline_w": forecast_hour.get("v2_baseline_power_w"),
@@ -4325,6 +4342,19 @@ class ForecastEngine:
                     return None
                 return round(sum(values) / 1000.0, 3)
 
+            old_v2_kwh = _audit_kwh("v2_legacy_ceiling_counterfactual_w")
+            new_v2_kwh = path_audit["v2_kwh"]
+            path_audit["legacy_ceiling_removal_comparison"] = {
+                "status": "available_read_only" if old_v2_kwh is not None and new_v2_kwh is not None else "incomplete_evidence",
+                "target_date": target_date.isoformat(),
+                "old_v2_with_legacy_ceilings_kwh": old_v2_kwh,
+                "new_v2_without_legacy_ceilings_kwh": new_v2_kwh,
+                "difference_kwh": round(new_v2_kwh - old_v2_kwh, 3) if old_v2_kwh is not None and new_v2_kwh is not None else None,
+                "same_hourly_baseline_and_weather": True,
+                "read_only_old_model": True,
+                "production_applied": False,
+                "note": "Current live input counterfactual; not a frozen pre-day accuracy comparison",
+            }
             path_audit["baseline_kwh"] = _audit_kwh("v2_baseline_power_w")
             path_audit["pre_guard_kwh"] = _audit_kwh("v2_pre_guard_power_w")
             path_audit["weather_change_kwh"] = (
@@ -4387,7 +4417,7 @@ class ForecastEngine:
                     if combined_complete else None
                 ),
                 "historical_baseline_method": "canonical_energy_reconciled_recent_p80_hourly_envelope",
-                "cloud_attenuation_method": "numeric_cloud_150_with_adverse_weather_and_overcast_ceilings",
+                "cloud_attenuation_method": "numeric_cloud_150_with_adverse_weather_without_legacy_relative_ceilings",
                 "site_bias_multiplier": 1.0,
                 "bias_calibration_status": "disabled_pending_verified_out_of_sample_evidence",
                 "historical_days_minimum": min(
