@@ -741,6 +741,37 @@ async def _websocket_heat_pump_monthly_energy(hass, connection, msg) -> None:
                     for detail in allocation_diagnostics.values():
                         detail["derived_grid_channels"] = sorted(derived_grid)
                         detail["grid_derivation"] = "positive import / negative export from signed hourly mean; intra-hour direction changes may cancel"
+                # Fallback for power entities without long-term hourly statistics.
+                # State history is never used to invent earlier measurements: a
+                # complete hour must be evidenced by frequent valid samples.
+                missing_stat_ids = [eid for eid in required if not (power_data.get(eid) or [])]
+                if missing_stat_ids:
+                    from homeassistant.components.recorder import get_instance, history
+                    from homeassistant.components.recorder.util import session_scope
+                    from .heat_pump_history_fallback import hourly_means
+                    history_start = dt_util.as_utc(boundaries[0])
+                    history_end = dt_util.as_utc(min(now, boundaries[-1])).replace(
+                        minute=0, second=0, microsecond=0)
+                    def _query_missing_power_history():
+                        with session_scope(hass=hass, read_only=True) as session:
+                            return history.get_significant_states_with_session(
+                                hass, session, history_start, history_end,
+                                missing_stat_ids, None, True, False, False, True)
+                    raw_history = await get_instance(hass).async_add_executor_job(
+                        _query_missing_power_history)
+                    fallback_counts = {}
+                    for eid in missing_stat_ids:
+                        unit = next((units[k] for k, value in source_ids.items()
+                                     if value == eid), None)
+                        points = hourly_means((raw_history or {}).get(eid, []),
+                                              history_start, history_end, unit)
+                        if points:
+                            power_data[eid] = points
+                        fallback_counts[eid] = len(points)
+                    for detail in allocation_diagnostics.values():
+                        detail['state_history_fallback_hours'] = fallback_counts
+                        detail['state_history_fallback_policy'] = (
+                            'complete hours only; >=95% coverage; <=20-minute sample gaps')
                 # Recorder statistics requested in W regardless of entity units.
                 normalized_units = {key: "W" for key in source_ids}
                 for i, row in enumerate(rows):
