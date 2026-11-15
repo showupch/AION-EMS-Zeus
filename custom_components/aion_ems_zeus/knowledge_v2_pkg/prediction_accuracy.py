@@ -761,6 +761,48 @@ class PredictionAccuracyEngine:
                 "accuracy_validated": False, "production_applied": False,
                 "control_permission": False}
 
+    def _array_candidate_paired_comparison(self) -> dict[str, Any]:
+        """Read-only matched-day comparison of immutable V2 and V2.1 forecasts."""
+        rows = []
+        for item in self._hourly_frozen:
+            if not item.get("actuals_paired"):
+                continue
+            candidate = item.get("array_candidate_accuracy")
+            accuracy = item.get("accuracy")
+            if not isinstance(candidate, dict) or not isinstance(accuracy, dict):
+                continue
+            try:
+                actual = float(accuracy["actual_daily_kwh"])
+                v2 = float(accuracy["original_daily_kwh"])
+                v21 = float(candidate["candidate_daily_kwh"])
+                candidate_actual = float(candidate["actual_daily_kwh"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if not all(math.isfinite(x) and x >= 0 for x in (actual, v2, v21, candidate_actual)):
+                continue
+            if abs(actual - candidate_actual) > 0.02:
+                continue
+            e2, e21 = abs(v2 - actual), abs(v21 - actual)
+            rows.append({"target_date": item.get("target_date"),
+                         "actual_kwh": round(actual, 3),
+                         "v2_frozen_kwh": round(v2, 3),
+                         "v21_frozen_kwh": round(v21, 3),
+                         "v2_absolute_error_kwh": round(e2, 3),
+                         "v21_absolute_error_kwh": round(e21, 3),
+                         "winner": "v21" if e21 < e2 else "v2" if e2 < e21 else "tie"})
+        n = len(rows)
+        return {"status": "paired_comparison" if n else "awaiting_matched_frozen_days",
+                "matched_days": n,
+                "v2_mae_kwh": round(sum(r["v2_absolute_error_kwh"] for r in rows) / n, 3) if n else None,
+                "v21_mae_kwh": round(sum(r["v21_absolute_error_kwh"] for r in rows) / n, 3) if n else None,
+                "v2_wins": sum(r["winner"] == "v2" for r in rows),
+                "v21_wins": sum(r["winner"] == "v21" for r in rows),
+                "ties": sum(r["winner"] == "tie" for r in rows),
+                "recent": rows[-14:],
+                "source": "immutable_frozen_hourly_predictions_and_same_recorder_actuals",
+                "production_applied": False, "accuracy_validated": False,
+                "control_permission": False}
+
     def _guard_experiment_summary(self) -> dict[str, Any]:
         rows = [r for r in self._hourly_frozen if (r.get("v21_guard_experiment") or {}).get("status") == "frozen"]
         paired = [r for r in rows if (r.get("v21_guard_experiment") or {}).get("accuracy")]
@@ -797,6 +839,7 @@ class PredictionAccuracyEngine:
             "accuracy_status": "paired" if any(x.get("actuals_paired") for x in self._hourly_frozen) else "awaiting_recorder_hourly_actuals",
             "actuals_capture": dict(self._hourly_actuals_status),
             "array_candidate_forward_evidence": self._array_candidate_forward_summary(),
+            "array_candidate_paired_comparison": self._array_candidate_paired_comparison(),
             "v21_guard_experiment": self._guard_experiment_summary(),
             "production_applied": False, "control_permission": False,
         }
@@ -1078,6 +1121,7 @@ class PredictionAccuracyEngine:
             target_frozen = next((item for item in reversed(self._hourly_frozen)
                                   if item.get("target_date") == target), None)
             frozen_array = (target_frozen or {}).get("array_candidate_frozen") or {}
+            result["array_candidate_paired_comparison"] = self._array_candidate_paired_comparison()
             result["array_candidate_forward_evidence"] = {
                 **self._array_candidate_forward_summary(),
                 "target_date": target,

@@ -7,6 +7,8 @@ from typing import Any
 
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
+from ..verified_irradiance_history import capture_hourly_pair
+from ..irradiance_evidence_quality import evidence_quality
 
 STORAGE_VERSION = 1
 STORAGE_KEY = "aion_ems_zeus.weather_history"
@@ -359,9 +361,38 @@ class WeatherHistoryEngine:
         if hasattr(self.core.weather, "async_refresh_forecast"):
             await self.core.weather.async_refresh_forecast()
         weather = self.core.weather.summary() or {}
+        now = dt_util.now(); day = now.date().isoformat()
+        # Observations are independent of forecast-provider availability.
+        # Capture before the weather availability guard, and persist valid
+        # samples even when regional forecasts are offline.
+        sources = (self.core.registry.data.get("sources") or {})
+        station = (sources.get("local_weather_station") or {})
+        irradiance_entity = ((station.get("entities") or {}).get("solar_radiation")
+                             if station.get("enabled") else None)
+        # Use the same mapping object as the existing historical-energy code.
+        # Core has energy_flow.mapping; energy_mapping is not a guaranteed API.
+        # Reuse the authoritative energy mapping used by Zeus's radiation endpoint.
+        pv_entity = (getattr(getattr(self.core, "energy_mapping", None), "mappings", {}) or {}).get("solar_power")
+        if not pv_entity:
+            pv_entity = (getattr(getattr(getattr(self.core, "energy_flow", None), "mapping", None),
+                          "mappings", {}) or {}).get("solar_power")
+        if irradiance_entity and pv_entity and irradiance_entity != pv_entity:
+            outcome = capture_hourly_pair(
+                self.data, now=now,
+                irradiance=self.hass.states.get(irradiance_entity),
+                pv=self.hass.states.get(pv_entity),
+                irradiance_entity=irradiance_entity, pv_entity=pv_entity,
+            )
+            self.data.setdefault("metadata", {})["last_irradiance_pair_capture"] = outcome
+            if outcome.get("status") == "captured":
+                await self.store.async_save(self.data)
+        else:
+            self.data.setdefault("metadata", {})["last_irradiance_pair_capture"] = {
+                "status": "skipped",
+                "reason": "local_irradiance_or_pv_mapping_unavailable",
+            }
         if not weather.get("available"):
             self.refresh(); return
-        now = dt_util.now(); day = now.date().isoformat()
         days_store = self.data.setdefault("days", {})
         # Finalize every older local-calendar record before opening/updating the
         # current day. This makes the day lifecycle explicit and prevents the
@@ -719,8 +750,50 @@ class WeatherHistoryEngine:
             },
             "storage": "Weather observations in Home Assistant storage; completed energy totals loaded from Recorder long-term statistics.",
             "recorder_safe": True,
+            "hourly_irradiance_pv_quality": evidence_quality(self.data.get("verified_hourly_irradiance_pv", {})),
+            "hourly_irradiance_pv_evidence": {
+                "status": "collecting_unvalidated_samples",
+                "sample_count": len(self.data.get("verified_hourly_irradiance_pv", {})),
+                "last_capture": (self.data.get("metadata") or {}).get("last_irradiance_pair_capture"),
+                "latest_hours_utc": sorted(self.data.get("verified_hourly_irradiance_pv", {}))[-3:],
+                "used_by_forecast": False,
+                "note": "These are paired sensor snapshots, not verified hourly averages or weather-normalized training days.",
+            },
         }
         return self.last
+
+    async def async_preview_recorder_irradiance_pairs(self, start: datetime, end: datetime) -> dict[str, Any]:
+        """Read-only, explicitly invoked Recorder evidence preview; not forecast input."""
+        from ..recorder_hourly_pairs import read_recorder_hourly_pairs
+        sources = self.core.registry.data.get("sources") or {}
+        station = sources.get("local_weather_station") or {}
+        rad = ((station.get("entities") or {}).get("solar_radiation")
+               if station.get("enabled") else None)
+        # Reuse the authoritative energy mapping used by Zeus's radiation endpoint.
+        pv = (getattr(getattr(self.core, "energy_mapping", None), "mappings", {}) or {}).get("solar_power")
+        if not pv:
+            pv = (getattr(getattr(getattr(self.core, "energy_flow", None), "mapping", None),
+                          "mappings", {}) or {}).get("solar_power")
+        if not rad or not pv or rad == pv:
+            return {"status": "missing_mappings", "used_by_forecast": False, "pairs": []}
+        if end <= start or (end-start) > timedelta(days=30):
+            return {"status": "invalid_window", "used_by_forecast": False, "pairs": []}
+        try:
+            evidence = await read_recorder_hourly_pairs(
+                self.hass, pv, rad, start, end, include_diagnostics=True)
+        except Exception as exc:
+            return {"status": "recorder_unavailable", "error_type": type(exc).__name__,
+                    "used_by_forecast": False, "pairs": []}
+        pairs = evidence["pairs"]
+        return {"status": "ready", "pv_entity": pv, "irradiance_entity": rad,
+                "pair_count": len(pairs), "pairs": pairs, "used_by_forecast": False,
+                "raw_state_counts": evidence["raw_state_counts"],
+                "daily_audit": evidence.get("daily_audit", []),
+                "first_last_raw_utc": evidence.get("first_last_raw_utc"),
+                "recorded_units": evidence["recorded_units"],
+                "hourly_validation": evidence["hourly_validation"],
+                "rejected_hours": evidence["rejected_hours"],
+                "diagnostic_note": evidence["note"]}
 
     def summary(self) -> dict[str, Any]: return self.last
     def recorder_summary(self) -> dict[str, Any]:

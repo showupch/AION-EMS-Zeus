@@ -83,6 +83,69 @@ def geometry_shadow(arrays, target_date, latitude, longitude, timezone_name):
         return {**result, "status": "invalid_configuration", "reason": type(exc).__name__}
 
 
+
+
+def geometry_solar_diagnostics(geometry, target_date, latitude, longitude, timezone_name):
+    """Independent read-only solar-position evidence; never alters exposure results."""
+    from math import asin, atan2
+    zone = ZoneInfo(str(timezone_name))
+    day = date.fromisoformat(str(target_date))
+    lat, lon = float(latitude), float(longitude)
+    phi = radians(lat)
+
+    def position(instant):
+        local = instant.astimezone(zone)
+        n = local.timetuple().tm_yday
+        hour = local.hour + local.minute / 60 + local.second / 3600
+        gamma = 2*pi/365 * (n-1+(hour-12)/24)
+        eq = 229.18*(0.000075+0.001868*cos(gamma)-0.032077*sin(gamma)-0.014615*cos(2*gamma)-0.040849*sin(2*gamma))
+        decl = (0.006918-0.399912*cos(gamma)+0.070257*sin(gamma)-0.006758*cos(2*gamma)+0.000907*sin(2*gamma)-0.002697*cos(3*gamma)+0.00148*sin(3*gamma))
+        utc = instant.astimezone(timezone.utc)
+        minutes_utc = utc.hour*60 + utc.minute + utc.second/60
+        ha = radians((minutes_utc+eq+4*lon)/4-180)
+        east = -cos(decl)*sin(ha)
+        north = cos(phi)*sin(decl)-sin(phi)*cos(decl)*cos(ha)
+        up = sin(phi)*sin(decl)+cos(phi)*cos(decl)*cos(ha)
+        return degrees(asin(max(-1., min(1., up)))), (degrees(atan2(east, north))+360)%360, (east,north,up)
+
+    start = datetime.combine(day, datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
+    end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
+    crossings = []
+    t = start
+    prev_elev = position(t)[0]
+    while t < end:
+        nxt = min(t + timedelta(minutes=1), end)
+        next_elev = position(nxt)[0]
+        if (prev_elev <= 0 < next_elev) or (prev_elev > 0 >= next_elev):
+            low, high = t, nxt
+            rising = prev_elev <= 0
+            for _ in range(12):
+                mid = low + (high-low)/2
+                if (position(mid)[0] > 0) == rising:
+                    high = mid
+                else:
+                    low = mid
+            crossing = (low + (high-low)/2).astimezone(zone)
+            crossings.append({"type": "sunrise" if rising else "sunset", "local": crossing.isoformat(timespec="seconds")})
+        t, prev_elev = nxt, next_elev
+
+    rows = []
+    for hour in geometry.get("hourly", []):
+        stamp = datetime.strptime(hour["hour_local"], "%Y-%m-%d %H:%M %z").astimezone(timezone.utc)
+        elevation, azimuth, (east,north,up) = position(stamp)
+        factors = []
+        for array in geometry.get("arrays", []):
+            slope = radians(float(array["tilt_deg"]))
+            facing = radians(float(array["azimuth_deg"]))
+            incidence = max(0., up*cos(slope)+sin(slope)*(north*cos(facing)+east*sin(facing))) if up > 0 else 0.
+            factors.append({"name": array["name"], "direct_beam_incidence_factor": round(incidence, 5)})
+        rows.append({"hour_local": hour["hour_local"], "solar_elevation_deg": round(elevation, 3),
+                     "solar_azimuth_deg": round(azimuth, 3), "arrays": factors})
+    return {"method": "NOAA_fractional_year_geometric_horizon_no_refraction",
+            "horizon_definition": "solar_center_elevation_0_deg",
+            "sun_events": crossings, "hourly_solar_position": rows,
+            "note": "Geometric horizon only; Home Assistant sun events may differ due to refraction and solar-disc correction."}
+
 # Weather-aware diagnostic is deliberately separate from the existing geometry
 # and V2 forecast. Cloud cover is a coarse attenuation proxy, not measured
 # irradiance or a calibrated PV power/energy prediction.
