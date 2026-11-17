@@ -568,11 +568,13 @@ class PredictionAccuracyEngine:
                 # evidence event as the existing V2 hourly forecast. The
                 # candidate is not recalculated when evaluating later actuals.
                 array_snapshot = self._freeze_array_candidate(target)
+                diffuse_snapshot = self._freeze_diffuse_candidate(target, array_snapshot)
                 self._hourly_frozen.append({
                     "target_date": target, "captured_at_utc": now.isoformat(),
                     "source": "forecast_daily_hourly_pipeline_audit",
                     "hour_count": len(frozen), "hours": frozen,
                     "array_candidate_frozen": array_snapshot,
+                    "diffuse_forward_frozen": diffuse_snapshot,
                     "v21_independent_radiation_experiment": {
                         "status": "frozen" if radiation_valid else "incomplete_evidence",
                         "model": "v21_independent_direct_diffuse_radiation",
@@ -722,6 +724,19 @@ class PredictionAccuracyEngine:
                             "accuracy_validated": False,
                             "production_applied": False, "control_permission": False,
                         }
+                diffuse_frozen = item.get("diffuse_forward_frozen") or {}
+                if diffuse_frozen.get("status") == "frozen":
+                    predicted = self._num(diffuse_frozen.get("candidate_kwh"))
+                    measured = sum(r["actual_kwh"] for r in pairs)
+                    if predicted is not None and math.isfinite(predicted) and predicted >= 0:
+                        item["diffuse_forward_accuracy"] = {
+                            "actual_daily_kwh": round(measured, 3),
+                            "candidate_daily_kwh": round(predicted, 3),
+                            "absolute_error_kwh": round(abs(predicted - measured), 3),
+                            "signed_error_kwh": round(predicted - measured, 3),
+                            "comparison_source": "same_reconciled_recorder_hourly_actuals",
+                            "production_applied": False, "control_permission": False,
+                            "accuracy_validated": False}
                 # Independent radiation is scored only from its immutable pre-day watts.
                 radiation_experiment = item.get("v21_independent_radiation_experiment") or {}
                 if radiation_experiment.get("status") == "frozen" and all(
@@ -821,6 +836,72 @@ class PredictionAccuracyEngine:
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
             return {"status": "unavailable", "reason": type(exc).__name__,
                     "production_applied": False, "control_permission": False}
+
+    def _freeze_diffuse_candidate(self, target: str, array_snapshot: dict) -> dict:
+        """Freeze an independent pre-day diffuse candidate, fail closed on missing evidence."""
+        from .forecast_v21_array_geometry import clear_sky_irradiance_sensitivity
+        from .forecast_v21_diffuse_sensitivity import diffuse_sensitivity
+        base = {"status": "unavailable", "candidate_kwh": None,
+                "production_applied": False, "control_permission": False,
+                "accuracy_validated": False, "no_retroactive_backfill": True}
+        try:
+            if array_snapshot.get("status") != "frozen":
+                return {**base, "status": "missing_frozen_array_weather"}
+            home = (self.core.settings_api.summary() or {}).get("home_settings") or {}
+            arrays = list(home.get("pv_arrays") or [])[:12]
+            cfg = self.core.hass.config
+            clear = clear_sky_irradiance_sensitivity(
+                arrays, target, cfg.latitude, cfg.longitude, str(cfg.time_zone or "UTC"))
+            result = diffuse_sensitivity(clear, array_snapshot.get("hourly"))
+            if result.get("status") != "scenario_available":
+                return {**base, "status": result.get("status", "invalid_evidence")}
+            return {**base, "status": "frozen", "candidate_kwh": result["candidate_kwh"],
+                    "hourly": result["hourly"], "assumptions": result["assumptions"],
+                    "model": "diffuse_floor_frozen_weather_forward_v1"}
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            return {**base, "status": "capture_unavailable", "reason": type(exc).__name__}
+
+    def _diffuse_forward_summary(self) -> dict[str, Any]:
+        """Only score genuinely pre-day frozen diffuse candidates."""
+        rows = [{"target_date": item.get("target_date"), **item["diffuse_forward_accuracy"]}
+                for item in self._hourly_frozen
+                if isinstance(item.get("diffuse_forward_accuracy"), dict)]
+        errors = [r["absolute_error_kwh"] for r in rows]
+        return {"status": "forward_comparison" if rows else "awaiting_forward_pairs",
+                "matched_days": len(rows),
+                "mean_absolute_error_kwh": round(sum(errors) / len(errors), 3) if errors else None,
+                "recent": rows[-7:], "production_applied": False,
+                "control_permission": False, "accuracy_validated": False,
+                "no_retroactive_backfill": True}
+
+    def _diffuse_sensitivity_diagnostic(self) -> dict[str, Any]:
+        """Read-only scenarios; NEVER scored as frozen predictions."""
+        from .forecast_v21_array_geometry import clear_sky_irradiance_sensitivity
+        from .forecast_v21_diffuse_sensitivity import diffuse_sensitivity
+        try:
+            home = (self.core.settings_api.summary() or {}).get("home_settings") or {}
+            arrays = list(home.get("pv_arrays") or [])[:12]
+            cfg = self.core.hass.config
+            days = []
+            for item in list(self._hourly_frozen)[-10:]:
+                frozen = item.get("array_candidate_frozen") or {}
+                if frozen.get("status") != "frozen" or not item.get("target_date"):
+                    continue
+                target = item["target_date"]
+                clear = clear_sky_irradiance_sensitivity(
+                    arrays, target, cfg.latitude, cfg.longitude,
+                    str(cfg.time_zone or "UTC"))
+                scenario = diffuse_sensitivity(clear, frozen.get("hourly"))
+                days.append({"target_date": target, "scenario": scenario,
+                             "original_frozen_unchanged": True})
+            return {"status": "read_only", "days": days,
+                    "production_applied": False, "control_permission": False,
+                    "comparison_eligible": False,
+                    "note": "Retrospective frozen-input sensitivity, not forward validation"}
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            return {"status": "unavailable", "reason": type(exc).__name__,
+                    "production_applied": False, "control_permission": False,
+                    "comparison_eligible": False}
 
     def _clear_sky_irradiance_diagnostic(self) -> dict[str, Any]:
         """Compare physical clear-sky irradiance scenarios without affecting V2."""
@@ -1276,6 +1357,13 @@ class PredictionAccuracyEngine:
             result["array_geometry_integration_diagnostic"] = self._array_geometry_integration_diagnostic()
             result["clear_sky_irradiance_diagnostic"] = self._clear_sky_irradiance_diagnostic()
             result["physical_candidate_parallel_diagnostic"] = self._physical_candidate_parallel_diagnostic()
+            result["diffuse_sensitivity_diagnostic"] = self._diffuse_sensitivity_diagnostic()
+            result["diffuse_forward_evidence"] = {
+                **self._diffuse_forward_summary(),
+                "target_date": target,
+                "target_frozen_status": ((target_frozen or {}).get("diffuse_forward_frozen") or {}).get("status", "not_captured"),
+                "target_frozen_candidate_kwh": ((target_frozen or {}).get("diffuse_forward_frozen") or {}).get("candidate_kwh"),
+            }
             result["array_candidate_forward_evidence"] = {
                 **self._array_candidate_forward_summary(),
                 "target_date": target,
