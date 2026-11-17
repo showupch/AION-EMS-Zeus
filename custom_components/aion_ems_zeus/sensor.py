@@ -1528,6 +1528,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 # while compacting the sensor attributes, which made the kiosk hide DHW.
                 "separate_heating_dhw_measurements": hp.get("separate_heating_dhw_measurements"),
                 "circuit_efficiency": hp.get("circuit_efficiency"),
+                # Experimental total-input evidence is separate from existing COP.
+                # Only bounded summaries enter the Recorder-safe sensor attributes.
+                "total_input_efficiency": {
+                    period: {
+                        "status": evidence.get("status", "unavailable"),
+                        "value": evidence.get("value"),
+                        "reason": evidence.get("reason"),
+                        "coverage_start": evidence.get("coverage_start"),
+                        "coverage_end": evidence.get("coverage_end"),
+                        "matched_hours": evidence.get("matched_hours"),
+                    }
+                    for period, evidence in (
+                        (period, (row.get("total_input_efficiency") or {}).get(period) or {})
+                        for period in ("day", "week", "month", "year")
+                    )
+                    if evidence
+                },
                 "heating_electrical_power_configured": hp.get("heating_electrical_power_configured"),
                 "heating_thermal_power_configured": hp.get("heating_thermal_power_configured"),
                 "heating_electrical_energy_configured": hp.get("heating_electrical_energy_configured"),

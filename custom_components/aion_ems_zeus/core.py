@@ -324,6 +324,8 @@ class AionCore:
 
         await self._async_startup_step("weather_history_load", self.weather_history.async_load)
         await self._async_startup_step("recorder_energy", self.device_analytics.async_refresh_recorder_energy)
+        # Read-only, bounded heat-pump evidence: startup only, not the live 5s loop.
+        await self._async_startup_step("heat_pump_total_input", self.device_analytics.async_refresh_total_input_if_due)
         await self._async_startup_step("device_analytics", self.device_analytics.refresh)
         await self._async_startup_step("device_energy_attribution", self.device_energy_attribution.async_refresh)
         await self._async_startup_step("battery_history", self.analytics.async_refresh_ha_energy_battery)
@@ -774,6 +776,8 @@ class AionCore:
         await self.intelligence_memory.async_capture_today()
         await self.weather_history.async_capture_today()
         await self.device_analytics.async_refresh_recorder_energy()
+        # Daily capture refresh; the reader enforces its own 15-minute guard.
+        await self.device_analytics.async_refresh_total_input_if_due()
         self.device_analytics.refresh()
         await self.device_energy_attribution.async_refresh()
         await self.analytics.async_refresh_ha_energy_battery()

@@ -92,6 +92,7 @@ class RegistryEngine:
         # v9 migration: classify every existing energy entity without deleting data.
         heat_pump_optional_fields = (
             "cop_entity", "thermal_power_entity", "thermal_energy_entity",
+            "total_input_electrical_energy_entity", "total_input_thermal_energy_entity",
             "supply_temperature_entity", "return_temperature_entity",
             "outdoor_temperature_entity", "compressor_state_entity",
             "compressor_runtime_entity", "compressor_starts_entity",
@@ -216,6 +217,8 @@ class RegistryEngine:
         cop_entity: str | None = None,
         thermal_power_entity: str | None = None,
         thermal_energy_entity: str | None = None,
+        total_input_electrical_energy_entity: str | None = None,
+        total_input_thermal_energy_entity: str | None = None,
         supply_temperature_entity: str | None = None,
         return_temperature_entity: str | None = None,
         outdoor_temperature_entity: str | None = None,
@@ -355,6 +358,8 @@ class RegistryEngine:
             "cop_entity": cop_entity,
             "thermal_power_entity": thermal_power_entity,
             "thermal_energy_entity": thermal_energy_entity,
+            "total_input_electrical_energy_entity": total_input_electrical_energy_entity,
+            "total_input_thermal_energy_entity": total_input_thermal_energy_entity,
             "supply_temperature_entity": supply_temperature_entity,
             "return_temperature_entity": return_temperature_entity,
             "outdoor_temperature_entity": outdoor_temperature_entity,

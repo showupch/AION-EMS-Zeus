@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 import voluptuous as vol
 
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     DOMAIN,
@@ -89,6 +92,7 @@ from .const import (
 
 
 REGISTERED = False
+_LOGGER = logging.getLogger(__name__)
 
 
 def _core(hass: HomeAssistant):
@@ -147,6 +151,8 @@ def _device_schema(require_all=True):
         vol.Optional("cop_entity"): _entity_id_or_empty,
         vol.Optional("thermal_power_entity"): _entity_id_or_empty,
         vol.Optional("thermal_energy_entity"): _entity_id_or_empty,
+        vol.Optional("total_input_electrical_energy_entity"): _entity_id_or_empty,
+        vol.Optional("total_input_thermal_energy_entity"): _entity_id_or_empty,
         vol.Optional("supply_temperature_entity"): _entity_id_or_empty,
         vol.Optional("return_temperature_entity"): _entity_id_or_empty,
         vol.Optional("outdoor_temperature_entity"): _entity_id_or_empty,
@@ -261,6 +267,8 @@ def _device_update_schema():
         vol.Optional("cop_entity"): _entity_id_or_empty,
         vol.Optional("thermal_power_entity"): _entity_id_or_empty,
         vol.Optional("thermal_energy_entity"): _entity_id_or_empty,
+        vol.Optional("total_input_electrical_energy_entity"): _entity_id_or_empty,
+        vol.Optional("total_input_thermal_energy_entity"): _entity_id_or_empty,
         vol.Optional("supply_temperature_entity"): _entity_id_or_empty,
         vol.Optional("return_temperature_entity"): _entity_id_or_empty,
         vol.Optional("outdoor_temperature_entity"): _entity_id_or_empty,
@@ -498,6 +506,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             cop_entity=call.data.get("cop_entity"),
             thermal_power_entity=call.data.get("thermal_power_entity"),
             thermal_energy_entity=call.data.get("thermal_energy_entity"),
+            total_input_electrical_energy_entity=call.data.get("total_input_electrical_energy_entity"),
+            total_input_thermal_energy_entity=call.data.get("total_input_thermal_energy_entity"),
             supply_temperature_entity=call.data.get("supply_temperature_entity"),
             return_temperature_entity=call.data.get("return_temperature_entity"),
             outdoor_temperature_entity=call.data.get("outdoor_temperature_entity"),
@@ -605,6 +615,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             "power_entity", "energy_entity",
             "state_entity", "availability_entity", "solar_power_entity",
             "temperature_entity", "cop_entity", "thermal_power_entity", "thermal_energy_entity",
+            "total_input_electrical_energy_entity", "total_input_thermal_energy_entity",
             "supply_temperature_entity", "return_temperature_entity", "outdoor_temperature_entity",
             "compressor_state_entity", "compressor_runtime_entity", "compressor_starts_entity",
             "dhw_temperature_entity", "dhw_energy_entity", "heating_energy_entity", "cooling_energy_entity",
@@ -683,6 +694,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             cop_entity=merged.get("cop_entity", existing.get("cop_entity")),
             thermal_power_entity=merged.get("thermal_power_entity", existing.get("thermal_power_entity")),
             thermal_energy_entity=merged.get("thermal_energy_entity", existing.get("thermal_energy_entity")),
+            total_input_electrical_energy_entity=merged.get("total_input_electrical_energy_entity", existing.get("total_input_electrical_energy_entity")),
+            total_input_thermal_energy_entity=merged.get("total_input_thermal_energy_entity", existing.get("total_input_thermal_energy_entity")),
             supply_temperature_entity=merged.get("supply_temperature_entity", existing.get("supply_temperature_entity")),
             return_temperature_entity=merged.get("return_temperature_entity", existing.get("return_temperature_entity")),
             outdoor_temperature_entity=merged.get("outdoor_temperature_entity", existing.get("outdoor_temperature_entity")),
@@ -1557,6 +1570,44 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         )
 
     # Register services explicitly, once.
+    async def refresh_heat_pump_total_input_year(call: ServiceCall) -> None:
+        """Explicit read-only annual efficiency request, never a periodic query."""
+        core = _core(hass)
+        from homeassistant.util import dt as dt_util
+        requested_id = str(call.data.get("device_id") or "").strip()
+        heat_pumps = [device for device in core.registry.data.get("devices", [])
+                      if str(device.get("type") or "") == "heat_pump" and device.get("id")]
+        if not requested_id:
+            if len(heat_pumps) != 1:
+                raise ValueError("Specify a registered heat pump device_id")
+            requested_id = str(heat_pumps[0]["id"])
+        if not any(str(device["id"]) == requested_id for device in heat_pumps):
+            raise ValueError("Unknown or unavailable heat pump device_id")
+        now = dt_util.now()
+        await core.device_analytics.async_refresh_total_input_periods(
+            now, str(hass.config.time_zone or "UTC"), periods=("year",), device_id=requested_id
+        )
+        core.device_analytics.refresh()
+        # Resolve the live entity ID by its stable unique ID. Users can rename
+        # the entity in Home Assistant; the originally suggested ID is not stable.
+        entity_id = er.async_get(hass).async_get_entity_id(
+            "sensor", DOMAIN, f"{DOMAIN}_heat_pump_intelligence"
+        )
+        if entity_id and hass.states.get(entity_id) is not None:
+            await hass.services.async_call(
+                "homeassistant", "update_entity",
+                {"entity_id": entity_id}, blocking=True,
+            )
+        else:
+            # Annual Recorder evidence is already stored in analytics; a
+            # disabled/removed sensor must not turn that successful read into
+            # a service error or trigger updates of unrelated sensors.
+            _LOGGER.warning(
+                "Heat Pump Intelligence entity unavailable; Year evidence updated "
+                "but sensor notification skipped (entity_id=%s)", entity_id
+            )
+
+    hass.services.async_register(DOMAIN, "refresh_heat_pump_total_input_year", refresh_heat_pump_total_input_year, schema=vol.Schema({vol.Optional("device_id"): cv.string}))
     async_register_admin_service(hass, DOMAIN, SERVICE_EXPORT_REGISTRY, export_registry)
     async_register_admin_service(hass, DOMAIN, SERVICE_BACKUP_REGISTRY, backup_registry)
     async_register_admin_service(hass, DOMAIN, SERVICE_RESTORE_LATEST_BACKUP, restore_latest_backup)
@@ -1909,6 +1960,7 @@ async def async_unload_services(hass: HomeAssistant) -> None:
         return
     services = [
         SERVICE_EXPORT_REGISTRY, SERVICE_BACKUP_REGISTRY, SERVICE_RESTORE_LATEST_BACKUP, SERVICE_RELOAD_REGISTRY,
+        "refresh_heat_pump_total_input_year",
         SERVICE_REFRESH_ENTITY_DISCOVERY,
     SERVICE_REFRESH_ENERGY_MAPPING,
     SERVICE_REFRESH_ENERGY_FLOW, SERVICE_REFRESH_INTEGRATION_HUB, SERVICE_REFRESH_DATA_BUS,

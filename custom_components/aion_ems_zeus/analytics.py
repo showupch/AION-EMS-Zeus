@@ -6,6 +6,8 @@ from .heat_pump_power import choose_circuit_power, is_whole_system_meter
 import math
 
 from .heat_pump_spf import circuit_efficiency
+from .heat_pump_recorder_reader import HeatPumpRecorderReader
+from .heat_pump_period_windows import completed_period_windows
 from .device_roles import is_consuming_load
 from .period_authority import canonical_period_windows, date_in_period
 from .forecast_v2_baseline import reconciled_hourly_baseline
@@ -6047,7 +6049,98 @@ class DeviceAnalyticsEngine:
         self._compressor_power_evidence: dict[str, dict[str, Any]] = {}
         self._compressor_power_debug: dict[str, dict[str, Any]] = {}
         self._compressor_history_status: dict[str, Any] = {"status": "Not loaded", "entity_count": 0, "row_count": 0}
+        self._hp_total_input_reader = HeatPumpRecorderReader(hass)
+        self._hp_total_input_evidence: dict[str, dict[str, Any]] = {}
+        self._hp_total_input_last_refresh_at: datetime | None = None
+        self._hp_total_input_last_error: str | None = None
 
+
+    async def async_refresh_total_input_efficiency(self, start, end) -> dict[str, dict[str, Any]]:
+        """Optional, explicitly scheduled read-only Recorder evidence refresh.
+
+        Never call this from the high-frequency synchronous refresh(). A future
+        scheduler should provide aligned, completed hourly boundaries, and
+        period-specific windows. This method does not alter energy totals.
+        """
+        results: dict[str, dict[str, Any]] = {}
+        for device in self.registry.data.get("devices", []):
+            if str(device.get("type") or "") != "heat_pump":
+                continue
+            device_id = str(device.get("id") or "").strip()
+            if not device_id:
+                continue
+            results[device_id] = await self._hp_total_input_reader.get(device, start, end)
+        self._hp_total_input_evidence = results
+        return results
+
+    async def async_refresh_total_input_periods(self, now, tz_name: str, periods=("day", "week", "month", "year"), *, device_id: str | None = None) -> dict[str, dict[str, Any]]:
+        """Collect independent period evidence without publishing stale concurrent results."""
+        windows = completed_period_windows(now, tz_name)
+        allowed = {"day", "week", "month", "year"}
+        if any(period not in allowed for period in periods):
+            raise ValueError("Unknown efficiency reporting period")
+        devices = [device for device in self.registry.data.get("devices", [])
+                   if str(device.get("type") or "") == "heat_pump" and device.get("id")]
+        if device_id is not None:
+            devices = [device for device in devices if str(device["id"]) == device_id]
+            if not devices:
+                raise ValueError("Unknown registered heat pump device")
+        # Reserve a monotonically increasing request token before the first await.
+        # Tokens are scoped to each device and period; independent periods cannot
+        # suppress each other. A failed newer request does not destroy valid evidence.
+        tokens = getattr(self, "_hp_total_input_request_tokens", None)
+        if tokens is None:
+            tokens = {}
+            self._hp_total_input_request_tokens = tokens
+        requests = []
+        for device in devices:
+            device_id = str(device["id"])
+            for period in periods:
+                key = (device_id, period)
+                token = tokens.get(key, 0) + 1
+                tokens[key] = token
+                requests.append((device, device_id, period, token))
+        for device, device_id, period, token in requests:
+            start, end = windows[period]
+            if start >= end:
+                candidate = {"status": "no_completed_hours", "value": None}
+            else:
+                candidate = await self._hp_total_input_reader.get(device, start, end, allow_partial_year=(period == "year"))
+            # A newer request for the same device/period has started. Its result
+            # takes precedence, regardless of completion order.
+            if tokens.get((device_id, period)) != token:
+                continue
+            existing = getattr(self, "_hp_total_input_evidence", None) or {}
+            current = existing.get(device_id, {}).get(period)
+            if (isinstance(candidate, dict)
+                    and candidate.get("status") in {"error", "recorder_error", "service_error"}
+                    and isinstance(current, dict) and current.get("status") == "ready"):
+                continue
+            merged = {key: dict(values) for key, values in existing.items()}
+            merged.setdefault(device_id, {})[period] = candidate
+            self._hp_total_input_evidence = merged
+        return getattr(self, "_hp_total_input_evidence", {}) or {}
+
+    async def async_refresh_total_input_if_due(self, now=None, *, min_interval_seconds=900, periods=("day", "week", "month")) -> bool:
+        """Explicit low-frequency entry point; caller invokes from a safe async lifecycle.
+
+        Annual history is deliberately excluded from automatic refresh. This
+        method never changes existing energy or compressor measurements.
+        """
+        now = now or dt_util.now()
+        if self._hp_total_input_last_refresh_at is not None:
+            elapsed = (now - self._hp_total_input_last_refresh_at).total_seconds()
+            if 0 <= elapsed < min_interval_seconds:
+                return False
+        self._hp_total_input_last_refresh_at = now
+        try:
+            tz_name = str(getattr(self.hass.config, "time_zone", "UTC") or "UTC")
+            await self.async_refresh_total_input_periods(now, tz_name, periods=periods)
+            self._hp_total_input_last_error = None
+        except Exception as exc:
+            self._hp_total_input_last_error = type(exc).__name__
+            # Keep the last valid evidence rather than replacing it with zero.
+        return True
 
     async def async_refresh_recorder_energy(self) -> None:
         """Load authoritative daily energy for every registered device.
@@ -6718,7 +6811,7 @@ class DeviceAnalyticsEngine:
         start_local = dt_util.start_of_local_day(now - timedelta(days=7))
         today_start = dt_util.start_of_local_day(now)
         start_utc = dt_util.as_utc(start_local)
-        end_utc = dt_util.as_utc(now + timedelta(minutes=1))
+        end_utc = dt_util.as_utc(now)
 
         def _query():
             with session_scope(hass=self.hass, read_only=True) as session:
@@ -6743,10 +6836,15 @@ class DeviceAnalyticsEngine:
                 for state in raw_states:
                     value = self._normalize_compressor_state(getattr(state, "state", None), compressor_state_map)
                     changed = getattr(state, "last_changed", None) or getattr(state, "last_updated", None)
-                    if value is None or changed is None:
+                    if changed is None:
                         ignored += 1
                         continue
                     stamp = dt_util.as_utc(changed)
+                    # Preserve unavailable/unknown as a break in evidence. A
+                    # later ON is not proof the compressor stayed ON across it.
+                    if value is None:
+                        ignored += 1
+                        value = "unknown"
                     if normalized and normalized[-1][1] == value:
                         continue
                     normalized.append((stamp, value))
@@ -6756,6 +6854,8 @@ class DeviceAnalyticsEngine:
                 active_start: datetime | None = None
                 last_observed_stop: datetime | None = None
                 completed_runs: list[tuple[datetime, datetime, float]] = []
+                left_censored_runs: list[tuple[datetime, datetime, float]] = []
+                active_start_left_censored = False
                 observed_off_intervals: list[tuple[datetime, datetime, float]] = []
                 for stamp, value in normalized:
                     if previous is None:
@@ -6763,8 +6863,19 @@ class DeviceAnalyticsEngine:
                         # boundary. It is not evidence of an observed start or
                         # a known OFF interval beginning at the query boundary.
                         previous = value
+                        if value == "on":
+                            # A carried ON state at the query boundary is
+                            # observed runtime, but NOT an observed start.
+                            active_start = stamp
+                            active_start_left_censored = True
                         continue
                     if value == previous:
+                        continue
+                    if value == "unknown" or previous == "unknown":
+                        active_start = None
+                        active_start_left_censored = False
+                        last_observed_stop = None
+                        previous = value
                         continue
                     transitions.append((stamp, value))
                     if value == "on":
@@ -6773,14 +6884,37 @@ class DeviceAnalyticsEngine:
                                 (last_observed_stop, stamp, (stamp - last_observed_stop).total_seconds() / 60.0)
                             )
                         active_start = stamp
+                        active_start_left_censored = False
                     elif value == "off":
                         if active_start is not None and stamp > active_start:
-                            completed_runs.append((active_start, stamp, (stamp - active_start).total_seconds() / 60.0))
-                            active_start = None
+                            run = (active_start, stamp, (stamp - active_start).total_seconds() / 60.0)
+                            if active_start_left_censored:
+                                left_censored_runs.append(run)
+                            else:
+                                completed_runs.append(run)
+                        active_start = None
+                        active_start_left_censored = False
                         last_observed_stop = stamp
                     previous = value
 
                 today_start_utc = dt_util.as_utc(today_start)
+                # Integrate only observed ON intervals, stopping at unknown /
+                # unavailable. Clamp to the actual query time (never +1 min).
+                runtime_today_seconds = 0.0
+                observed_today_seconds = 0.0
+                if normalized:
+                    for index, (stamp, value) in enumerate(normalized):
+                        next_stamp = normalized[index + 1][0] if index + 1 < len(normalized) else end_utc
+                        left = max(stamp, today_start_utc)
+                        right = min(next_stamp, end_utc)
+                        seconds = max(0.0, (right - left).total_seconds())
+                        if value in {"on", "off"}:
+                            observed_today_seconds += seconds
+                        if value == "on":
+                            runtime_today_seconds += seconds
+                # A first row after midnight leaves the earlier interval unknown.
+                runtime_today_minutes = round(runtime_today_seconds / 60.0, 1) if normalized else None
+                runtime_today_coverage = round(observed_today_seconds / max(1.0, (end_utc - today_start_utc).total_seconds()), 4)
                 starts_today = sum(1 for stamp, value in transitions if value == "on" and stamp >= today_start_utc)
                 stops_today = sum(1 for stamp, value in transitions if value == "off" and stamp >= today_start_utc)
                 completed_today = [run for run in completed_runs if run[1] >= today_start_utc]
@@ -6929,7 +7063,7 @@ class DeviceAnalyticsEngine:
                     current_state_age_min = max(0.0, (end_utc - state_anchor).total_seconds() / 60.0)
 
                 result[entity_id] = {
-                    "status": "Ready" if normalized else "No usable Recorder states",
+                    "status": "Ready" if normalized and runtime_today_coverage >= 0.999 else ("Partial Recorder history" if normalized else "No usable Recorder states"),
                     "source": "Home Assistant Recorder significant states",
                     "window_days": 7,
                     "raw_state_count": len(raw_states),
@@ -6941,9 +7075,13 @@ class DeviceAnalyticsEngine:
                         for stamp, value in transitions if stamp >= today_start_utc
                     ],
                     "starts_today": starts_today,
+                    "runtime_today_minutes": runtime_today_minutes,
+                    "runtime_today_coverage": runtime_today_coverage,
+                    "runtime_today_source": "Home Assistant Recorder significant states",
                     "stops_today": stops_today,
                     "completed_cycles_today": len(completed_today),
                     "completed_cycles_7d": len(completed_runs),
+                    "left_censored_runs_7d": len(left_censored_runs),
                     "average_runtime_minutes_7d": round(sum(durations) / len(durations), 1) if durations else None,
                     "shortest_runtime_minutes_7d": round(min(durations), 1) if durations else None,
                     "longest_runtime_minutes_7d": round(max(durations), 1) if durations else None,
@@ -7932,16 +8070,25 @@ class DeviceAnalyticsEngine:
                 device_evidence_key = str(device.get("id") or device.get("name") or "")
                 compressor_counter_evidence = dict(self._compressor_counters.get(device_evidence_key) or {})
                 compressor_power_evidence = dict(self._compressor_power_evidence.get(device_evidence_key) or {})
-                if str(cycle_evidence.get("status") or "") != "Ready" and compressor_power_evidence.get("status") == "Ready":
+                # Preserve independent seven-day binary Recorder evidence even
+                # when today's coverage is incomplete. Only daily values may
+                # fall back to power inference; never replace the profile.
+                binary_today_ready = str(cycle_evidence.get("status") or "") == "Ready"
+                power_today_ready = compressor_power_evidence.get("status") == "Ready"
+                if not cycle_evidence and power_today_ready:
                     cycle_evidence = {
-                        "status":"Ready", "source":compressor_power_evidence.get("source"),
-                        "starts_today":compressor_power_evidence.get("starts_today"),
-                        "stops_today":compressor_power_evidence.get("stops_today"),
-                        "completed_cycles_today":compressor_power_evidence.get("completed_cycles_today"),
-                        "today_transitions":compressor_power_evidence.get("today_transitions") or [],
-                        "cycle_pattern_status":"Power-history fallback", "cycle_pattern_reason":compressor_power_evidence.get("policy"),
-                        "cycle_profile_status":"Insufficient evidence", "cycle_profile_reason":"Today-only compressor-power fallback does not create a 7-day cycle profile.",
+                        "status": "Power fallback only",
+                        "source": compressor_power_evidence.get("source"),
+                        "cycle_pattern_status": "Insufficient pattern evidence",
+                        "cycle_pattern_reason": "No usable binary Recorder profile; power estimates are daily-only.",
+                        "cycle_profile_status": "Insufficient evidence",
+                        "cycle_profile_reason": "Power estimates do not create a seven-day binary Recorder profile.",
                     }
+                daily_cycle_evidence = cycle_evidence if binary_today_ready else (
+                    compressor_power_evidence if power_today_ready else {}
+                )
+                daily_cycle_source = (cycle_evidence.get("source") if binary_today_ready else
+                                      compressor_power_evidence.get("source") if power_today_ready else None)
                 cycle_evidence_status = str(cycle_evidence.get("status") or "Unavailable")
                 if cycle_evidence_status == "Ready":
                     cycle_pattern_status = str(cycle_evidence.get("cycle_pattern_status") or "Insufficient pattern evidence")
@@ -8034,13 +8181,12 @@ class DeviceAnalyticsEngine:
                     "cycle_raw_state_count": cycle_evidence.get("raw_state_count"),
                     "cycle_transition_count": cycle_evidence.get("transition_count"),
                     "cycle_today_transitions": cycle_evidence.get("today_transitions") or [],
-                    # One canonical operation authority: when an explicitly compressor-named
-                    # power entity has usable Recorder evidence, use that same observed timeline
-                    # for runtime, starts and completed cycles. Mapped cumulative counters remain
-                    # supporting evidence only and must not override the timestamped timeline.
-                    "cycle_starts_today": compressor_power_evidence.get("starts_today") if compressor_power_evidence.get("status") == "Ready" else (cycle_evidence.get("starts_today") if cycle_evidence.get("starts_today") is not None else compressor_counter_evidence.get("starts_today")),
-                    "compressor_runtime_today_minutes": compressor_power_evidence.get("runtime_today_minutes") if compressor_power_evidence.get("status") == "Ready" else compressor_counter_evidence.get("runtime_today_minutes"),
-                    "compressor_runtime_today_source": compressor_power_evidence.get("source") if compressor_power_evidence.get("status") == "Ready" else compressor_counter_evidence.get("runtime_entity"),
+                    # Prefer the mapped binary compressor-state Recorder timeline.
+                    # Power-based inference is retained only as fallback and
+                    # separately exposed for diagnostic comparison.
+                    "cycle_starts_today": daily_cycle_evidence.get("starts_today") if daily_cycle_evidence else compressor_counter_evidence.get("starts_today"),
+                    "compressor_runtime_today_minutes": daily_cycle_evidence.get("runtime_today_minutes") if daily_cycle_evidence.get("runtime_today_minutes") is not None else compressor_counter_evidence.get("runtime_today_minutes"),
+                    "compressor_runtime_today_source": daily_cycle_source if daily_cycle_evidence.get("runtime_today_minutes") is not None else compressor_counter_evidence.get("runtime_entity"),
                     "compressor_runtime_power_minutes": compressor_power_evidence.get("runtime_today_minutes") if compressor_power_evidence.get("status") == "Ready" else None,
                     "compressor_runtime_counter_minutes": compressor_counter_evidence.get("runtime_today_minutes"),
                     "compressor_runtime_counter_source": compressor_counter_evidence.get("runtime_entity"),
@@ -8051,11 +8197,12 @@ class DeviceAnalyticsEngine:
                         and compressor_power_evidence.get("runtime_today_minutes") is not None
                         and compressor_counter_evidence.get("runtime_today_minutes") is not None else None
                     ),
-                    "compressor_starts_today_source": compressor_power_evidence.get("source") if compressor_power_evidence.get("status") == "Ready" else (cycle_evidence.get("source") or compressor_counter_evidence.get("starts_entity")),
+                    "compressor_starts_today_source": daily_cycle_source or compressor_counter_evidence.get("starts_entity"),
                     "compressor_power_diagnostic": dict(self._compressor_power_debug.get(device_evidence_key) or {}),
-                    "cycle_stops_today": compressor_power_evidence.get("stops_today") if compressor_power_evidence.get("status") == "Ready" else cycle_evidence.get("stops_today"),
-                    "cycle_completed_today": compressor_power_evidence.get("completed_cycles_today") if compressor_power_evidence.get("status") == "Ready" else cycle_evidence.get("completed_cycles_today"),
+                    "cycle_stops_today": daily_cycle_evidence.get("stops_today"),
+                    "cycle_completed_today": daily_cycle_evidence.get("completed_cycles_today"),
                     "cycle_completed_7d": cycle_evidence.get("completed_cycles_7d"),
+                    "cycle_left_censored_runs_7d": cycle_evidence.get("left_censored_runs_7d"),
                     "cycle_average_runtime_minutes_7d": cycle_evidence.get("average_runtime_minutes_7d"),
                     "cycle_shortest_runtime_minutes_7d": cycle_evidence.get("shortest_runtime_minutes_7d"),
                     "cycle_longest_runtime_minutes_7d": cycle_evidence.get("longest_runtime_minutes_7d"),
@@ -8259,6 +8406,10 @@ class DeviceAnalyticsEngine:
                 "historical_planning_profile": historical_profile,
                 "planning_evidence_sources": source_diagnostics,
             })
+        # Read-only experimental evidence: never substitute for existing COP.
+        for item in devices:
+            if item.get("device_type") == "heat_pump" or item.get("type") == "heat_pump":
+                item["total_input_efficiency"] = dict(self._hp_total_input_evidence.get(str(item.get("device_id") or item.get("id") or ""), {}))
         devices.sort(key=lambda d: d["energy_today_kwh"], reverse=True)
         self.last = {
             "status": "Ready" if devices else "Waiting",
@@ -8271,6 +8422,9 @@ class DeviceAnalyticsEngine:
             "summary": (f"Tracked {len(devices)} devices; {total_energy:.2f} kWh today." if devices else "No enabled registered devices to track."),
             "method_note": "Today, calendar week (Monday-to-today), month and year prefer Home Assistant Recorder statistics for each mapped device energy entity. Total uses the lifetime meter reading when available.",
             "recorder_energy_source": dict(self._recorder_status),
+            "heat_pump_total_input_evidence": {key: dict(value) for key, value in self._hp_total_input_evidence.items()},
+            "heat_pump_total_input_last_refresh_at": (self._hp_total_input_last_refresh_at.isoformat() if self._hp_total_input_last_refresh_at else None),
+            "heat_pump_total_input_last_error": self._hp_total_input_last_error,
             "safety": "Read-only device analytics.",
         }
         self.event_bus.publish("DeviceAnalyticsUpdated", "DeviceAnalyticsEngine", {"device_count": len(devices)})

@@ -692,3 +692,14 @@ set_solar_forecast_engine:
           options:
             - legacy
             - v2
+
+refresh_heat_pump_total_input_year:
+  name: Refresh Heat Pump Total-Input Year
+  description: Read completed annual Recorder efficiency for one registered heat pump.
+  fields:
+    device_id:
+      name: Heat Pump Device ID
+      description: Zeus registry device ID. Optional only when exactly one heat pump is registered.
+      required: false
+      selector:
+        text: null
