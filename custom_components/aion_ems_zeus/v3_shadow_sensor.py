@@ -118,6 +118,12 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
             if isinstance(value, (list, dict)):
                 attrs[key + "_item_count"] = len(value)
                 attrs[key + "_full_data_omitted_from_recorder"] = True
+        outlook=details.get("seven_day_outlook")
+        if isinstance(outlook,list):
+            attrs["seven_day_outlook"]=outlook[:7]
+        chart = details.get("local_weather_chart")
+        if isinstance(chart, dict):
+            attrs["local_weather_chart"] = chart
         # Hard upper bound for unusual future diagnostics; HA Recorder's
         # state-attribute limit is 16,384 bytes.
         import json
@@ -209,6 +215,48 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
         finally:
             self._dc_sample_busy=False
 
+    def _local_weather_chart(self, payload, secondary=None):
+        """Bounded same-local-day forecast means and observed snapshots."""
+        from math import isfinite
+        now = datetime.now(timezone.utc)
+        zone = dt_util.DEFAULT_TIME_ZONE
+        day = now.astimezone(zone).date()
+        start = datetime.combine(day, datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
+        end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
+        def point(stamp, value, utc_naive=False):
+            try:
+                t = datetime.fromisoformat(stamp)
+                if t.tzinfo is None:
+                    if not utc_naive: return None
+                    t = t.replace(tzinfo=timezone.utc)
+                v = float(value)
+                if not isfinite(v) or not 0 <= v <= 1500: return None
+                return t.astimezone(timezone.utc), round(v, 1)
+            except (TypeError, ValueError, OverflowError):
+                return None
+        def means(rows, naive=False):
+            out = {}
+            for stamp, value in rows:
+                pair = point(stamp, value, naive)
+                if pair and start < pair[0] <= end:
+                    out[round((pair[0]-start).total_seconds()/3600, 3)] = pair[1]
+            return [[k,v] for k,v in sorted(out.items())][:25]
+        h = payload.get("hourly") or {}
+        om = means(zip(h.get("time", []), h.get("shortwave_radiation", [])), True) if payload.get("timezone")=="GMT" and payload.get("utc_offset_seconds")==0 else []
+        sw = means((r.get("datetime"), r.get("global_radiation")) for r in (secondary or []) if isinstance(r,dict))
+        station = (self.core.registry.data.get("sources") or {}).get("local_weather_station") or {}
+        entity = (station.get("entities") or {}).get("solar_radiation") if station.get("enabled") else None
+        records = (getattr(getattr(self.core,"weather_history",None),"data",{}) or {}).get("verified_hourly_irradiance_pv") or {}
+        obs = {}
+        if entity and isinstance(records,dict):
+            for row in records.values():
+                if not isinstance(row,dict) or row.get("irradiance_entity") != entity: continue
+                pair = point(row.get("irradiance_updated_utc"),row.get("irradiance_w_m2"))
+                if pair and start <= pair[0] <= now:
+                    obs[round((pair[0]-start).total_seconds()/3600,3)] = pair[1]
+        return {"date":day.isoformat(),"hours":(end-start).total_seconds()/3600,
+                "open_meteo":om,"secondary":sw,"observed":[[k,v] for k,v in sorted(obs.items())][-25:]}
+
     async def _compare_meteoswiss(self, target, open_meteo):
         entity_id="weather.swiss_meteo_dj31"
         details={"source":entity_id,"status":"unavailable"}
@@ -248,6 +296,7 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                     continue
                 if dt.astimezone(dt_util.DEFAULT_TIME_ZONE).date().isoformat()==target:
                     valid.append(row)
+            self._details["local_weather_chart"] = self._local_weather_chart(open_meteo, forecast)
             details.update(compare_ghi(open_meteo, forecast, target,
                                        str(dt_util.DEFAULT_TIME_ZONE)))
             details["target_local_day_hours"]=len(valid)
@@ -309,8 +358,8 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
             local_start=datetime.fromisoformat(target).replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
             utc_start=local_start.astimezone(timezone.utc)
             utc_end=(local_start+timedelta(days=1)).astimezone(timezone.utc)
-            first=(utc_start-timedelta(hours=1)).date().isoformat()
-            last=utc_end.date().isoformat()
+            first=(utc_start-timedelta(days=1,hours=1)).date().isoformat()
+            last=(local_start+timedelta(days=6)).astimezone(timezone.utc).date().isoformat()
             params={"latitude":self.hass.config.latitude,"longitude":self.hass.config.longitude,
                     "hourly":"shortwave_radiation,direct_normal_irradiance,diffuse_radiation",
                     "timezone":"UTC","start_date":first,"end_date":last}
@@ -342,6 +391,36 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                            "local_timezone":str(dt_util.DEFAULT_TIME_ZONE),
                            "rejections":result.get("rejections",[])[:5],
                            "note":"Experimental Swiss local-day estimate; provider issue time unverified."}
+            # Seven calendar days, independently validated; never feed outlook into V2.
+            outlook=[]
+            today=local_now.date()
+            today_start=datetime.combine(today, datetime.min.time(), tzinfo=dt_util.DEFAULT_TIME_ZONE)
+            frozen=[]
+            for saved in self._snapshots:
+                try:
+                    if saved.get("target_date_local") != today.isoformat():
+                        continue
+                    captured=datetime.fromisoformat(saved["retrieved_at_utc"])
+                    value=float(saved["forecast_v3_kwh"])
+                    if captured.tzinfo is not None and captured < today_start and 0 <= value < 100000:
+                        frozen.append((captured,value))
+                except (TypeError,ValueError,KeyError,OverflowError):
+                    continue
+            for offset in range(7):
+                day=(today+timedelta(days=offset)).isoformat()
+                row={"date":day,"forecast_kwh":None,"status":"unavailable"}
+                try:
+                    daily=result if offset==1 else array_day(payload,day,str(dt_util.DEFAULT_TIME_ZONE),configured)
+                    row.update(forecast_kwh=daily["experimental_kwh"],status="experimental")
+                    if offset==0:
+                        row["pre_day_kwh"]=max(frozen)[1] if frozen else None
+                        # Remaining complete forecast hours only; exclude the current partial hour.
+                        row["remaining_full_hours_kwh"]=round(sum(h["total_kwh"] for h in daily["hourly_forecasts"]
+                            if datetime.fromisoformat(h["hour_end_utc"])-timedelta(hours=1)>=now),3)
+                except Exception as exc:
+                    row["status"]=type(exc).__name__
+                outlook.append(row)
+            self._details["seven_day_outlook"]=outlook
             # Store captured predictions as evidence, never as training or calibration.
             snapshot={"target_date_local":target,"retrieved_at_utc":self._details["retrieved_at_utc"],
                       "forecast_v3_kwh":result.get("experimental_kwh"),
@@ -363,6 +442,7 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
             self._details["latest_snapshot"]=self._snapshots[-1] if self._snapshots else None
             self._details["hourly_dc_comparison"]=self._hourly_comparison_status()
             # MeteoSwiss is strictly optional: its failure cannot invalidate V3.
+            self._details["local_weather_chart"] = self._local_weather_chart(payload)
             await self._compare_meteoswiss(target,payload)
             # Analytics exposes HA Energy daily statistics. Never use the
             # inverter's 23:00-reset daily meter for completed-day validation.
