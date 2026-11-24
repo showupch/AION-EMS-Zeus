@@ -782,18 +782,42 @@ class WeatherHistoryEngine:
             evidence = await read_recorder_hourly_pairs(
                 self.hass, pv, rad, start, end, include_diagnostics=True)
         except Exception as exc:
+            from ..recorder_audit_bounded import AuditLimit
+            if isinstance(exc, AuditLimit):
+                return {"status": "recorder_resource_limit", "error_type": "AuditLimit",
+                        "diagnostic_note": str(exc), "used_by_forecast": False,
+                        "pairs": []}
             return {"status": "recorder_unavailable", "error_type": type(exc).__name__,
+                    "diagnostic_note": type(exc).__name__,
                     "used_by_forecast": False, "pairs": []}
-        pairs = evidence["pairs"]
+        # Recorder may return an explicit non-ready result (for example,
+        # invalid_current_units) without the usual diagnostic keys. Preserve
+        # that result instead of raising KeyError and hiding its cause.
+        if evidence.get("status") not in (None, "ready"):
+            return {"status": evidence["status"], "pv_entity": pv,
+                    "irradiance_entity": rad, "pair_count": 0, "pairs": [],
+                    "used_by_forecast": False,
+                    "verified_current_units": evidence.get("verified_current_units"),
+                    "diagnostic_note": evidence.get("note"),
+                    "unit_verification": evidence.get("unit_verification"),
+                    "recorder_explicit_units": evidence.get("recorder_explicit_units"),
+                    "raw_state_counts": evidence.get("raw_state_counts")}
+        pairs = evidence.get("pairs") or []
         return {"status": "ready", "pv_entity": pv, "irradiance_entity": rad,
                 "pair_count": len(pairs), "pairs": pairs, "used_by_forecast": False,
-                "raw_state_counts": evidence["raw_state_counts"],
+                "raw_state_counts": evidence.get("raw_state_counts"),
                 "daily_audit": evidence.get("daily_audit", []),
                 "first_last_raw_utc": evidence.get("first_last_raw_utc"),
-                "recorded_units": evidence["recorded_units"],
-                "hourly_validation": evidence["hourly_validation"],
-                "rejected_hours": evidence["rejected_hours"],
-                "diagnostic_note": evidence["note"]}
+                "recorded_units": evidence.get("recorded_units"),
+                "verified_current_units": evidence.get("verified_current_units"),
+                "effective_units": evidence.get("effective_units"),
+                "unit_verification": evidence.get("unit_verification"),
+                "hourly_validation": evidence.get("hourly_validation"),
+                "rejected_hours": evidence.get("rejected_hours"),
+                "diagnostic_note": evidence.get("note"),
+                    "unit_verification": evidence.get("unit_verification"),
+                    "recorder_explicit_units": evidence.get("recorder_explicit_units"),
+                    "raw_state_counts": evidence.get("raw_state_counts")}
 
     def summary(self) -> dict[str, Any]: return self.last
     def recorder_summary(self) -> dict[str, Any]:

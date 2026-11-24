@@ -564,6 +564,95 @@ class PredictionAccuracyEngine:
                 if len(frozen) != len(hours):
                     result = {"status": "invalid_hourly_evidence", "target_date": target, "reason": invalid_reason or "incomplete_rows", "accepted_hours": len(frozen)}
                     break
+                # Freeze cloud-divisor alternatives only when the same pre-day
+                # target has complete timestamp-aligned hourly evidence.
+                # Never derive missing historical weather or backfill old days.
+                cloud_path = (((day.get("solar_forecast_diagnostics") or {})
+                               .get("forecast_correction_candidate") or {})
+                              .get("v2_calculation_path_audit") or {})
+                cloud_diag = cloud_path.get("v21_cloud_sensitivity") or {}
+                cloud_rows = cloud_diag.get("hours") or []
+                cloud_status = "incomplete_evidence"
+                cloud_reason = "missing_or_incomplete_cloud_sensitivity"
+                if (cloud_diag.get("status") == "available_read_only"
+                        and cloud_diag.get("target_date") == target
+                        and len(cloud_rows) == len(frozen)):
+                    indexed = {}
+                    for cloud_row in cloud_rows:
+                        stamp = self._parse_time(cloud_row.get("time")) if isinstance(cloud_row, dict) else None
+                        if stamp is None or stamp.isoformat() in indexed:
+                            indexed = {}
+                            break
+                        indexed[stamp.isoformat()] = cloud_row
+                    if len(indexed) == len(frozen):
+                        candidate_hours = []
+                        for hour in frozen:
+                            match = indexed.get(hour["start_utc"])
+                            if match is None:
+                                break
+                            a = self._num(match.get("candidate_a_w"))
+                            b = self._num(match.get("candidate_b_w"))
+                            if a is None or b is None or not all(math.isfinite(v) and v >= 0 for v in (a,b)):
+                                break
+                            candidate_hours.append((a,b))
+                        if len(candidate_hours) == len(frozen):
+                            for hour, (a,b) in zip(frozen,candidate_hours):
+                                hour["cloud_divisor_170_w"] = round(a,3)
+                                hour["cloud_divisor_200_w"] = round(b,3)
+                            cloud_status = "frozen"
+                            cloud_reason = None
+                        else:
+                            cloud_reason = "hourly_timestamp_or_value_mismatch"
+                    else:
+                        cloud_reason = "hourly_timestamp_mismatch"
+                cloud_experiment = {
+                    "status": cloud_status, "reason": cloud_reason,
+                    "model": "same_v2_baseline_cloud_divisor_sensitivity",
+                    "divisors": {"production":150,"a":170,"b":200},
+                    "production_applied":False,"control_permission":False,
+                    "accuracy_validated":False,"no_retroactive_backfill":True,
+                }
+                # V3 is frozen from the identical forecast summary and pre-day
+                # timestamps as V2. Incomplete/mismatched evidence fails closed.
+                v3_diag = cloud_path.get("v3_forecast_candidate") or {}
+                v3_rows = v3_diag.get("hours") or []
+                v3_status = "incomplete_evidence"
+                v3_reason = "missing_or_incomplete_v3_candidate"
+                if (v3_diag.get("status") == "candidate_available"
+                        and v3_diag.get("target_date") == target
+                        and isinstance(v3_rows, list) and len(v3_rows) == len(frozen)):
+                    indexed_v3 = {}
+                    for candidate_row in v3_rows:
+                        stamp = self._parse_time(candidate_row.get("time")) if isinstance(candidate_row, dict) else None
+                        if stamp is None or stamp.isoformat() in indexed_v3:
+                            indexed_v3 = {}
+                            break
+                        indexed_v3[stamp.isoformat()] = candidate_row
+                    if len(indexed_v3) == len(frozen):
+                        values_v3 = []
+                        for hour in frozen:
+                            match = indexed_v3.get(hour["start_utc"])
+                            if match is None:
+                                break
+                            value = self._num(match.get("candidate_w"))
+                            reference = self._num(match.get("v2_reference_w"))
+                            if (value is None or reference is None
+                                    or not all(math.isfinite(x) and x >= 0 for x in (value, reference))
+                                    or abs(reference - hour["original_w"]) > 1.0):
+                                break
+                            values_v3.append(value)
+                        if len(values_v3) == len(frozen):
+                            for hour, value in zip(frozen, values_v3):
+                                hour["v3_candidate_w"] = round(value, 3)
+                            v3_status, v3_reason = "frozen", None
+                        else:
+                            v3_reason = "timestamp_value_or_v2_reference_mismatch"
+                    else:
+                        v3_reason = "hourly_timestamp_mismatch"
+                v3_experiment = {"status": v3_status, "reason": v3_reason,
+                                 "model": "nonlinear_cloud_diffuse_floor_v2",
+                                 "production_applied": False, "control_permission": False,
+                                 "accuracy_validated": False, "no_retroactive_backfill": True}
                 # Capture the array candidate in the SAME immutable pre-day
                 # evidence event as the existing V2 hourly forecast. The
                 # candidate is not recalculated when evaluating later actuals.
@@ -581,6 +670,8 @@ class PredictionAccuracyEngine:
                         "candidate_kwh": round(sum(h.get("independent_radiation_w", 0.0) for h in frozen) / 1000, 3) if radiation_valid else None,
                         "production_applied": False, "control_permission": False,
                         "accuracy_validated": False, "no_retroactive_backfill": True},
+                    "v2_cloud_divisor_experiment": cloud_experiment,
+                    "v3_forecast_experiment": v3_experiment,
                     "v21_guard_experiment": {"status": "frozen" if shadow_valid else "incomplete_evidence",
                         "model": "v21_diffuse_and_ceiling_comparison", "production_applied": False,
                         "control_permission": False, "accuracy_validated": False,
@@ -752,6 +843,45 @@ class PredictionAccuracyEngine:
                         "comparison_source": "same_reconciled_recorder_hourly_actuals",
                         "accuracy_validated": False, "production_applied": False,
                         "control_permission": False}
+                # Score immutable cloud-divisor variants against the same
+                # reconciled hourly actuals; no retroactive recalculation.
+                cloud_experiment = item.get("v2_cloud_divisor_experiment") or {}
+                if cloud_experiment.get("status") == "frozen" and all(
+                    "cloud_divisor_170_w" in h and "cloud_divisor_200_w" in h for h in hours
+                ):
+                    actual_total = sum(r["actual_kwh"] for r in pairs)
+                    values = {"v2":sum(h["original_w"] for h in hours)/1000,
+                              "a":sum(h["cloud_divisor_170_w"] for h in hours)/1000,
+                              "b":sum(h["cloud_divisor_200_w"] for h in hours)/1000}
+                    cloud_experiment["accuracy"] = {
+                        "actual_daily_kwh":round(actual_total,3),
+                        "variants":{name:{"forecast_kwh":round(value,3),
+                            "absolute_error_kwh":round(abs(value-actual_total),3),
+                            "signed_error_kwh":round(value-actual_total,3)}
+                            for name,value in values.items()},
+                        "comparison_source":"same_reconciled_recorder_hourly_actuals",
+                        "production_applied":False,"control_permission":False,
+                        "accuracy_validated":False}
+                # V3 vs V2: immutable pre-day hourly predictions and identical
+                # reconciled Recorder actuals, never a live reforecast.
+                v3_experiment = item.get("v3_forecast_experiment") or {}
+                if v3_experiment.get("status") == "frozen" and all(
+                    "v3_candidate_w" in h for h in hours
+                ):
+                    actual_total = sum(r["actual_kwh"] for r in pairs)
+                    v2_total = sum(h["original_w"] for h in hours) / 1000
+                    v3_total = sum(h["v3_candidate_w"] for h in hours) / 1000
+                    v3_experiment["accuracy"] = {
+                        "actual_daily_kwh": round(actual_total, 3),
+                        "v2_frozen_kwh": round(v2_total, 3),
+                        "v3_frozen_kwh": round(v3_total, 3),
+                        "v2_absolute_error_kwh": round(abs(v2_total - actual_total), 3),
+                        "v3_absolute_error_kwh": round(abs(v3_total - actual_total), 3),
+                        "v2_signed_error_kwh": round(v2_total - actual_total, 3),
+                        "v3_signed_error_kwh": round(v3_total - actual_total, 3),
+                        "comparison_source": "same_reconciled_recorder_hourly_actuals",
+                        "production_applied": False, "control_permission": False,
+                        "accuracy_validated": False}
                 # Score only shadow variants frozen in the same pre-day event.
                 experiment = item.get("v21_guard_experiment") or {}
                 if experiment.get("status") == "frozen" and all(
@@ -1034,6 +1164,46 @@ class PredictionAccuracyEngine:
                 "production_applied": False, "accuracy_validated": False,
                 "control_permission": False}
 
+    def _v3_forecast_experiment_summary(self) -> dict[str, Any]:
+        rows = [r for r in self._hourly_frozen if
+                (r.get("v3_forecast_experiment") or {}).get("status") == "frozen"]
+        paired = [r for r in rows if isinstance(
+            (r.get("v3_forecast_experiment") or {}).get("accuracy"), dict)]
+        accuracy = [r["v3_forecast_experiment"]["accuracy"] for r in paired]
+        n = len(accuracy)
+        def avg(key):
+            return round(sum(a[key] for a in accuracy) / n, 3) if n else None
+        return {"status": "forward_comparison" if n else "awaiting_frozen_actual_pairs",
+                "frozen_days": len(rows), "matched_days": n,
+                "mae_kwh": {"v2": avg("v2_absolute_error_kwh"),
+                            "v3": avg("v3_absolute_error_kwh")},
+                "mean_signed_error_kwh": {"v2": avg("v2_signed_error_kwh"),
+                                          "v3": avg("v3_signed_error_kwh")},
+                "v2_wins": sum(a["v2_absolute_error_kwh"] < a["v3_absolute_error_kwh"] for a in accuracy),
+                "v3_wins": sum(a["v3_absolute_error_kwh"] < a["v2_absolute_error_kwh"] for a in accuracy),
+                "ties": sum(a["v3_absolute_error_kwh"] == a["v2_absolute_error_kwh"] for a in accuracy),
+                "recent": [{"target_date": r.get("target_date"),
+                            **r["v3_forecast_experiment"]["accuracy"]} for r in paired[-14:]],
+                "source": "immutable_hourly_frozen_storage",
+                "no_retroactive_backfill": True, "production_applied": False,
+                "control_permission": False, "accuracy_validated": False}
+
+    def _cloud_divisor_experiment_summary(self) -> dict[str, Any]:
+        rows = [r for r in self._hourly_frozen if
+                (r.get("v2_cloud_divisor_experiment") or {}).get("status") == "frozen"]
+        paired = [r for r in rows if
+                  isinstance((r.get("v2_cloud_divisor_experiment") or {}).get("accuracy"),dict)]
+        def mae(name):
+            return round(sum(r["v2_cloud_divisor_experiment"]["accuracy"]["variants"][name]["absolute_error_kwh"]
+                             for r in paired)/len(paired),3) if paired else None
+        return {"status":"forward_comparison" if paired else "awaiting_frozen_actual_pairs",
+                "frozen_days":len(rows),"matched_days":len(paired),
+                "mae_kwh":{"v2":mae("v2"),"a_170":mae("a"),"b_200":mae("b")},
+                "recent":[{"target_date":r.get("target_date"),
+                           **r["v2_cloud_divisor_experiment"]["accuracy"]} for r in paired[-7:]],
+                "source":"immutable_hourly_frozen_storage","no_retroactive_backfill":True,
+                "production_applied":False,"control_permission":False,"accuracy_validated":False}
+
     def _guard_experiment_summary(self) -> dict[str, Any]:
         rows = [r for r in self._hourly_frozen if (r.get("v21_guard_experiment") or {}).get("status") == "frozen"]
         paired = [r for r in rows if (r.get("v21_guard_experiment") or {}).get("accuracy")]
@@ -1072,6 +1242,8 @@ class PredictionAccuracyEngine:
             "array_candidate_forward_evidence": self._array_candidate_forward_summary(),
             "array_candidate_paired_comparison": self._array_candidate_paired_comparison(),
             "v21_guard_experiment": self._guard_experiment_summary(),
+            "v2_cloud_divisor_forward_evidence": self._cloud_divisor_experiment_summary(),
+            "v3_forecast_forward_evidence": self._v3_forecast_experiment_summary(),
             "production_applied": False, "control_permission": False,
         }
 
