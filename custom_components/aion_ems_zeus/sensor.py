@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import json
 import re
 from time import monotonic
@@ -13,7 +14,7 @@ from typing import Any
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, CoreState, EVENT_HOMEASSISTANT_STARTED, callback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers import entity_registry as er
@@ -2014,6 +2015,9 @@ else "legacy")}, "data_epoch": c.settings_api.summary().get("data_epoch"), "reco
         ElwaDirectValueSensor(coordinator, core, "ELWA Temperature", "zeus_elwa_temperature", "temperature_c", "sensor.zeus_elwa_temperature", "mdi:thermometer-water", "°C", SensorDeviceClass.TEMPERATURE),
         ElwaDirectEnergySensor(coordinator, core),
     ])
+    # Isolated V3 forecast observer; never changes Forecast V2 or control.
+    from .v3_shadow_sensor import V3ShadowSensor
+    sensors.append(V3ShadowSensor(coordinator, core))
     async_add_entities(sensors)
 
 
@@ -2100,6 +2104,119 @@ class ForecastV21ShadowSensor(SimpleSensor):
     def __init__(self, coordinator, core) -> None:
         super().__init__(coordinator, core, "Forecast V2.1 Shadow", "forecast_v21_shadow", "mdi:chart-line-variant", lambda c: None, lambda c: {})
         self._shadow_snapshot = None
+        # Safety gate: Recorder walkforward is intentionally disabled until a
+        # non-blocking, thread-safe execution path has been validated.
+        # No startup listeners, HA tasks or Recorder reads are created here.
+        self._recorder_irradiance_audit = {
+            "status": "scheduled_after_startup_bounded",
+            "reason": "V3 Recorder audit uses paginated MariaDB reads and statement timeouts",
+            "production_applied": False,
+            "control_permission": False,
+            "accuracy_validated": False,
+        }
+
+    def _publish_v3_audit(self, status: str, **details) -> None:
+        """Publish small diagnostic state changes without modifying forecasts."""
+        from homeassistant.util import dt as dt_util
+        self._recorder_irradiance_audit = {
+            "status": status,
+            "updated_at": dt_util.utcnow().isoformat(),
+            "production_applied": False,
+            "control_permission": False,
+            "accuracy_validated": False,
+            **details,
+        }
+        if self.hass is not None and self.entity_id is not None:
+            self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        from homeassistant.helpers.event import async_call_later
+        from homeassistant.util import dt as dt_util
+
+        self._v3_audit_started = False
+        self._v3_audit_task = None
+
+        @callback
+        def launch(_now):
+            if self.hass.state == CoreState.stopping:
+                self._publish_v3_audit("skipped_stopping")
+                return
+            if self._v3_audit_task is not None:
+                return
+            self._publish_v3_audit("launching_bounded")
+            try:
+                # async_call_later callbacks are @callback and run on HA's loop.
+                self._v3_audit_task = asyncio.create_task(
+                    self._run_bounded_v3_audit(), name="zeus_v3_bounded_audit"
+                )
+            except RuntimeError as exc:
+                self._publish_v3_audit("schedule_error", error_type=type(exc).__name__)
+                _LOGGER.exception("V3 bounded audit task scheduling failed")
+                return
+            self.async_on_remove(self._v3_audit_task.cancel)
+
+        @callback
+        def schedule(_event=None):
+            if self._v3_audit_started:
+                return
+            self._v3_audit_started = True
+            self._publish_v3_audit(
+                "scheduled_after_startup_bounded",
+                delay_seconds=300,
+                scheduled_at=dt_util.utcnow().isoformat(),
+            )
+            self.async_on_remove(async_call_later(self.hass, 300, launch))
+
+        if self.hass.is_running:
+            schedule()
+        else:
+            pending = {"active": True}
+
+            @callback
+            def on_started(_event):
+                pending["active"] = False
+                schedule()
+
+            unsubscribe = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, on_started)
+
+            def cleanup_listener():
+                if pending["active"]:
+                    pending["active"] = False
+                    unsubscribe()
+
+            self.async_on_remove(cleanup_listener)
+
+    async def _run_bounded_v3_audit(self):
+        started = monotonic()
+        self._publish_v3_audit("running_bounded")
+        _LOGGER.info("V3 bounded Recorder audit started")
+        try:
+            from .v3_local_irradiance import recorder_irradiance_walkforward
+            # An explicit status is published even if the database executor
+            # continues after cancellation; never start a second audit.
+            async with asyncio.timeout(120):
+                result = await recorder_irradiance_walkforward(self.core)
+            if not isinstance(result, dict):
+                raise TypeError("invalid_audit_result")
+            result = dict(result)
+            result.update({
+                "audit_duration_seconds": round(monotonic() - started, 2),
+                "production_applied": False,
+                "control_permission": False,
+                "accuracy_validated": False,
+            })
+            self._publish_v3_audit(result.pop("status", "completed"), **result)
+            _LOGGER.info("V3 bounded Recorder audit finished in %.2fs", monotonic() - started)
+        except asyncio.CancelledError:
+            self._publish_v3_audit("cancelled_bounded", audit_duration_seconds=round(monotonic()-started, 2))
+            raise
+        except Exception as exc:
+            _LOGGER.warning("V3 bounded Recorder audit stopped: %s", type(exc).__name__)
+            self._publish_v3_audit(
+                "bounded_audit_unavailable", error_type=type(exc).__name__,
+                audit_duration_seconds=round(monotonic()-started, 2),
+            )
 
     def _snapshot(self):
         if self._shadow_snapshot is None:
@@ -2112,7 +2229,90 @@ class ForecastV21ShadowSensor(SimpleSensor):
 
     @property
     def extra_state_attributes(self):
-        return _apply_recorder_guard(self, self._snapshot())
+        # Compact read-only V2 pipeline evidence for the existing Shadow sensor.
+        # Do not attach the full 24-hour trace: Shadow attributes are already
+        # large and Home Assistant Recorder has a strict attribute size limit.
+        attrs = dict(self._snapshot())
+        try:
+            days = self.core.forecast.summary().get("daily_forecast") or []
+            target = next(
+                (day for day in days
+                 if isinstance(day, dict) and day.get("label") == "Tomorrow"),
+                None,
+            )
+            if target is None:
+                attrs["v2_attenuation_investigation"] = {
+                    "status": "tomorrow_forecast_unavailable",
+                    "production_applied": False,
+                }
+                attrs["v3_forecast_candidate"] = {"status": "tomorrow_forecast_unavailable", "production_applied": False}
+                attrs["v2_cloud_sensitivity"] = {
+                    "status": "tomorrow_forecast_unavailable",
+                    "production_applied": False,
+                }
+            else:
+                path = (((target.get("solar_forecast_diagnostics") or {})
+                         .get("forecast_correction_candidate") or {})
+                        .get("v2_calculation_path_audit") or {})
+                audit = path.get("v2_attenuation_investigation") or {}
+                attrs["v2_attenuation_investigation"] = {
+                    key: value for key, value in audit.items()
+                    if key != "hours"
+                } if audit else {
+                    "status": "calculation_path_unavailable",
+                    "target_date": target.get("date"),
+                    "production_applied": False,
+                }
+                attrs["v3_forecast_candidate"] = {k: v for k, v in (path.get("v3_forecast_candidate") or {}).items() if k != "hours"} or {"status": "calculation_path_unavailable", "production_applied": False}
+                sensitivity = path.get("v21_cloud_sensitivity") or {}
+                attrs["v2_cloud_sensitivity"] = {
+                    key: value for key, value in sensitivity.items()
+                    if key != "hours"
+                } if sensitivity else {
+                    "status": "calculation_path_unavailable",
+                    "target_date": target.get("date"),
+                    "production_applied": False,
+                }
+        except (AttributeError, TypeError, ValueError):
+            attrs["v2_attenuation_investigation"] = {
+                "status": "calculation_path_unavailable",
+                "production_applied": False,
+            }
+            attrs["v3_forecast_candidate"] = {"status": "calculation_path_unavailable", "production_applied": False}
+            attrs["v2_cloud_sensitivity"] = {
+                "status": "calculation_path_unavailable",
+                "production_applied": False,
+            }
+        try:
+            attrs["v2_cloud_divisor_forward_evidence"] = (
+                self.core.prediction_accuracy._cloud_divisor_experiment_summary()
+            )
+        except (AttributeError, TypeError, ValueError):
+            attrs["v2_cloud_divisor_forward_evidence"] = {"status":"unavailable"}
+        # v16.0.593: connect existing mapped on-site measurements to the V3
+        # evidence path. The observation stream is deliberately independent of
+        # tomorrow's forecast: never use current irradiance as future weather.
+        try:
+            from .v3_local_irradiance import local_irradiance_evidence
+            attrs["v3_local_irradiance_evidence"] = local_irradiance_evidence(self.core)
+        except (AttributeError, TypeError, ValueError, KeyError):
+            attrs["v3_local_irradiance_evidence"] = {
+                "status": "unavailable", "forecast_correction_applied": False,
+                "production_applied": False, "control_permission": False,
+            }
+        try:
+            from .v3_local_irradiance import local_irradiance_walkforward
+            attrs["v3_local_irradiance_walkforward"] = local_irradiance_walkforward(self.core)
+        except (AttributeError, TypeError, ValueError, KeyError):
+            attrs["v3_local_irradiance_walkforward"] = {"status": "unavailable", "production_applied": False}
+        attrs["v3_recorder_irradiance_walkforward"] = self._recorder_irradiance_audit
+        try:
+            attrs["v3_forecast_forward_evidence"] = (
+                self.core.prediction_accuracy._v3_forecast_experiment_summary()
+            )
+        except (AttributeError, TypeError, ValueError):
+            attrs["v3_forecast_forward_evidence"] = {"status": "unavailable"}
+        return _apply_recorder_guard(self, attrs)
 
     def _handle_coordinator_update(self) -> None:
         self._shadow_snapshot = None

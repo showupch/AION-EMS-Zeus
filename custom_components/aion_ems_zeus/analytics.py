@@ -4404,6 +4404,130 @@ class ForecastEngine:
                     cloud_test["candidate_b_kwh"] = round(sums[1],3)
                     cloud_test["status"] = "available_read_only"
             path_audit["v21_cloud_sensitivity"] = cloud_test
+            # V3 experimental alternative: non-linear cloud response with a
+            # diffuse-light floor. Uses the SAME hourly historical V2 baseline
+            # and weather evidence, but produces a genuinely different kWh
+            # prediction. This is an uncalibrated model hypothesis, not an
+            # accuracy claim. Production V2 and control remain unchanged.
+            v3 = {
+                "status": "incomplete_evidence", "target_date": target_date.isoformat(),
+                "model": "nonlinear_cloud_diffuse_floor_v2",
+                "formula": "0.40 + 0.60 * (1 - cloud_fraction) ** 0.80",
+                "diffuse_floor": 0.40, "cloud_exponent": 0.80,
+                "v2_reference_kwh": path_audit["v2_kwh"],
+                "candidate_kwh": None, "delta_kwh": None,
+                "hours_evaluated": 0, "production_applied": False,
+                "control_permission": False, "accuracy_validated": False,
+                "comparison_type": "live_same_inputs_not_frozen_accuracy",
+                "note": "Revised V3 cloud response (40% floor); adverse-weather and final guard ratios preserved as read-only proxies. Requires forward validation.",
+            }
+            if forecast_mode == "v2" and candidate_hours_complete:
+                total = 0.0
+                valid = True
+                v3_hours = []
+                for hour in candidate_rows:
+                    try:
+                        if not hour.get("weather_forecast_applied"):
+                            raise ValueError("missing forecast weather")
+                        values = [hour.get(k) for k in (
+                            "v2_baseline_power_w", "v2_pre_guard_power_w",
+                            "v2_solar_power_w", "cloud_coverage")]
+                        if any(v is None for v in values):
+                            raise ValueError("missing numeric evidence")
+                        base, pre, final, cloud = map(float, values)
+                        if not all(math.isfinite(x) for x in (base, pre, final, cloud)) or not 0 <= cloud <= 100 or base < 0:
+                            raise ValueError("invalid evidence")
+                        v2_cloud = max(0.08, 1.0 - cloud / 150.0)
+                        condition_ratio = min(1.0, max(0.0, pre / (base * v2_cloud))) if base * v2_cloud > 0 else 1.0
+                        guard_ratio = min(1.0, max(0.0, final / pre)) if pre > 0 else 1.0
+                        v3_cloud = 0.40 + 0.60 * (1.0 - cloud / 100.0) ** 0.80
+                        v3_power = base * v3_cloud * condition_ratio * guard_ratio
+                        total += v3_power / 1000.0
+                        v3_hours.append({"time": hour.get("time"), "candidate_w": round(v3_power, 3),
+                                         "v2_reference_w": round(final, 3)})
+                        v3["hours_evaluated"] += 1
+                    except (ValueError, TypeError, OverflowError):
+                        valid = False
+                        break
+                if valid and v3["hours_evaluated"] == len(candidate_rows):
+                    v3["candidate_kwh"] = round(total, 3)
+                    v3["delta_kwh"] = round(total - float(path_audit["v2_kwh"]), 3)
+                    v3["status"] = "candidate_available"
+                    v3["hours"] = v3_hours
+            path_audit["v3_forecast_candidate"] = v3
+            # v16.0.593: independent read-only decomposition of the same V2
+            # current target-day hourly evidence. No production model mutation.
+            attenuation_audit = {
+                "status": "incomplete_evidence",
+                "target_date": target_date.isoformat(),
+                "comparison_type": "current_input_sensitivity_not_frozen_accuracy",
+                "baseline_kwh": path_audit["baseline_kwh"],
+                "current_v2_kwh": path_audit["v2_kwh"],
+                "cloud_only_kwh": None,
+                "after_adverse_condition_kwh": path_audit["pre_guard_kwh"],
+                "cloud_only_minus_current_kwh": None,
+                "cloud_reduction_kwh": None,
+                "adverse_condition_reduction_kwh": None,
+                "final_guard_reduction_kwh": None,
+                "hours_with_adverse_reduction": 0,
+                "hours_with_missing_evidence": 0,
+                "hours": [],
+                "production_applied": False,
+                "control_permission": False,
+                "accuracy_validated": False,
+                "note": "Same-hour read-only decomposition; not a historical reconstruction or frozen candidate.",
+            }
+            if forecast_mode == "v2" and candidate_hours_complete:
+                cloud_total = 0.0
+                valid_hours = True
+                for hour in candidate_rows:
+                    baseline = hour.get("v2_baseline_power_w")
+                    cloud_only = hour.get("v2_after_cloud_before_condition_w")
+                    after_condition = hour.get("v2_pre_guard_power_w")
+                    final_power = hour.get("v2_solar_power_w")
+                    if any(value is None for value in (baseline, cloud_only, after_condition, final_power)):
+                        attenuation_audit["hours_with_missing_evidence"] += 1
+                        valid_hours = False
+                        continue
+                    try:
+                        b, c, a, f = (float(value) for value in
+                                       (baseline, cloud_only, after_condition, final_power))
+                        if not all(math.isfinite(value) and value >= 0 for value in (b,c,a,f)):
+                            raise ValueError("nonfinite or negative hourly power")
+                    except (TypeError, ValueError, OverflowError):
+                        attenuation_audit["hours_with_missing_evidence"] += 1
+                        valid_hours = False
+                        continue
+                    cloud_total += c / 1000.0
+                    if c > a + 0.05:
+                        attenuation_audit["hours_with_adverse_reduction"] += 1
+                    attenuation_audit["hours"].append({
+                        "hour": hour.get("hour"),
+                        "baseline_w": round(b, 1),
+                        "after_numeric_cloud_w": round(c, 1),
+                        "after_adverse_weather_w": round(a, 1),
+                        "final_v2_w": round(f, 1),
+                        "cloud_reduction_w": round(b-c, 1),
+                        "adverse_reduction_w": round(c-a, 1),
+                        "final_guard_reduction_w": round(a-f, 1),
+                    })
+                if valid_hours and len(attenuation_audit["hours"]) == expected_target_hours:
+                    attenuation_audit["status"] = "available_read_only"
+                    attenuation_audit["cloud_only_kwh"] = round(cloud_total, 3)
+                    if attenuation_audit["baseline_kwh"] is not None:
+                        attenuation_audit["cloud_reduction_kwh"] = round(
+                            attenuation_audit["baseline_kwh"] - cloud_total, 3)
+                    if attenuation_audit["after_adverse_condition_kwh"] is not None:
+                        attenuation_audit["adverse_condition_reduction_kwh"] = round(
+                            cloud_total - attenuation_audit["after_adverse_condition_kwh"], 3)
+                    if attenuation_audit["current_v2_kwh"] is not None:
+                        attenuation_audit["cloud_only_minus_current_kwh"] = round(
+                            cloud_total - attenuation_audit["current_v2_kwh"], 3)
+                        attenuation_audit["final_guard_reduction_kwh"] = round(
+                            attenuation_audit["after_adverse_condition_kwh"] -
+                            attenuation_audit["current_v2_kwh"], 3)
+            path_audit["v2_attenuation_investigation"] = attenuation_audit
+
             forecast_correction_candidate = {
                 "status": "production_candidate_opt_in" if candidate_source == "active_v2_hourly" else "incomplete_evidence",
                 "target_date": target_date.isoformat(),

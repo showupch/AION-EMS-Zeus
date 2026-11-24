@@ -22,6 +22,20 @@ _FRONTEND_REGISTERED = f"{DOMAIN}_frontend_registered"
 _WEBSOCKET_REGISTERED = f"{DOMAIN}_websocket_registered"
 
 
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/security_scan"})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_security_scan(hass, connection, msg) -> None:
+    """Admin-only read-only Zeus installation audit."""
+    from .security_center import scan_zeus_installation
+    try:
+        result = await hass.async_add_executor_job(scan_zeus_installation)
+        connection.send_result(msg["id"], result)
+    except Exception:
+        # Avoid exposing filesystem paths or exception contents in API errors.
+        connection.send_error(msg["id"], "security_scan_failed", "Zeus security scan could not complete")
+
+
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/device_energy_attribution"})
 @websocket_api.async_response
 async def _websocket_device_energy_attribution(hass, connection, msg) -> None:
@@ -1769,6 +1783,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, _websocket_climate_schedules)
         websocket_api.async_register_command(hass, _websocket_save_climate_schedule)
         websocket_api.async_register_command(hass, _websocket_device_energy_attribution)
+        websocket_api.async_register_command(hass, _websocket_security_scan)
         websocket_api.async_register_command(hass, _websocket_ha_energy_import_preview)
         websocket_api.async_register_command(hass, _websocket_export_configuration)
         websocket_api.async_register_command(hass, _websocket_restore_configuration)
