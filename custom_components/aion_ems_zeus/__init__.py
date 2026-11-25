@@ -1744,6 +1744,30 @@ async def _websocket_climate_schedules(hass, connection, msg):
     manager = hass.data.get(DOMAIN, {}).get("climate_schedule_manager")
     connection.send_result(msg["id"], manager.schedules if manager else {})
 
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/climate_control"})
+@websocket_api.async_response
+async def _websocket_climate_control(hass, connection, msg):
+    manager = hass.data.get(DOMAIN, {}).get("climate_schedule_manager")
+    if manager is None:
+        connection.send_error(msg["id"], "not_ready", "Climate scheduler unavailable")
+        return
+    connection.send_result(msg["id"], manager.control_permissions)
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/set_climate_control", vol.Required("entity_id"): str, vol.Required("allowed"): bool})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_set_climate_control(hass, connection, msg):
+    manager = hass.data.get(DOMAIN, {}).get("climate_schedule_manager")
+    if manager is None:
+        connection.send_error(msg["id"], "not_ready", "Climate scheduler unavailable")
+        return
+    try:
+        result = await manager.async_set_control(msg["entity_id"], msg["allowed"])
+    except ValueError as exc:
+        connection.send_error(msg["id"], "invalid_entity", str(exc))
+        return
+    connection.send_result(msg["id"], result)
+
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/save_climate_schedule", vol.Required("entity_id"): str, vol.Required("enabled"): bool, vol.Required("days"): list, vol.Required("slots"): list})
 @websocket_api.async_response
 async def _websocket_save_climate_schedule(hass, connection, msg):
@@ -1844,6 +1868,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if not hass.data.get(_WEBSOCKET_REGISTERED):
         websocket_api.async_register_command(hass, _websocket_climate_schedules)
+        websocket_api.async_register_command(hass, _websocket_climate_control)
+        websocket_api.async_register_command(hass, _websocket_set_climate_control)
         websocket_api.async_register_command(hass, _websocket_climate_visibility)
         websocket_api.async_register_command(hass, _websocket_set_climate_visibility)
         websocket_api.async_register_command(hass, _websocket_forecast_v3_day_data)

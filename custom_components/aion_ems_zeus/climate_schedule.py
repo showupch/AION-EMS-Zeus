@@ -19,6 +19,7 @@ class ClimateScheduleManager:
         self.hidden_entities = set()
         self._visibility_lock = asyncio.Lock()
         self.schedules = {}
+        self.control_permissions = {}
         self._last_applied = {}
         self._unsubscribe = None
         self._unsubscribe_state = None
@@ -41,6 +42,9 @@ class ClimateScheduleManager:
             }
         data = await self.store.async_load() or {}
         self.schedules = data.get("schedules", {}) if isinstance(data, dict) else {}
+        self.control_permissions = data.get("control_permissions", {}) if isinstance(data, dict) else {}
+        for entity_id, schedule in self.schedules.items():
+            self.control_permissions.setdefault(entity_id, bool(schedule.get("enabled")))
         # Restore manual overrides before the first scheduler tick so a restart
         # cannot silently undo a user's thermostat adjustment.
         stored_overrides = data.get("manual_overrides", {}) if isinstance(data, dict) else {}
@@ -63,6 +67,7 @@ class ClimateScheduleManager:
     async def _persist(self):
         await self.store.async_save({
             "schedules": self.schedules,
+            "control_permissions": self.control_permissions,
             "manual_overrides": {
                 entity_id: list(key) for entity_id, key in self._manual_override.items()
                 if entity_id in self.schedules
@@ -84,6 +89,13 @@ class ClimateScheduleManager:
                 await self.visibility_store.async_save({"hidden": sorted(updated)})
                 self.hidden_entities = updated
             return sorted(self.hidden_entities)
+
+    async def async_set_control(self, entity_id, allowed):
+        if entity_id not in self.hass.states.async_entity_ids("climate"):
+            raise ValueError("A valid climate entity is required")
+        self.control_permissions[entity_id] = bool(allowed)
+        await self._persist()
+        return bool(allowed)
 
     async def async_save(self, entity_id, enabled, days, slots):
         if not isinstance(entity_id, str) or not entity_id.startswith("climate.") or entity_id not in self.hass.states.async_entity_ids("climate"):
@@ -182,7 +194,7 @@ class ClimateScheduleManager:
         current_time = local.strftime("%H:%M")
         yesterday = (weekday - 1) % 7
         for entity_id, schedule in list(self.schedules.items()):
-            if not schedule.get("enabled"):
+            if not schedule.get("enabled") or not self.control_permissions.get(entity_id, False):
                 continue
             state = self.hass.states.get(entity_id)
             if state is None or state.state in ("unknown", "unavailable"):
