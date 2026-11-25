@@ -6849,62 +6849,11 @@ class DeviceAnalyticsEngine:
             threshold=max(0.0, math.expm1((standby_log+active_log)/2.0))
             dbg.update({"standby_cluster_w":round(standby,1),"active_cluster_w":round(active,1),"total_weight_seconds":round(total_weight,1),"classifier":"two_cluster_log_power"})
 
-            # Build raw state segments first, then suppress only short opposite-state
-            # glitches. The persistence window is derived from the Recorder cadence
-            # (two median update intervals), not from a manufacturer watt threshold.
-            raw_states=[]
-            for stamp,value in rows:
-                state="on" if value >= threshold else "off"
-                if raw_states and raw_states[-1][1] == state:
-                    continue
-                raw_states.append((stamp,state,value))
-            deltas=sorted((rows[i+1][0]-rows[i][0]).total_seconds() for i in range(len(rows)-1) if rows[i+1][0] > rows[i][0])
-            median_delta=deltas[len(deltas)//2] if deltas else 30.0
-            persistence=max(5.0, min(180.0, median_delta*2.0))
-            states=list(raw_states)
-            changed=True
-            while changed and len(states) >= 3:
-                changed=False
-                cleaned=[states[0]]
-                i=1
-                while i < len(states)-1:
-                    prev=cleaned[-1]; cur=states[i]; nxt=states[i+1]
-                    duration=(nxt[0]-cur[0]).total_seconds()
-                    if prev[1] == nxt[1] and cur[1] != prev[1] and duration < persistence:
-                        # Momentary 0 W / telemetry dip inside one continuous run.
-                        # Remove only the glitch; process the following
-                        # transition on the next iteration.
-                        changed=True
-                        i += 1
-                        continue
-                    cleaned.append(cur); i += 1
-                if i == len(states)-1:
-                    cleaned.append(states[-1])
-                states=cleaned
-            dbg["transition_persistence_seconds"]=round(persistence,1)
-            # Runtime integrates the state carried by each Recorder sample. A
-            # run already active at midnight contributes runtime today but not a start today.
-            runtime_s=0.0
-            for i,(stamp,state,value) in enumerate(states):
-                nxt=states[i+1][0] if i+1 < len(states) else end_utc
-                if state == "on" and nxt > today_start_utc:
-                    a=max(stamp,today_start_utc); b=min(nxt,end_utc)
-                    if b>a: runtime_s += (b-a).total_seconds()
-            transitions=[]
-            for i in range(1,len(states)):
-                if states[i][1] != states[i-1][1]: transitions.append((states[i][0],states[i][1]))
-            starts=sum(1 for stamp,state in transitions if state=="on" and stamp>=today_start_utc)
-            stops=sum(1 for stamp,state in transitions if state=="off" and stamp>=today_start_utc)
-            key=str(device.get("id") or device.get("name") or "")
-            dbg.update({"status":"ready","reason":"Recorder compressor-power evidence accepted.","learned_threshold_w":round(threshold,1),"transition_count":len(transitions),"runtime_today_minutes":round(runtime_s/60.0,1),"starts_today":starts,"stops_today":stops})
-            out[key]={
-                "status":"Ready", "source":eid, "runtime_today_minutes":round(runtime_s/60.0,1),
-                "starts_today":starts, "stops_today":stops, "completed_cycles_today":stops,
-                "today_transitions":[{"at":stamp.isoformat(),"state":state} for stamp,state in transitions if stamp>=today_start_utc],
-                "standby_cluster_w":round(standby,1), "active_cluster_w":round(active,1),
-                "learned_threshold_w":round(threshold,1), "sample_count":len(rows),
-                "policy":"Self-calibrated from Recorder compressor-power evidence; no fixed watt threshold."
-            }
+            # Two power clusters alone cannot establish a stopped compressor.
+            # Require independent OFF evidence before publishing inferred cycles.
+            # Until such evidence is available, keep the clusters diagnostic only.
+            dbg.update({"status":"rejected", "reason":"Power clusters alone do not establish compressor standby; modulation may occupy both clusters.", "candidate_threshold_w":round(threshold,1)})
+            continue
         self._compressor_power_evidence=out
         self._compressor_power_debug=debug
 
@@ -6918,10 +6867,12 @@ class DeviceAnalyticsEngine:
         devices = [
             d for d in self.registry.data.get("devices", [])
             if str(d.get("type") or "") == "heat_pump"
-            and str(d.get("compressor_state_entity") or "").strip()
         ]
-        entity_ids = list(dict.fromkeys(str(d.get("compressor_state_entity")).strip() for d in devices))
-        entity_devices = {str(d.get("compressor_state_entity") or "").strip(): d for d in devices}
+        entity_devices = {str(d.get(key) or "").strip(): d for d in devices
+                          for key in ("compressor_state_entity", "heating_active_entity")
+                          if str(d.get(key) or "").strip()}
+        entity_ids = list(entity_devices)
+        heating_entities = {str(d.get("heating_active_entity") or "").strip() for d in devices}
         if not entity_ids:
             self._compressor_history = {}
             self._compressor_history_status = {
@@ -6959,6 +6910,9 @@ class DeviceAnalyticsEngine:
                 compressor_state_map = dict(state_normalization.get("compressor_state") or {})
                 for state in raw_states:
                     value = self._normalize_compressor_state(getattr(state, "state", None), compressor_state_map)
+                    if entity_id in heating_entities:
+                        raw_value = str(getattr(state, "state", "")).lower()
+                        value = raw_value if raw_value in {"on", "off"} else None
                     changed = getattr(state, "last_changed", None) or getattr(state, "last_updated", None)
                     if changed is None:
                         ignored += 1
@@ -7767,7 +7721,7 @@ class DeviceAnalyticsEngine:
                     "jaz_entity",
                     "heat_carrier_forward_entity", "heat_carrier_return_entity",
                     "source_in_temperature_entity", "source_out_temperature_entity",
-                    "source_pump_speed_entity", "heat_carrier_pump_speed_entity", "compressor_activity_entity",
+                    "source_pump_speed_entity", "heat_carrier_pump_speed_entity", "compressor_activity_entity", "heating_active_entity",
                     "compressor_speed_entity", "compressor_target_speed_entity",
                     "dhw_target_temperature_entity",
                 ):
@@ -8191,14 +8145,20 @@ class DeviceAnalyticsEngine:
 
                 compressor_entity = str(device.get("compressor_state_entity") or "").strip()
                 cycle_evidence = dict(self._compressor_history.get(compressor_entity) or {}) if compressor_entity else {}
+                if not compressor_entity.startswith("binary_sensor.") or compressor_entity == str(device.get("heating_active_entity") or "").strip():
+                    cycle_evidence = {"status": "Unverified compressor state", "source": compressor_entity or None}
                 device_evidence_key = str(device.get("id") or device.get("name") or "")
                 compressor_counter_evidence = dict(self._compressor_counters.get(device_evidence_key) or {})
                 compressor_power_evidence = dict(self._compressor_power_evidence.get(device_evidence_key) or {})
                 # Preserve independent seven-day binary Recorder evidence even
                 # when today's coverage is incomplete. Only daily values may
                 # fall back to power inference; never replace the profile.
-                binary_today_ready = str(cycle_evidence.get("status") or "") == "Ready"
-                power_today_ready = compressor_power_evidence.get("status") == "Ready"
+                binary_today_ready = (str(cycle_evidence.get("status") or "") == "Ready"
+                                      and compressor_entity.startswith("binary_sensor.")
+                                      and compressor_entity != str(device.get("heating_active_entity") or "").strip())
+                # Power clustering alone cannot establish compressor OFF on modulating units.
+                # Retain the inference for diagnostics, never publish it as measured cycles.
+                power_today_ready = False
                 if not cycle_evidence and power_today_ready:
                     cycle_evidence = {
                         "status": "Power fallback only",
@@ -8243,7 +8203,28 @@ class DeviceAnalyticsEngine:
 
                 standby_power_w = round(electrical_power_w, 1) if interpreted_state == "Standby" else None
 
+                heating_history = self._compressor_history.get(str(device.get("heating_active_entity") or "").strip(), {})
+                heating_coverage = heating_history.get("runtime_today_coverage") or 0
+                heating_summary = {"runtime_minutes": heating_history.get("runtime_today_minutes") if heating_coverage > 0 else None,
+                                   "coverage": heating_coverage,
+                                   "starts": heating_history.get("starts_today") if heating_coverage > 0 else None,
+                                   "stops": heating_history.get("stops_today") if heating_coverage > 0 else None,
+                                   "completed_cycles": heating_history.get("stops_today") if heating_coverage > 0 else None,
+                                    "fully_observed_cycles": heating_history.get("completed_cycles_today") if heating_coverage > 0 else None,
+                                    "cycle_count_basis": "observed_on_to_off_transitions",
+                                   "transitions": (heating_history.get("today_transitions") or [])[-40:]}
+                heating_statistics = None
+                if str(device.get("heating_active_entity") or "").strip():
+                    heating_statistics = {"cycle_evidence_status": heating_history.get("status"),
+                                          "cycle_starts_today": heating_summary["starts"],
+                                          "cycle_stops_today": heating_summary["stops"],
+                                          "cycle_completed_today": heating_summary["completed_cycles"],
+                                          "cycle_evidence_policy": "Observed space-heating transitions only; not compressor cycles."}
+                    for output_key, history_key in [('cycle_today_transitions', 'today_transitions'), ('cycle_completed_7d', 'completed_cycles_7d'), ('cycle_left_censored_runs_7d', 'left_censored_runs_7d'), ('cycle_average_runtime_minutes_7d', 'average_runtime_minutes_7d'), ('cycle_shortest_runtime_minutes_7d', 'shortest_runtime_minutes_7d'), ('cycle_longest_runtime_minutes_7d', 'longest_runtime_minutes_7d'), ('cycle_median_runtime_minutes_7d', 'median_runtime_minutes_7d'), ('cycle_runtime_q1_minutes_7d', 'runtime_q1_minutes_7d'), ('cycle_runtime_q3_minutes_7d', 'runtime_q3_minutes_7d'), ('cycle_runtime_iqr_minutes_7d', 'runtime_iqr_minutes_7d'), ('cycle_short_runtime_lower_fence_minutes_7d', 'short_runtime_lower_fence_minutes_7d'), ('cycle_short_runtime_outlier_count_7d', 'short_runtime_outlier_count_7d'), ('cycle_observed_off_interval_count_7d', 'observed_off_interval_count_7d'), ('cycle_median_off_interval_minutes_7d', 'median_off_interval_minutes_7d'), ('cycle_off_interval_q1_minutes_7d', 'off_interval_q1_minutes_7d'), ('cycle_off_interval_q3_minutes_7d', 'off_interval_q3_minutes_7d'), ('cycle_off_interval_iqr_minutes_7d', 'off_interval_iqr_minutes_7d'), ('cycle_rapid_restart_lower_fence_minutes_7d', 'rapid_restart_lower_fence_minutes_7d'), ('cycle_rapid_restart_outlier_count_7d', 'rapid_restart_outlier_count_7d'), ('cycle_restart_profile_evidence', 'restart_profile_evidence'), ('cycle_restart_profile_confidence', 'restart_profile_confidence'), ('cycle_restart_profile_status', 'restart_profile_status'), ('cycle_restart_profile_reason', 'restart_profile_reason'), ('cycle_pattern_status', 'cycle_pattern_status'), ('cycle_pattern_confidence', 'cycle_pattern_confidence'), ('cycle_pattern_reason', 'cycle_pattern_reason'), ('cycle_profile_evidence', 'cycle_profile_evidence'), ('cycle_profile_confidence', 'cycle_profile_confidence'), ('cycle_profile_status', 'cycle_profile_status'), ('cycle_profile_reason', 'cycle_profile_reason'), ('cycle_current_recorder_state', 'current_recorder_state'), ('cycle_current_state_age_minutes', 'current_state_age_minutes'), ('cycle_last_transition', 'last_transition'), ('cycle_last_transition_at', 'last_transition_at'), ('cycle_last_start_at', 'last_start_at'), ('cycle_last_stop_at', 'last_stop_at'), ('cycle_evidence_policy', 'diagnostic_policy')]:
+                        heating_statistics[output_key] = heating_history.get(history_key)
                 heat_pump_intelligence = {
+                    "heating_statistics": heating_statistics,
+                    "heating_history": heating_summary,
                     "status": "Ready" if heat_pump_inputs else "No mapped advanced inputs",
                     "heat_carrier_delta_t": heat_carrier_delta,
                     "source_delta_t": source_delta,
@@ -8259,6 +8240,7 @@ class DeviceAnalyticsEngine:
                     "compressor_state_normalized": compressor_binary,
                     "compressor_state_normalization_reason": compressor_state_normalization_reason,
                     "compressor_activity": compressor_activity,
+                    "heating_active": (heat_pump_inputs.get("heating_active_entity") or {}).get("state"),
                     "compressor_speed": compressor_speed,
                     "compressor_speed_unit": compressor_speed_unit,
                     "compressor_target_speed": compressor_target,
@@ -8310,6 +8292,10 @@ class DeviceAnalyticsEngine:
                     # separately exposed for diagnostic comparison.
                     "cycle_starts_today": daily_cycle_evidence.get("starts_today") if daily_cycle_evidence else compressor_counter_evidence.get("starts_today"),
                     "compressor_runtime_today_minutes": daily_cycle_evidence.get("runtime_today_minutes") if daily_cycle_evidence.get("runtime_today_minutes") is not None else compressor_counter_evidence.get("runtime_today_minutes"),
+                    "compressor_daily_method": "binary_state" if binary_today_ready else "power_inference" if power_today_ready else "counter_or_unavailable",
+                    "compressor_daily_entity": compressor_entity if binary_today_ready else compressor_power_evidence.get("source") if power_today_ready else compressor_counter_evidence.get("runtime_entity"),
+                    "compressor_daily_coverage": daily_cycle_evidence.get("runtime_today_coverage"),
+                    "compressor_daily_threshold_w": daily_cycle_evidence.get("learned_threshold_w"),
                     "compressor_runtime_today_source": daily_cycle_source if daily_cycle_evidence.get("runtime_today_minutes") is not None else compressor_counter_evidence.get("runtime_entity"),
                     "compressor_runtime_power_minutes": compressor_power_evidence.get("runtime_today_minutes") if compressor_power_evidence.get("status") == "Ready" else None,
                     "compressor_runtime_counter_minutes": compressor_counter_evidence.get("runtime_today_minutes"),

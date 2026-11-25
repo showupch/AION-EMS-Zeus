@@ -605,6 +605,7 @@ class AionCore:
                 "cooling_electrical_power_entity",
                 "compressor_state_entity",
                 "compressor_activity_entity",
+                "heating_active_entity",
                 # Smart Control / simulator evidence must be watched live so
                 # safety decisions never wait for the slower decision cadence.
                 "control_entity",

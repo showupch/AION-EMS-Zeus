@@ -108,7 +108,7 @@ class RegistryEngine:
             "operating_mode_entity", "target_temperature_entity", "jaz_entity",
             "heat_carrier_forward_entity", "heat_carrier_return_entity",
             "source_in_temperature_entity", "source_out_temperature_entity",
-            "source_pump_speed_entity", "heat_carrier_pump_speed_entity", "compressor_activity_entity",
+            "source_pump_speed_entity", "heat_carrier_pump_speed_entity", "compressor_activity_entity", "heating_active_entity",
             "compressor_speed_entity", "compressor_target_speed_entity",
             "dhw_target_temperature_entity",
         )
@@ -253,6 +253,7 @@ class RegistryEngine:
         source_pump_speed_entity: str | None = None,
         heat_carrier_pump_speed_entity: str | None = None,
         compressor_activity_entity: str | None = None,
+        heating_active_entity: str | None = None,
         compressor_speed_entity: str | None = None,
         compressor_target_speed_entity: str | None = None,
         dhw_target_temperature_entity: str | None = None,
@@ -394,6 +395,7 @@ class RegistryEngine:
             "source_pump_speed_entity": source_pump_speed_entity,
             "heat_carrier_pump_speed_entity": heat_carrier_pump_speed_entity,
             "compressor_activity_entity": compressor_activity_entity,
+            "heating_active_entity": heating_active_entity,
             "compressor_speed_entity": compressor_speed_entity,
             "compressor_target_speed_entity": compressor_target_speed_entity,
             "dhw_target_temperature_entity": dhw_target_temperature_entity,
@@ -562,7 +564,7 @@ class RegistryEngine:
             )
             if unit not in units and device_class != expected_class and not target_setpoint_valid:
                 issues.append({"severity": "error", "code": "HEAT_PUMP_INPUT_TYPE_MISMATCH", "message": f"{key} must be a compatible {expected_class} entity."})
-        for key in ("compressor_state_entity", "compressor_runtime_entity", "compressor_starts_entity", "operating_mode_entity", "jaz_entity", "source_pump_speed_entity", "heat_carrier_pump_speed_entity", "compressor_activity_entity", "compressor_speed_entity", "compressor_target_speed_entity"):
+        for key in ("compressor_state_entity", "compressor_runtime_entity", "compressor_starts_entity", "operating_mode_entity", "jaz_entity", "source_pump_speed_entity", "heat_carrier_pump_speed_entity", "compressor_activity_entity", "heating_active_entity", "compressor_speed_entity", "compressor_target_speed_entity"):
             entity_id = device.get(key)
             if not entity_id:
                 continue

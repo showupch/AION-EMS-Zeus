@@ -1,8 +1,9 @@
 """Read-only V3 per-array geometry model; no controls or V2 writes."""
-from datetime import datetime,timedelta,timezone
+from datetime import timedelta
 from math import cos,sin,radians,isfinite
 from .v3_shadow_geometry import solar_position
-from .v3_shadow_hourly import evaluate_hour, InvalidHourlyMean
+from .v3_shadow_hourly import evaluate_hour, InvalidHourlyMean, provider_hours
+from .v3_shadow_day_export import day_bounds, parse_day
 
 def validate_arrays(raw):
     if not isinstance(raw,list) or not 1<=len(raw)<=12:
@@ -27,40 +28,33 @@ def hourly_poa(ghi,dni,dhi,end_utc,latitude,longitude,arrays,samples=60):
     # Run the existing hourly-mean physical consistency gate first.
     evaluate_hour(ghi,dni,dhi,end_utc,latitude,longitude,samples=samples)
     accum=[0.0]*len(arrays)
+    horizontal=0.0
     for i in range(samples):
         instant=end_utc-timedelta(hours=1)+timedelta(seconds=3600*(i+.5)/samples)
         pos=solar_position(instant,latitude,longitude)
         zen=radians(pos["zenith_deg"]);az=radians(pos["azimuth_deg"])
         if cos(zen)<=0:continue
+        horizontal+=cos(zen)/samples
         for j,array in enumerate(arrays):
             tilt=radians(array["tilt_deg"])
             facing=radians(array["azimuth_deg"])
             incident=max(0.,cos(zen)*cos(tilt)+sin(zen)*sin(tilt)*cos(az-facing))
-            poa=dni*incident+dhi*(1+cos(tilt))/2+ghi*.2*(1-cos(tilt))/2
-            accum[j]+=poa/samples
-    return accum
+            accum[j]+=incident/samples
+    if horizontal == 0:
+        return [0.0] * len(arrays)
+    direct=max(0.,ghi-dhi)
+    return [(direct*accum[j]/horizontal)
+            +dhi*(1+cos(radians(a["tilt_deg"])))/2
+            +ghi*.2*(1-cos(radians(a["tilt_deg"])))/2
+            for j,a in enumerate(arrays)]
 
 def array_day(payload,day,tz_name,raw_arrays,performance_ratio=.8):
     from zoneinfo import ZoneInfo
+    if type(performance_ratio) not in (int, float) or not 0 < performance_ratio <= 1:
+        raise InvalidHourlyMean("performance ratio must be in (0, 1]")
     arrays=validate_arrays(raw_arrays)
-    if payload.get("timezone")!="GMT" or payload.get("utc_offset_seconds")!=0:
-        raise InvalidHourlyMean("provider UTC metadata required")
-    h=payload.get("hourly")
-    keys=("time","shortwave_radiation","direct_normal_irradiance","diffuse_radiation")
-    if not isinstance(h,dict) or any(not isinstance(h.get(k),list) for k in keys) or len({len(h[k]) for k in keys})!=1:
-        raise InvalidHourlyMean("invalid hourly columns")
-    zone=ZoneInfo(tz_name)
-    start=datetime.fromisoformat(day).replace(tzinfo=zone)
-    begin=start.astimezone(timezone.utc)
-    end=(start+timedelta(days=1)).astimezone(timezone.utc)
-    by_time={}
-    for i,stamp in enumerate(h["time"]):
-        try:ts=datetime.fromisoformat(stamp)
-        except (ValueError,TypeError) as e:raise InvalidHourlyMean("invalid timestamp") from e
-        if ts.tzinfo is not None:raise InvalidHourlyMean("unexpected offset")
-        ts=ts.replace(tzinfo=timezone.utc)
-        if ts in by_time:raise InvalidHourlyMean("duplicate timestamp")
-        by_time[ts]=i
+    h, by_time = provider_hours(payload)
+    begin, end = day_bounds(parse_day(day), ZoneInfo(tz_name))
     totals=[0.0]*len(arrays);hourly=[];hours=0;cur=begin+timedelta(hours=1)
     direct_hours=0; direct_irradiance_sum=0.0; daylight_hours=0; directional_difference_hours=0
     while cur<=end:
@@ -68,7 +62,7 @@ def array_day(payload,day,tz_name,raw_arrays,performance_ratio=.8):
         if i is None:raise InvalidHourlyMean("missing local-day hour")
         try:
             poas=hourly_poa(h["shortwave_radiation"][i],h["direct_normal_irradiance"][i],
-                            h["diffuse_radiation"][i],cur,payload["latitude"],payload["longitude"],arrays)
+                            h["diffuse_radiation"][i],cur,payload.get("latitude"),payload.get("longitude"),arrays)
         except (InvalidHourlyMean, ValueError, TypeError) as exc:
             # Diagnostic only: never repair or substitute rejected provider values.
             from .v3_shadow_weather_diagnostics import WeatherInputRejected
@@ -91,7 +85,7 @@ def array_day(payload,day,tz_name,raw_arrays,performance_ratio=.8):
             totals[j]+=value
         hourly.append({"hour_end_utc":cur.isoformat(),
                        "array_kwh":[round(v,4) for v in values],
-                       "total_kwh":round(sum(values),4)})
+                       "total_kwh":round(sum(values),4),"ghi_wh_m2":ghi,"dni_wh_m2":dni,"dhi_wh_m2":h["diffuse_radiation"][i],"array_poa_wh_m2":[round(v,3) for v in poas]})
         hours+=1;cur+=timedelta(hours=1)
     return {"status":"experimental_unvalidated","experimental_kwh":round(sum(totals),3),
             "hours":hours,"hourly_forecasts":hourly,

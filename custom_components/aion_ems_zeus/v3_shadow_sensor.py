@@ -1,5 +1,6 @@
 """Read-only V3 forecast shadow: isolated from production Forecast V2."""
 from __future__ import annotations
+from asyncio import timeout
 from datetime import datetime, timezone, timedelta
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -7,13 +8,14 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from aiohttp import ClientTimeout
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
-from .const import DOMAIN
+from .const import DOMAIN, VERSION
 from .v3_shadow_arrays import array_day
 from .v3_shadow_dc_observation import dc_power_observation
-from .v3_shadow_dc_history import collect_sample, hourly_dc_energy
+from .v3_shadow_dc_history import collect_sample, hourly_dc_energy, archive_dc_hours
+from .v3_shadow_day_export import MODEL_REVISION, day_bounds, secondary_weather_hours
 from .v3_shadow_hourly_comparison import compare_hourly_dc
 from .v3_shadow_ghi_comparison import compare_ghi
-from .v3_shadow_actual_audit import compare_completed_days
+from .v3_shadow_actual_audit import compare_completed_days, preserve_daily_forecasts, valid_forecast
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -30,15 +32,27 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
         self.entity_id = f"sensor.aion_ems_zeus_forecast_v3_shadow"
         self._state = "awaiting_weather_capture"
         self._details = {}
+        self._day_export_outlook = {}
         self._running = False
         self._snapshots = []
+        self._daily_forecasts = []
+        self._daily_store = None
         self._store = None
         self._dc_store = None
         self._dc_samples = []
+        self._dc_hour_archive = []
+        self._dc_hour_store = None
+        self._dc_archived_through = None
         self._dc_sample_busy = False
         self._dc_last_error = None
         self._actual_rows_cache = []
         self._actual_store = None
+        self._irr_store = None
+        self._irr_samples = []
+        self._irr_rejected = 0
+        self._irr_status = "waiting"
+        self._irr_busy = False
+        self._irr_diagnostics = {"status": "waiting_for_first_sample", "accepted_minutes_today": 0, "current_hour_minutes": 0, "rejected_since_start": 0, "completed_hours": 0, "storage": "waiting"}
 
     @property
     def native_value(self):
@@ -78,6 +92,7 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                                       "fresh_authoritative_days", "cached_authoritative_days"):
                         if isinstance(value.get(count_key), int):
                             attrs["actual_" + count_key] = value[count_key]
+                    attrs["paired_forecast_history"] = value.get("paired_history", [])[-14:]
                     counts = value.get("snapshot_rejection_counts")
                     if isinstance(counts, dict):
                         attrs["actual_snapshot_rejection_counts"] = {
@@ -121,15 +136,29 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
         outlook=details.get("seven_day_outlook")
         if isinstance(outlook,list):
             attrs["seven_day_outlook"]=outlook[:7]
+        attrs["daily_archive_preview"] = [{k:r.get(k) for k in ("target_date_local","retrieved_at_utc","forecast_v2_kwh","forecast_v3_kwh")} for r in self._daily_forecasts[-3:]]
+        sampling = self._irr_diagnostics
+        if isinstance(sampling, dict):
+            attrs["local_irradiance_sampling"] = sampling
         chart = details.get("local_weather_chart")
         if isinstance(chart, dict):
-            attrs["local_weather_chart"] = chart
+            attrs["local_weather_chart"] = {**chart, "observed": self._irr_hourly(datetime.now(timezone.utc))}
+            observed = dict(attrs["local_weather_chart"]["observed"])
+            for provider in ("open_meteo", "secondary"):
+                predicted = dict(chart.get(provider, []))
+                common = sorted(observed.keys() & predicted.keys())
+                attrs["irradiance_" + provider + "_matched_hours"] = len(common)
+                attrs["irradiance_" + provider + "_observed_wh_m2"] = round(sum(observed[k] for k in common), 2) if common else None
+                attrs["irradiance_" + provider + "_forecast_wh_m2"] = round(sum(predicted[k] for k in common), 2) if common else None
         # Hard upper bound for unusual future diagnostics; HA Recorder's
         # state-attribute limit is 16,384 bytes.
         import json
         if len(json.dumps(attrs, ensure_ascii=False, default=str).encode("utf-8")) > 12000:
             attrs = {k: v for k, v in attrs.items()
-                     if not isinstance(v, dict)}
+                     if not isinstance(v, dict) or k in ("local_irradiance_sampling", "local_weather_chart")}
+            attrs["diagnostics_truncated_for_recorder"] = True
+        if len(json.dumps(attrs, ensure_ascii=True, default=str).encode("utf-8")) > 12000:
+            attrs.pop("local_weather_chart", None)
             attrs["diagnostics_truncated_for_recorder"] = True
         return attrs
 
@@ -141,33 +170,74 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
             self._snapshots=(saved or {}).get("snapshots",[])[-28:]
         except Exception:
             self._snapshots=[]
+        self._daily_store=Store(self.hass,1,"aion_ems_zeus_v3_daily_forecasts")
+        try:
+            daily_saved=await self._daily_store.async_load()
+            self._daily_forecasts=preserve_daily_forecasts((daily_saved or {}).get("rows",[]),self._snapshots,str(dt_util.DEFAULT_TIME_ZONE))
+        except Exception:
+            self._daily_forecasts=preserve_daily_forecasts([],self._snapshots,str(dt_util.DEFAULT_TIME_ZONE))
         self._dc_store=Store(self.hass,1,"aion_ems_zeus_v3_dc_observations")
         try:
             saved_dc=await self._dc_store.async_load()
             self._dc_samples=(saved_dc or {}).get("samples",[])[-1600:]
         except Exception:
             self._dc_samples=[]
+        self._dc_hour_store = Store(self.hass, 1, "aion_ems_zeus_v3_dc_hour_archive")
+        try:
+            saved_hours = (await self._dc_hour_store.async_load() or {}).get("hours", [])
+            self._dc_hour_archive = archive_dc_hours(saved_hours, [], datetime.now(timezone.utc))
+        except Exception:
+            self._dc_hour_archive = []
+        self._irr_store = Store(self.hass, 1, "aion_ems_zeus_v3_local_irradiance")
+        try:
+            self._irr_samples = (await self._irr_store.async_load() or {}).get("samples", [])[-1600:]
+        except Exception:
+            self._irr_samples = []
         # Keep a small read-only copy of verified completed-day HA Energy rows.
         # Analytics can be temporarily empty during HA startup/refresh.
         self._actual_store=Store(self.hass,1,"aion_ems_zeus_v3_verified_actual_cache")
         try:
             saved_actual=await self._actual_store.async_load()
             rows=(saved_actual or {}).get("rows",[])
-            self._actual_rows_cache=rows[-180:] if isinstance(rows,list) else []
+            self._actual_rows_cache=rows[-365:] if isinstance(rows,list) else []
         except Exception:
             self._actual_rows_cache=[]
         self._details["dc_hourly_history"] = self._dc_history_status("waiting_for_first_sample")
+        self.core.v3_shadow_sensor = self
+        self.async_on_remove(self._remove_day_export)
         self.async_on_remove(async_track_time_interval(self.hass,self._sample_dc,timedelta(seconds=60)))
+        self.async_on_remove(async_track_time_interval(self.hass,self._irr_tick,timedelta(seconds=60)))
         self.async_on_remove(async_track_time_interval(self.hass,self._periodic,timedelta(hours=6)))
         # Weather forecast actions may not be ready during entity setup.
         if self.hass.is_running:
             self.hass.async_create_task(self._sample_dc(None))
+            self.hass.async_create_task(self._irr_tick(None))
             self.hass.async_create_task(self._capture())
         else:
             self.async_on_remove(self.hass.bus.async_listen_once(
                 EVENT_HOMEASSISTANT_STARTED, self._after_start))
 
+    def _remove_day_export(self):
+        if getattr(self.core, "v3_shadow_sensor", None) is self:
+            self.core.v3_shadow_sensor = None
+
+    def day_export(self, day):
+        from .v3_shadow_day_export import build_day_export
+        now = datetime.now(timezone.utc)
+        configured = (self.core.registry.data.get("home_settings") or {}).get("pv_arrays") or []
+        start, end = day_bounds(day, dt_util.DEFAULT_TIME_ZONE)
+        hours = archive_dc_hours(
+            self._dc_hour_archive, self._dc_history_status("sampling")["hours"], now,
+            window=(start, end),
+        )
+        return build_day_export(
+            day, dt_util.DEFAULT_TIME_ZONE, self._daily_forecasts + self._snapshots,
+            self._day_export_outlook.get(day.isoformat()), hours, self._actual_rows_cache, now,
+            self._irr_hourly(now, day=day), configured=configured,
+        )
+
     async def _after_start(self, _event):
+        await self._irr_tick(None)
         await self._sample_dc(None)
         await self._capture()
 
@@ -191,7 +261,7 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
         arrays=(self.core.registry.data.get("home_settings") or {}).get("pv_arrays") or []
         ids=[a.get("power_entity") for a in arrays if isinstance(a,dict) and isinstance(a.get("power_entity"),str)]
         now=datetime.now(timezone.utc)
-        return compare_hourly_dc(self._snapshots,
+        return compare_hourly_dc(self._daily_forecasts + self._snapshots,
                                  hourly_dc_energy(self._dc_samples,ids,now),ids,now)
 
     async def _sample_dc(self, _now):
@@ -206,6 +276,16 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                 await self._dc_store.async_save({"samples":self._dc_samples})
             self._dc_last_error=None
             self._details["dc_hourly_history"]=self._dc_history_status("sampling")
+            # Wait for a sample beyond the boundary before freezing the completed hour.
+            cutoff = (now - timedelta(minutes=2)).replace(minute=0, second=0, microsecond=0)
+            if self._dc_hour_store is not None and cutoff != self._dc_archived_through:
+                archived = archive_dc_hours(
+                    self._dc_hour_archive, self._details["dc_hourly_history"]["hours"], cutoff,
+                )
+                if archived != self._dc_hour_archive:
+                    await self._dc_hour_store.async_save({"hours": archived})
+                    self._dc_hour_archive = archived
+                self._dc_archived_through = cutoff
             self._details["hourly_dc_comparison"]=self._hourly_comparison_status()
             self.async_write_ha_state()
         except Exception as exc:
@@ -244,18 +324,109 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
         h = payload.get("hourly") or {}
         om = means(zip(h.get("time", []), h.get("shortwave_radiation", [])), True) if payload.get("timezone")=="GMT" and payload.get("utc_offset_seconds")==0 else []
         sw = means((r.get("datetime"), r.get("global_radiation")) for r in (secondary or []) if isinstance(r,dict))
-        station = (self.core.registry.data.get("sources") or {}).get("local_weather_station") or {}
-        entity = (station.get("entities") or {}).get("solar_radiation") if station.get("enabled") else None
-        records = (getattr(getattr(self.core,"weather_history",None),"data",{}) or {}).get("verified_hourly_irradiance_pv") or {}
-        obs = {}
-        if entity and isinstance(records,dict):
-            for row in records.values():
-                if not isinstance(row,dict) or row.get("irradiance_entity") != entity: continue
-                pair = point(row.get("irradiance_updated_utc"),row.get("irradiance_w_m2"))
-                if pair and start <= pair[0] <= now:
-                    obs[round((pair[0]-start).total_seconds()/3600,3)] = pair[1]
         return {"date":day.isoformat(),"hours":(end-start).total_seconds()/3600,
-                "open_meteo":om,"secondary":sw,"observed":[[k,v] for k,v in sorted(obs.items())][-25:]}
+                "open_meteo":om,"secondary":sw,"observed":self._irr_hourly(now)}
+
+    def _irr_entity(self):
+        station = (self.core.registry.data.get("sources") or {}).get("local_weather_station") or {}
+        return (station.get("entities") or {}).get("solar_radiation") if station.get("enabled") else None
+
+    def _irr_hourly(self, now, *, day=None):
+        from math import isfinite
+        zone = dt_util.DEFAULT_TIME_ZONE
+        local_start = datetime.combine(day or now.astimezone(zone).date(), datetime.min.time(), tzinfo=zone)
+        start = local_start.astimezone(timezone.utc)
+        next_day = (local_start + timedelta(days=1)).astimezone(timezone.utc)
+        entity = self._irr_entity()
+        buckets = {}
+        for row in self._irr_samples:
+            try:
+                if not entity or row[0] != entity: continue
+                t = datetime.fromisoformat(row[1])
+                v = float(row[2])
+                if not start <= t <= now or t >= next_day or not isfinite(v) or not 0 <= v <= 1500: continue
+                minute = int((t-start).total_seconds()//60)
+                buckets.setdefault(minute//60, {})[minute] = v
+            except (TypeError, ValueError, IndexError, OverflowError):
+                continue
+        return [[h+1, round(sum(vals.values())/len(vals),1)] for h,vals in sorted(buckets.items())
+                if len(vals)>=55 and start+timedelta(hours=h+1)<=now]
+
+    async def _irr_tick(self, _now):
+        if self._irr_busy:
+            return
+        self._irr_busy = True
+        try:
+            await self._sample_irradiance(datetime.now(timezone.utc))
+        except Exception as exc:
+            self._irr_diagnostics = {**self._irr_diagnostics, "status": "sampling_error", "error_type": type(exc).__name__}
+        finally:
+            self._irr_busy = False
+            self.async_write_ha_state()
+
+    async def _sample_irradiance(self, now):
+        from math import isfinite
+        entity = self._irr_entity()
+        state = self.hass.states.get(entity) if entity else None
+        accepted = False
+        raw = str(state.state)[:80] if state is not None else None
+        raw_unit = str(state.attributes.get("unit_of_measurement", ""))[:40] if state is not None else None
+        reason = "not_configured" if not entity else "entity_not_found"
+        if state is not None:
+            unit = raw_unit.replace("²", "2").replace(" ", "").lower()
+            if raw.lower() in ("unknown", "unavailable", "none", ""):
+                reason = "state_unavailable"
+            elif unit not in ("w/m2", "kw/m2"):
+                reason = "unsupported_unit"
+            else:
+                try:
+                    v = float(state.state) * (1000 if unit == "kw/m2" else 1)
+                except (TypeError, ValueError, OverflowError):
+                    reason = "non_numeric_state"
+                else:
+                    reported = getattr(state, "last_reported", None) or state.last_updated
+                    if not isfinite(v) or not 0 <= v <= 1500:
+                        reason = "value_out_of_range"
+                    elif not timedelta(0) <= now-reported <= timedelta(minutes=10):
+                        reason = "stale_report"
+                    else:
+                        self._irr_samples = (self._irr_samples + [[entity, now.isoformat(), v]])[-1600:]
+                        accepted = True
+                        reason = "sampling"
+        if not accepted:
+            self._irr_rejected += 1
+        elif self._irr_store is not None:
+            try:
+                await self._irr_store.async_save({"samples": self._irr_samples})
+                self._irr_status = "saved"
+            except Exception:
+                self._irr_status = "save_failed"
+        zone = dt_util.DEFAULT_TIME_ZONE
+        start = datetime.combine(now.astimezone(zone).date(), datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
+        minutes = set()
+        last = None
+        last_value = None
+        for row in self._irr_samples:
+            try:
+                t = datetime.fromisoformat(row[1])
+                if row[0] == entity and start <= t <= now:
+                    minutes.add(int((t-start).total_seconds()//60))
+                    last = t.isoformat()
+                    last_value = row[2]
+            except (TypeError, ValueError, IndexError):
+                continue
+        hour = int((now-start).total_seconds()//3600)
+        previous_rejection = self._irr_diagnostics.get("last_rejection_reason")
+        self._irr_diagnostics = {"status": reason, "accepted_minutes_today": len(minutes), "rejected_since_start": self._irr_rejected, "current_hour_minutes": sum(m//60 == hour for m in minutes), "completed_hours": len(self._irr_hourly(now)), "last_success_utc": last, "storage": self._irr_status}
+        self._irr_diagnostics.update({"entity_id": str(entity)[:255] if entity else None,
+                                      "raw_state": raw, "raw_unit": raw_unit,
+                                      "last_success_w_m2": last_value,
+                                      "last_rejection_reason": (previous_rejection if accepted else reason)})
+        chart = self._details.get("local_weather_chart") or {}
+        day = now.astimezone(dt_util.DEFAULT_TIME_ZONE).date()
+        if chart.get("date") != day.isoformat():
+            chart = self._local_weather_chart({})
+        self._details["local_weather_chart"] = {**chart, "observed": self._irr_hourly(now)}
 
     async def _compare_meteoswiss(self, target, open_meteo):
         entity_id="weather.swiss_meteo_dj31"
@@ -268,11 +439,12 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                 details["status"]="service_not_registered"
                 return
             # HA requires a response-enabled service call for weather.get_forecasts.
-            response=await self.hass.services.async_call(
-                "weather","get_forecasts",
-                service_data={"type":"hourly"},
-                target={"entity_id":entity_id},
-                blocking=True,return_response=True)
+            async with timeout(15):
+                response=await self.hass.services.async_call(
+                    "weather","get_forecasts",
+                    service_data={"type":"hourly"},
+                    target={"entity_id":entity_id},
+                    blocking=True,return_response=True)
             if not isinstance(response,dict):
                 details["status"]="unexpected_response"
                 return
@@ -301,6 +473,7 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                                        str(dt_util.DEFAULT_TIME_ZONE)))
             details["target_local_day_hours"]=len(valid)
             details["note"]="Independent forecast-source GHI comparison, not measured PV accuracy."
+            return forecast
         except Exception as exc:
             details.update(status="service_call_failed",
                            error_type=type(exc).__name__,
@@ -346,6 +519,18 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
             return {"status":"test_unavailable","error_type":type(exc).__name__,
                     "error_message":str(exc)[:160]}
 
+    def _capture_v2_day(self, target):
+        try:
+            summary = self.core.forecast.summary() or {}
+            for row in summary.get("daily_forecast") or []:
+                if isinstance(row, dict) and row.get("date") == target and row.get("label") == "Tomorrow":
+                    value = row.get("expected_solar_kwh")
+                    return value if valid_forecast(value) else None
+        except Exception:
+            # The V2 summary is optional evidence for the independent V3 capture.
+            return None
+        return None
+
     async def _capture(self):
         if self._running:
             return
@@ -357,7 +542,6 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
             # Fetch both neighboring UTC dates: local midnight is not UTC midnight.
             local_start=datetime.fromisoformat(target).replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
             utc_start=local_start.astimezone(timezone.utc)
-            utc_end=(local_start+timedelta(days=1)).astimezone(timezone.utc)
             first=(utc_start-timedelta(days=1,hours=1)).date().isoformat()
             last=(local_start+timedelta(days=6)).astimezone(timezone.utc).date().isoformat()
             params={"latitude":self.hass.config.latitude,"longitude":self.hass.config.longitude,
@@ -368,6 +552,9 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                                    params=params,timeout=ClientTimeout(total=15)) as resp:
                 if resp.status!=200:raise ValueError(f"provider HTTP {resp.status}")
                 payload=await resp.json()
+                received = datetime.now(timezone.utc)
+                captured_at = received.isoformat()
+                v2_value = self._capture_v2_day(target) if received < local_start else None
             configured=(self.core.registry.data.get("home_settings") or {}).get("pv_arrays")
             result=array_day(payload,target,str(dt_util.DEFAULT_TIME_ZONE),configured)
             self._state=result["status"]
@@ -384,19 +571,32 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                            "dc_observed_at_utc":datetime.now(timezone.utc).isoformat(),
                            "total_capacity_kwp":result["total_capacity_kwp"],
                            "weather_provider":"Open-Meteo",
-                           "retrieved_at_utc":datetime.now(timezone.utc).isoformat(),
+                           "retrieved_at_utc":captured_at,
                            "forecast_issue_time_verified":False,
                            "hourly_rows_accepted":result.get("hours",0),
                            "target_date_local":target,
                            "local_timezone":str(dt_util.DEFAULT_TIME_ZONE),
                            "rejections":result.get("rejections",[])[:5],
                            "note":"Experimental Swiss local-day estimate; provider issue time unverified."}
+            # Capture optional secondary evidence alongside this Open-Meteo acquisition.
+            self._details["local_weather_chart"] = self._local_weather_chart(payload)
+            secondary = await self._compare_meteoswiss(target, payload)
+            zone = dt_util.DEFAULT_TIME_ZONE
+            capture_metadata = {
+                "retrieved_at_utc": captured_at,
+                "local_timezone": str(zone),
+                "zeus_version": VERSION,
+                "model_revision": MODEL_REVISION,
+                "array_power_entities": [a.get("power_entity") for a in configured],
+                "secondary_retrieved_at_utc": datetime.now(timezone.utc).isoformat() if secondary else None,
+            }
             # Seven calendar days, independently validated; never feed outlook into V2.
             outlook=[]
+            day_export_outlook = {}
             today=local_now.date()
             today_start=datetime.combine(today, datetime.min.time(), tzinfo=dt_util.DEFAULT_TIME_ZONE)
             frozen=[]
-            for saved in self._snapshots:
+            for saved in self._daily_forecasts:
                 try:
                     if saved.get("target_date_local") != today.isoformat():
                         continue
@@ -412,6 +612,16 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                 try:
                     daily=result if offset==1 else array_day(payload,day,str(dt_util.DEFAULT_TIME_ZONE),configured)
                     row.update(forecast_kwh=daily["experimental_kwh"],status="experimental")
+                    day_export_outlook[day] = {
+                        **capture_metadata,
+                        "target_date_local": day,
+                        "forecast_v3_kwh": daily["experimental_kwh"],
+                        "array_forecasts": daily["array_forecasts"],
+                        "hourly_array_forecasts": daily["hourly_forecasts"],
+                        "secondary_weather_hours": secondary_weather_hours(
+                            secondary, *day_bounds(today + timedelta(days=offset), zone)
+                        ),
+                    }
                     if offset==0:
                         row["pre_day_kwh"]=max(frozen)[1] if frozen else None
                         # Remaining complete forecast hours only; exclude the current partial hour.
@@ -420,17 +630,24 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                 except Exception as exc:
                     row["status"]=type(exc).__name__
                 outlook.append(row)
+            self._day_export_outlook = day_export_outlook
             self._details["seven_day_outlook"]=outlook
             # Store captured predictions as evidence, never as training or calibration.
-            snapshot={"target_date_local":target,"retrieved_at_utc":self._details["retrieved_at_utc"],
-                      "forecast_v3_kwh":result.get("experimental_kwh"),
-                      "source":"Open-Meteo","forecast_issue_time_verified":False,
-                      "geometry_source":"saved_pv_arrays",
-                      "array_forecasts":result["array_forecasts"],
-                      "hourly_array_forecasts":result["hourly_forecasts"],
-                      "local_timezone":str(dt_util.DEFAULT_TIME_ZONE),
-                      "array_power_entities":[a.get("power_entity") for a in (configured or []) if isinstance(a,dict)]}
+            snapshot = {
+                **day_export_outlook[target],
+                "source": "Open-Meteo",
+                "forecast_issue_time_verified": False,
+                "geometry_source": "saved_pv_arrays",
+            }
+            if v2_value is not None:
+                snapshot["forecast_v2_kwh"] = v2_value
             if result.get("experimental_kwh") is not None:
+                self._daily_forecasts=preserve_daily_forecasts(self._daily_forecasts,self._snapshots+[snapshot],str(dt_util.DEFAULT_TIME_ZONE))
+                try:
+                    await self._daily_store.async_save({"rows":self._daily_forecasts})
+                    self._details["daily_archive_storage"]="saved"
+                except Exception as exc:
+                    self._details["daily_archive_storage"]=f"error_{type(exc).__name__}"
                 self._snapshots=(self._snapshots+[snapshot])[-28:]
                 if self._store is not None:
                     try:
@@ -438,12 +655,10 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                         self._details["snapshot_storage"]="saved"
                     except Exception as exc:
                         self._details["snapshot_storage"]=f"error_{type(exc).__name__}"
+            self._details["daily_archive_count"] = len({row["target_date_local"] for row in self._daily_forecasts})
             self._details["snapshot_count"]=len(self._snapshots)
             self._details["latest_snapshot"]=self._snapshots[-1] if self._snapshots else None
             self._details["hourly_dc_comparison"]=self._hourly_comparison_status()
-            # MeteoSwiss is strictly optional: its failure cannot invalidate V3.
-            self._details["local_weather_chart"] = self._local_weather_chart(payload)
-            await self._compare_meteoswiss(target,payload)
             # Analytics exposes HA Energy daily statistics. Never use the
             # inverter's 23:00-reset daily meter for completed-day validation.
             try:
@@ -480,7 +695,7 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                 cached={row["date"]:row for row in self._actual_rows_cache
                         if isinstance(row,dict) and row.get("date")}
                 cached.update(authoritative)
-                self._actual_rows_cache=[cached[k] for k in sorted(cached)[-180:]]
+                self._actual_rows_cache=[cached[k] for k in sorted(cached)[-365:]]
                 if authoritative and self._actual_store is not None:
                     await self._actual_store.async_save({"rows":self._actual_rows_cache})
                 # Retain all original analytics rows for diagnostic method
@@ -490,7 +705,7 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
                 fresh_dates=set(authoritative)
                 merged.extend(row for row in self._actual_rows_cache
                               if row["date"] not in fresh_dates)
-                audit=compare_completed_days(self._snapshots,merged,today_local)
+                audit=compare_completed_days(self._daily_forecasts,merged,today_local)
                 audit["actual_data_source_status"]=(
                     "fresh_ha_energy_statistics" if authoritative else
                     "cached_verified_ha_energy_statistics" if self._actual_rows_cache else
@@ -514,6 +729,7 @@ class V3ShadowSensor(CoordinatorEntity, SensorEntity):
             self._state=("weather_input_rejected" if isinstance(exc,WeatherInputRejected)
                          else "weather_unavailable")
             self._details={
+                "local_weather_chart":previous.get("local_weather_chart"),
                 "error_type":type(exc).__name__,
                 "error_message":str(exc)[:180],
                 "forecast_v3_kwh":None,

@@ -1718,7 +1718,7 @@ async def _async_register_frontend(hass: HomeAssistant, version: str) -> None:
         webcomponent_name="aion-ems-zeus-dashboard",
         sidebar_title="AION EMS Zeus",
         sidebar_icon="mdi:lightning-bolt",
-        module_url=f"{_FRONTEND_URL}?v={version}&build=zeus-15-0-4-dynamic-tariffs-cache-safe",
+        module_url=f"{_FRONTEND_URL}?v={version}&build=zeus-660-heating-active",
         config={"version": version, "domain": DOMAIN},
         require_admin=False,
     )
@@ -1731,7 +1731,7 @@ async def _async_register_frontend(hass: HomeAssistant, version: str) -> None:
         webcomponent_name="aion-ems-zeus-command-center",
         sidebar_title=None,
         sidebar_icon=None,
-        module_url=f"{_FRONTEND_URL}?v={version}&build=zeus-89-command-center-full-viewport",
+        module_url=f"{_FRONTEND_URL}?v={version}&build=zeus-660-command-center",
         config={"version": version, "domain": DOMAIN, "dedicated_kiosk": True},
         require_admin=False,
     )
@@ -1761,6 +1761,69 @@ async def _websocket_save_climate_schedule(hass, connection, msg):
         return
     connection.send_result(msg["id"], result)
 
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/climate_visibility"})
+@websocket_api.async_response
+async def _websocket_climate_visibility(hass, connection, msg):
+    manager = hass.data.get(DOMAIN, {}).get("climate_schedule_manager")
+    if manager is None:
+        connection.send_error(msg["id"], "not_ready", "Climate visibility unavailable")
+        return
+    hidden = manager.hidden_entities
+    if not connection.user.is_admin:
+        from homeassistant.auth.permissions.const import POLICY_READ
+        hidden = {
+            entity_id for entity_id in hidden
+            if connection.user.permissions.check_entity(entity_id, POLICY_READ)
+        }
+    connection.send_result(msg["id"], sorted(hidden))
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/set_climate_visibility",
+    vol.Required("entity_id"): str,
+    vol.Required("hidden"): bool,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_set_climate_visibility(hass, connection, msg):
+    manager = hass.data.get(DOMAIN, {}).get("climate_schedule_manager")
+    if manager is None:
+        connection.send_error(msg["id"], "not_ready", "Climate visibility unavailable")
+        return
+    try:
+        hidden = await manager.async_set_hidden(msg["entity_id"], msg["hidden"])
+    except ValueError as exc:
+        connection.send_error(msg["id"], "invalid_entity", str(exc))
+        return
+    connection.send_result(msg["id"], hidden)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/forecast_v3_day_data",
+    vol.Required("date"): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def _websocket_forecast_v3_day_data(hass, connection, msg):
+    from .v3_shadow_day_export import parse_day
+
+    try:
+        day = parse_day(msg["date"])
+    except ValueError:
+        connection.send_error(msg["id"], "invalid_date", "Choose a valid calendar date")
+        return
+    core = hass.data.get(DOMAIN, {}).get("core")
+    sensor = getattr(core, "v3_shadow_sensor", None)
+    if sensor is None:
+        connection.send_error(msg["id"], "not_ready", "Forecast V3 Lab is not ready")
+        return
+    data = sensor.day_export(day)
+    if data is None:
+        connection.send_error(msg["id"], "no_data", "No V3 day data is available for this date")
+        return
+    connection.send_result(msg["id"], data)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up AION EMS from a config entry."""
     core = AionCore(hass, entry)
@@ -1781,6 +1844,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if not hass.data.get(_WEBSOCKET_REGISTERED):
         websocket_api.async_register_command(hass, _websocket_climate_schedules)
+        websocket_api.async_register_command(hass, _websocket_climate_visibility)
+        websocket_api.async_register_command(hass, _websocket_set_climate_visibility)
+        websocket_api.async_register_command(hass, _websocket_forecast_v3_day_data)
         websocket_api.async_register_command(hass, _websocket_save_climate_schedule)
         websocket_api.async_register_command(hass, _websocket_device_energy_attribution)
         websocket_api.async_register_command(hass, _websocket_security_scan)

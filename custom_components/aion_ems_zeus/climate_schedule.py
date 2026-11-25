@@ -1,6 +1,7 @@
 """Opt-in, persistent room-temperature schedules. No energy control coupling."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 from homeassistant.helpers.storage import Store
@@ -14,6 +15,9 @@ class ClimateScheduleManager:
     def __init__(self, hass):
         self.hass = hass
         self.store = Store(hass, 1, "aion_ems_zeus_climate_schedules")
+        self.visibility_store = Store(hass, 1, "aion_ems_zeus_climate_visibility")
+        self.hidden_entities = set()
+        self._visibility_lock = asyncio.Lock()
         self.schedules = {}
         self._last_applied = {}
         self._unsubscribe = None
@@ -24,6 +28,17 @@ class ClimateScheduleManager:
         self.last_command_status = {}
 
     async def async_start(self):
+        try:
+            visibility = await self.visibility_store.async_load() or {}
+        except Exception:
+            _LOGGER.exception("Unable to load Zeus climate visibility")
+            visibility = {}
+        hidden = visibility.get("hidden", []) if isinstance(visibility, dict) else []
+        if isinstance(hidden, list):
+            self.hidden_entities = {
+                entity_id for entity_id in hidden
+                if isinstance(entity_id, str) and entity_id.startswith("climate.")
+            }
         data = await self.store.async_load() or {}
         self.schedules = data.get("schedules", {}) if isinstance(data, dict) else {}
         # Restore manual overrides before the first scheduler tick so a restart
@@ -53,6 +68,22 @@ class ClimateScheduleManager:
                 if entity_id in self.schedules
             },
         })
+
+    async def async_set_hidden(self, entity_id, hidden):
+        async with self._visibility_lock:
+            if not entity_id.startswith("climate.") or (
+                hidden and entity_id not in self.hass.states.async_entity_ids("climate")
+            ):
+                raise ValueError("A valid climate entity is required")
+            updated = self.hidden_entities.copy()
+            if hidden:
+                updated.add(entity_id)
+            else:
+                updated.discard(entity_id)
+            if updated != self.hidden_entities:
+                await self.visibility_store.async_save({"hidden": sorted(updated)})
+                self.hidden_entities = updated
+            return sorted(self.hidden_entities)
 
     async def async_save(self, entity_id, enabled, days, slots):
         if not isinstance(entity_id, str) or not entity_id.startswith("climate.") or entity_id not in self.hass.states.async_entity_ids("climate"):
